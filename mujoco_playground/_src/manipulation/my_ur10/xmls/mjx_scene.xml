@@ -1,7 +1,8 @@
-<mujoco model="panda scene">
-  <include file="mjx_panda.xml"/>
+<mujoco model="ur10e scene">
+  <!--include file="mjx_panda.xml"/-->
+  <include file="../../../external_deps/mujoco_menagerie/universal_robots_ur10e/ur10e.xml"/>
 
-  <statistic center="0.3 0 0.4" extent="1"/>
+  <statistic center="0.4 0 0.4" extent="1"/>
 
   <option timestep="0.005" iterations="5" ls_iterations="8" integrator="implicitfast">
     <flag eulerdamp="disable"/>

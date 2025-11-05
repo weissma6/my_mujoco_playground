@@ -23,6 +23,7 @@ from mujoco import mjx
 from mujoco.mjx._src import math
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.manipulation.franka_emika_panda import panda
+from mujoco_playground._src.manipulation.my_ur10 import ur10_base
 from mujoco_playground._src.mjx_env import State  # pylint: disable=g-importing-member
 import numpy as np
 
@@ -54,7 +55,7 @@ def default_config() -> config_dict.ConfigDict:
     return config
 
 
-class UR10PickCube(panda.PandaBase):
+class UR10PickCube(ur10_base.UR10Base):
     """Bring a box to a target."""
 
     def __init__(
@@ -63,26 +64,41 @@ class UR10PickCube(panda.PandaBase):
         config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
         sample_orientation: bool = False,
     ):
+
+        # ------------------------------------------------------------------------------------
+        # xml_path = (
+        #     mjx_env.ROOT_PATH
+        #     / "manipulation"
+        #     / "my_ur10"
+        #     / "xmls"
+        #     / "mjx_single_cube.xml"
+        # )
         xml_path = (
             mjx_env.ROOT_PATH
             / "manipulation"
-            / "franka_emika_panda"
+            / "my_ur10"
             / "xmls"
             / "mjx_single_cube.xml"
         )
+
+        # ------------------------------------------------------------------------------------
+
         super().__init__(
             xml_path,
             config,
             config_overrides,
         )
-        self._post_init(obj_name="box", keyframe="home")
+        self._post_init(obj_name="box", keyframe="task_home")
         self._sample_orientation = sample_orientation
 
-        # Contact sensor IDs.
-        self._floor_hand_found_sensor = [
-            self._mj_model.sensor(f"{geom}_floor_found").id
-            for geom in ["left_finger_pad", "right_finger_pad", "hand_capsule"]
-        ]
+        # --- No finger sensors on UR10 ---
+        self._floor_hand_found_sensor = []
+
+        # # Contact sensor IDs.
+        # self._floor_hand_found_sensor = [
+        #     self._mj_model.sensor(f"{geom}_floor_found").id
+        #     for geom in ["left_finger_pad", "right_finger_pad", "hand_capsule"]
+        # ]
 
     def reset(self, rng: jax.Array) -> State:
         rng, rng_box, rng_target = jax.random.split(rng, 3)
@@ -103,12 +119,13 @@ class UR10PickCube(panda.PandaBase):
             jax.random.uniform(
                 rng_target,
                 (3,),
-                minval=jp.array([-0.2, -0.2, 0.2]),
-                maxval=jp.array([0.2, 0.2, 0.4]),
+                minval=jp.array([-0.2, -0.2, 0.4]),
+                maxval=jp.array([0.2, 0.2, 0.6]),
             )
             + self._init_obj_pos
         )
 
+        # Optional orientation sampling
         target_quat = jp.array([1.0, 0.0, 0.0, 0.0], dtype=float)
         if self._sample_orientation:
             # sample a random direction
