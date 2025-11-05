@@ -54,7 +54,7 @@ def default_config() -> config_dict.ConfigDict:
     return config
 
 
-class PandaPickCube(panda.PandaBase):
+class UR10PickCube(panda.PandaBase):
     """Bring a box to a target."""
 
     def __init__(
@@ -236,7 +236,7 @@ class PandaPickCube(panda.PandaBase):
         return obs
 
 
-class PandaPickCubeOrientation(PandaPickCube):
+class UR10PickCubeOrientation(UR10PickCube):
     """Bring a box to a target and orientation."""
 
     def __init__(
