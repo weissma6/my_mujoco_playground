@@ -1,6 +1,6 @@
 <mujoco model="ur10e scene">
   <!--include file="mjx_panda.xml"/-->
-  <include file="../../../external_deps/mujoco_menagerie/universal_robots_ur10e/ur10e.xml"/>
+  <include file="../universal_robots_ur10e/ur10e.xml"/>
 
   <statistic center="0.4 0 0.4" extent="1"/>
 

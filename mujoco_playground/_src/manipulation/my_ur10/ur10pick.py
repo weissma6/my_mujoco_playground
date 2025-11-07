@@ -210,14 +210,27 @@ class UR10PickCube(ur10_base.UR10Base):
                 - self._init_q[self._robot_arm_qposadr]
             )
         )
+        # ------------------------------------------------------------------------------------
+        # # Check for collisions with the floor
+        # hand_floor_collision = [
+        #     data.sensordata[self._mj_model.sensor_adr[sensor_id]] > 0
+        #     for sensor_id in self._floor_hand_found_sensor
+        # ]
+        # floor_collision = sum(hand_floor_collision) > 0
+        # no_floor_collision = (1 - floor_collision).astype(float)
 
         # Check for collisions with the floor
-        hand_floor_collision = [
-            data.sensordata[self._mj_model.sensor_adr[sensor_id]] > 0
-            for sensor_id in self._floor_hand_found_sensor
-        ]
-        floor_collision = sum(hand_floor_collision) > 0
-        no_floor_collision = (1 - floor_collision).astype(float)
+        if self._floor_hand_found_sensor:
+            hand_floor_collision = [
+                data.sensordata[self._mj_model.sensor_adr[sensor_id]] > 0
+                for sensor_id in self._floor_hand_found_sensor
+            ]
+            floor_collision = sum(hand_floor_collision) > 0
+            no_floor_collision = (1 - floor_collision).astype(float)
+        else:
+            # No sensors -> assume no collision
+            no_floor_collision = jp.array(1.0)
+        # ------------------------------------------------------------------------------------
 
         info["reached_box"] = 1.0 * jp.maximum(
             info["reached_box"],
@@ -236,6 +249,12 @@ class UR10PickCube(ur10_base.UR10Base):
         gripper_pos = data.site_xpos[self._gripper_site]
         gripper_mat = data.site_xmat[self._gripper_site].ravel()
         target_mat = math.quat_to_mat(data.mocap_quat[self._mocap_target])
+        # ------------------------------------------------------------------------------------
+        # Test for joint observation shapes
+        # print("Action Space Size:", self.action_size)
+        # print("ctrl:", data.ctrl.shape)
+        # print("robot_qpos subset:", data.qpos[self._robot_qposadr[:-1]].shape)
+        # ------------------------------------------------------------------------------------
         obs = jp.concatenate(
             [
                 data.qpos,
@@ -246,7 +265,8 @@ class UR10PickCube(ur10_base.UR10Base):
                 data.xpos[self._obj_body] - data.site_xpos[self._gripper_site],
                 info["target_pos"] - data.xpos[self._obj_body],
                 target_mat.ravel()[:6] - data.xmat[self._obj_body].ravel()[:6],
-                data.ctrl - data.qpos[self._robot_qposadr[:-1]],
+                # data.ctrl - data.qpos[self._robot_qposadr[:-1]], # From Panda Action Space
+                data.ctrl - data.qpos[self._robot_qposadr],
             ]
         )
 

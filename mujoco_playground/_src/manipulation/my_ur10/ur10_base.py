@@ -52,7 +52,10 @@ def get_assets() -> Dict[str, bytes]:
     assets = {}
     path = mjx_env.ROOT_PATH / "manipulation" / "my_ur10" / "xmls"
     mjx_env.update_assets(assets, path, "*.xml")
-    path = mjx_env.MENAGERIE_PATH / _MENAGERIE_UR10_DIR
+
+    # path = mjx_env.MENAGERIE_PATH / _MENAGERIE_UR10_DIR
+    path = mjx_env.ROOT_PATH / "manipulation" / "my_ur10" / "universal_robots_ur10e"
+
     mjx_env.update_assets(assets, path, "*.xml")
     mjx_env.update_assets(assets, path / "assets")
     return assets
@@ -97,7 +100,9 @@ class UR10Base(mjx_env.MjxEnv):
 
     # Post-init setup (keyframes, IDs, and body references)
     def _post_init(self, obj_name: str, keyframe: str):
-        all_joints = _ARM_JOINTS + _FINGER_JOINTS
+        # ------------------------------------------------------------------------------------
+        all_joints = _ARM_JOINTS  # + _FINGER_JOINTS # UR10 has no fingers
+        # ------------------------------------------------------------------------------------
         self._robot_arm_qposadr = np.array(
             [
                 self._mj_model.jnt_qposadr[self._mj_model.joint(j).id]
@@ -117,7 +122,7 @@ class UR10Base(mjx_env.MjxEnv):
         # self._obj_qposadr = self._mj_model.jnt_qposadr[
         #     self._mj_model.body(obj_name).jntadr[0]
         # ]
-
+        # ------------------------------------------------------------------------------------
         # The UR10e has an end-effector site called 'attachment_site'
         self._gripper_site = self._mj_model.site("attachment_site").id
 
