@@ -44,11 +44,15 @@ _ARM_JOINTS = [
     "wrist_3_joint",
 ]
 # _FINGER_JOINTS = ["finger_joint1", "finger_joint2"]
-_FINGER_JOINTS = []  # UR10 has no fingers
+_FINGER_JOINTS = [
+    "left_finger_joint",
+    "right_finger_joint",
+]
 _MENAGERIE_UR10_DIR = "universal_robots_ur10e"
 
 
 def get_assets() -> Dict[str, bytes]:
+    """Load XML and mesh assets for UR10e + HandE."""
     assets = {}
     path = mjx_env.ROOT_PATH / "manipulation" / "my_ur10" / "xmls"
     mjx_env.update_assets(assets, path, "*.xml")
@@ -101,7 +105,7 @@ class UR10Base(mjx_env.MjxEnv):
     # Post-init setup (keyframes, IDs, and body references)
     def _post_init(self, obj_name: str, keyframe: str):
         # ------------------------------------------------------------------------------------
-        all_joints = _ARM_JOINTS  # + _FINGER_JOINTS # UR10 has no fingers
+        all_joints = _ARM_JOINTS + _FINGER_JOINTS
         # ------------------------------------------------------------------------------------
         self._robot_arm_qposadr = np.array(
             [
@@ -123,13 +127,23 @@ class UR10Base(mjx_env.MjxEnv):
         #     self._mj_model.body(obj_name).jntadr[0]
         # ]
         # ------------------------------------------------------------------------------------
-        # The UR10e has an end-effector site called 'attachment_site'
-        self._gripper_site = self._mj_model.site("attachment_site").id
+        # The end-effector site (TCP)
+        geom_names = [self._mj_model.geom(i).name for i in range(self._mj_model.ngeom)]
 
-        # The UR10 model has no fingers or gripper meshes
-        self._left_finger_geom = None
-        self._right_finger_geom = None
-        self._hand_geom = None
+        self._gripper_site = self._mj_model.site("tcp").id
+        self._left_finger_geom = (
+            self._mj_model.geom("finger_1_visual").id
+            if "finger_1_visual" in geom_names
+            else None
+        )
+        self._right_finger_geom = (
+            self._mj_model.geom("finger_2_visual").id
+            if "finger_2_visual" in geom_names
+            else None
+        )
+        self._hand_geom = (
+            self._mj_model.geom("hande_base").id if "hande_base" in geom_names else None
+        )
 
         # Environment object references (like cube)
         self._obj_body = self._mj_model.body(obj_name).id
@@ -158,7 +172,7 @@ class UR10Base(mjx_env.MjxEnv):
 
     @property
     def action_size(self) -> int:
-        return self.mjx_model.nu
+        return self.mjx_model.nu  # 7 (6 arm + 1 gripper actuator)
 
     @property
     def mj_model(self) -> mujoco.MjModel:

@@ -64,6 +64,14 @@
     <mesh file="wrist2_1.obj"/>
     <mesh file="wrist2_2.obj"/>
     <mesh file="wrist3.obj"/>
+    <!-- Robotiq Hand-E meshes -->
+    <mesh name="hande" file="hande.stl"/>
+    <mesh name="hande-collision" file="hande-collision.stl"/>
+    <mesh name="coupler" file="coupler.stl"/>
+    <mesh name="finger_1" file="finger_1.stl"/>
+    <mesh name="finger_1-collision" file="finger_1-collision.stl"/>
+    <mesh name="finger_2" file="finger_2.stl"/>
+    <mesh name="finger_2-collision" file="finger_2-collision.stl"/>
   </asset>
 
   <worldbody>
@@ -116,11 +124,42 @@
                 <geom class="collision" pos="0 0.028 0.12" quat="1 1 0 0" size="0.046 0.043"/>
                 <body name="wrist_3_link" pos="0 0 0.12">
                   <inertial pos="0 0.092 0" quat="0 1 -1 0" mass="0.202"
-                    diaginertia="0.000204525 0.000144346 0.000144346"/>
+                            diaginertia="0.000204525 0.000144346 0.000144346"/>
                   <joint name="wrist_3_joint" class="size2"/>
                   <geom material="linkgray" mesh="wrist3" class="visual"/>
-                  <geom class="eef_collision" pos="0 0.097 0" quat="1 1 0 0" size="0.046 0.02"/>
-                  <site name="attachment_site" pos="0 0.1 0" quat="-1 1 0 0"/>
+
+                  <!-- Attach Robotiq Hand-E -->
+                  <body name="robotiq_hande_mount" pos="0 0.1 0" quat="-1 1 0 0">
+
+                    <!-- Coupler and main body -->
+                    <geom name="hande_coupler" type="mesh" contype="0" conaffinity="0"
+                          rgba="0.1 0.1 0.1 1" mesh="coupler"/>
+                    <geom name="hande_base" type="mesh" contype="0" conaffinity="0"
+                          rgba="0.1 0.1 0.1 1" mesh="hande"/>
+                    <geom name="hande-collision" type="mesh" contype="1" conaffinity="1"
+                          rgba="0.1 0.1 0.1 0.2" mesh="hande-collision"/>
+
+                    <!-- Tool center point (TCP) -->
+                    <site name="tcp" pos="0 0 0.135" rgba="0 0 1 0.2" size="0.003"/>
+
+                    <!-- Left finger -->
+                    <body name="left_finger" pos="0 0 0.099">
+                      <joint name="left_finger_joint" type="slide" axis="1 0 0" range="0 0.025"/>
+                      <geom name="finger_2_visual" type="mesh" contype="0" conaffinity="0"
+                            rgba="0.4 0.4 0.4 1" mesh="finger_2"/>
+                      <geom name="finger_2-collision" type="mesh" contype="1" conaffinity="1"
+                            rgba="0.4 0.4 0.4 0.2" mesh="finger_2-collision"/>
+                    </body>
+
+                    <!-- Right finger -->
+                    <body name="right_finger" pos="0 0 0.099">
+                      <joint name="right_finger_joint" type="slide" axis="-1 0 0" range="0 0.025"/>
+                      <geom name="finger_1_visual" type="mesh" contype="0" conaffinity="0"
+                            rgba="0.4 0.4 0.4 1" mesh="finger_1"/>
+                      <geom name="finger_1-collision" type="mesh" contype="1" conaffinity="1"
+                            rgba="0.4 0.4 0.4 0.2" mesh="finger_1-collision"/>
+                    </body>
+                  </body>
                 </body>
               </body>
             </body>
@@ -130,6 +169,11 @@
     </body>
   </worldbody>
 
+  <!-- Keep fingers symmetric -->
+  <equality>
+    <joint joint1="left_finger_joint" joint2="right_finger_joint" polycoef="0 1 0 0 0"/>
+  </equality>
+
   <actuator>
     <general class="size4" name="shoulder_pan" joint="shoulder_pan_joint"/>
     <general class="size4" name="shoulder_lift" joint="shoulder_lift_joint"/>
@@ -137,6 +181,16 @@
     <general class="size2" name="wrist_1" joint="wrist_1_joint"/>
     <general class="size2" name="wrist_2" joint="wrist_2_joint"/>
     <general class="size2" name="wrist_3" joint="wrist_3_joint"/>
+
+    <!-- Gripper actuator (opens/closes fingers symmetrically) -->
+    <general name="hande_finger_actuator"
+            joint="left_finger_joint"
+            ctrlrange="0 0.025"
+            forcerange="-200 200"
+            gaintype="affine"
+            biastype="affine"
+            gainprm="1000"
+            biasprm="0 -100 -10"/>
   </actuator>
 
   <keyframe>

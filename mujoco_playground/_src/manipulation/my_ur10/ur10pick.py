@@ -265,8 +265,10 @@ class UR10PickCube(ur10_base.UR10Base):
                 data.xpos[self._obj_body] - data.site_xpos[self._gripper_site],
                 info["target_pos"] - data.xpos[self._obj_body],
                 target_mat.ravel()[:6] - data.xmat[self._obj_body].ravel()[:6],
-                # data.ctrl - data.qpos[self._robot_qposadr[:-1]], # From Panda Action Space
-                data.ctrl - data.qpos[self._robot_qposadr],
+                data.ctrl
+                - data.qpos[
+                    self._robot_qposadr[:-1]
+                ],  # the is one freejoint for the box to move that has no actuator
             ]
         )
 

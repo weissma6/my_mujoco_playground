@@ -1,0 +1,23 @@
+<!-- robotiq_hande/hande.xml -->
+<body name="robotiq_hande">
+  <!-- Base geometry -->
+  <geom name="hande_coupler" type="mesh" contype="0" conaffinity="0"
+        rgba="0.1 0.1 0.1 1" mesh="coupler"/>
+  <geom name="hande_base" type="mesh" contype="0" conaffinity="0"
+        rgba="0.1 0.1 0.1 1" mesh="hande"/>
+
+  <!-- Tool Center Point (TCP) -->
+  <site name="tcp" pos="0 0 0.135" rgba="0 0 0 0.1" size="0.001"/>
+
+  <!-- Left finger -->
+  <body name="left_finger" pos="0 0 0.099">
+    <joint name="left_finger_joint" type="slide" axis="1 0 0" range="0 0.025"/>
+    <geom type="mesh" contype="0" conaffinity="0" rgba="0.4 0.4 0.4 1" mesh="finger_2"/>
+  </body>
+
+  <!-- Right finger -->
+  <body name="right_finger" pos="0 0 0.099">
+    <joint name="right_finger_joint" type="slide" axis="-1 0 0" range="0 0.025"/>
+    <geom type="mesh" contype="0" conaffinity="0" rgba="0.4 0.4 0.4 1" mesh="finger_1"/>
+  </body>
+</body>
