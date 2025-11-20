@@ -1,18 +1,20 @@
 <mujoco model="ur10e">
   <compiler angle="radian" meshdir="../universal_robots_ur10e/assets" autolimits="true"/>
+  <option integrator="implicitfast"/> 
 
-  <option integrator="implicitfast"/>
-
+  <!-- Default settings -->
   <default>
     <default class="ur10e">
       <material specular="0.5" shininess="0.25"/>
       <joint axis="0 1 0" range="-6.28319 6.28319" armature="0.1"/>
       <position ctrlrange="-6.2831 6.2831"/>
       <general biastype="affine" ctrlrange="-6.2831 6.2831" gainprm="5000" biasprm="0 -5000 -500"/>
+      
       <default class="size4">
         <joint damping="10"/>
         <general forcerange="-330 330"/>
       </default>
+      
       <default class="size3">
         <joint damping="5"/>
         <general forcerange="-150 150"/>
@@ -21,13 +23,16 @@
           <general ctrlrange="-3.1415 3.1415"/>
         </default>
       </default>
+      
       <default class="size2">
         <joint damping="2"/>
         <general forcerange="-56 56"/>
       </default>
+      
       <default class="visual">
         <geom type="mesh" contype="0" conaffinity="0" group="2"/>
       </default>
+      
       <default class="collision">
         <geom type="capsule" group="3"/>
         <default class="eef_collision">
@@ -44,6 +49,7 @@
     <material class="ur10e" name="linkgray" rgba="0.82 0.82 0.82 1"/>
     <material class="ur10e" name="urblue" rgba="0.49 0.678 0.8 1"/>
 
+    <!-- UR10 meshes -->
     <mesh file="base_0.obj"/>
     <mesh file="base_1.obj"/>
     <mesh file="shoulder_0.obj"/>
@@ -64,22 +70,23 @@
     <mesh file="wrist2_1.obj"/>
     <mesh file="wrist2_2.obj"/>
     <mesh file="wrist3.obj"/>
+
     <!-- Robotiq Hand-E meshes -->
     <mesh name="hande" file="hande.stl"/>
-    <mesh name="hande-collision" file="hande-collision.stl"/>
     <mesh name="coupler" file="coupler.stl"/>
-    <mesh name="finger_1" file="finger_1.stl"/>
-    <mesh name="finger_1-collision" file="finger_1-collision.stl"/>
-    <mesh name="finger_2" file="finger_2.stl"/>
-    <mesh name="finger_2-collision" file="finger_2-collision.stl"/>
+    <mesh name="left_finger" file="finger_2.stl"/>
+    <mesh name="right_finger" file="finger_1.stl"/>
   </asset>
 
+<!-- ================= UR10 Kinematic Chain ================= -->
   <worldbody>
     <light name="spotlight" mode="targetbodycom" target="wrist_2_link" pos="0 -1 2"/>
+
     <body name="base" quat="0 0 0 -1" childclass="ur10e">
       <inertial mass="4.0" pos="0 0 0" diaginertia="0.0061063308908 0.0061063308908 0.01125"/>
       <geom mesh="base_0" material="black" class="visual"/>
       <geom mesh="base_1" material="jointgray" class="visual"/>
+
       <body name="shoulder_link" pos="0 0 0.181">
         <inertial pos="0 0 0" mass="7.778" diaginertia="0.0314743 0.0314743 0.0218756"/>
         <joint name="shoulder_pan_joint" class="size4" axis="0 0 1"/>
@@ -87,6 +94,7 @@
         <geom mesh="shoulder_1" material="black" class="visual"/>
         <geom mesh="shoulder_2" material="jointgray" class="visual"/>
         <geom class="collision" size="0.078 0.08" pos="0 0 -0.05"/>
+
         <body name="upper_arm_link" pos="0 0.176 0" quat="1 0 1 0">
           <inertial pos="0 0 0.3065" mass="12.93" diaginertia="0.423074 0.423074 0.0363656"/>
           <joint name="shoulder_lift_joint" class="size4"/>
@@ -96,6 +104,7 @@
           <geom mesh="upperarm_3" material="linkgray" class="visual"/>
           <geom class="collision" pos="0 -0.05 0" quat="1 1 0 0" size="0.078 0.08"/>
           <geom class="collision" size="0.06 0.3" pos="0 0 0.3"/>
+
           <body name="forearm_link" pos="0 -0.137 0.613">
             <inertial pos="0 0 0.2855" mass="3.87" diaginertia="0.11059 0.11059 0.0108844"/>
             <joint name="elbow_joint" class="size3_limited"/>
@@ -105,6 +114,7 @@
             <geom mesh="forearm_3" material="linkgray" class="visual"/>
             <geom class="collision" pos="0 0.08 0" quat="1 1 0 0" size="0.058 0.065"/>
             <geom class="collision" size="0.043 0.28" pos="0 0 0.29"/>
+
             <body name="wrist_1_link" pos="0 0 0.571" quat="1 0 1 0">
               <inertial pos="0 0.135 0" quat="0.5 0.5 -0.5 0.5" mass="1.96"
                 diaginertia="0.0055125 0.00510825 0.00510825"/>
@@ -113,6 +123,7 @@
               <geom mesh="wrist1_1" material="urblue" class="visual"/>
               <geom mesh="wrist1_2" material="jointgray" class="visual"/>
               <geom class="collision" pos="0 0.06 0" quat="1 1 0 0" size="0.05 0.07"/>
+
               <body name="wrist_2_link" pos="0 0.135 0">
                 <inertial pos="0 0 0.12" quat="0.5 0.5 -0.5 0.5" mass="1.96"
                   diaginertia="0.0055125 0.00510825 0.00510825"/>
@@ -122,42 +133,41 @@
                 <geom mesh="wrist2_2" material="jointgray" class="visual"/>
                 <geom class="collision" size="0.046 0.065" pos="0 0 0.05"/>
                 <geom class="collision" pos="0 0.028 0.12" quat="1 1 0 0" size="0.046 0.043"/>
+
                 <body name="wrist_3_link" pos="0 0 0.12">
                   <inertial pos="0 0.092 0" quat="0 1 -1 0" mass="0.202"
-                            diaginertia="0.000204525 0.000144346 0.000144346"/>
+                    diaginertia="0.000204525 0.000144346 0.000144346"/>
                   <joint name="wrist_3_joint" class="size2"/>
                   <geom material="linkgray" mesh="wrist3" class="visual"/>
+                  <geom class="eef_collision" pos="0 0.097 0" quat="1 1 0 0" size="0.046 0.02"/>
+                  <site name="attachment_site" pos="0 0.1 0" quat="-1 1 0 0"/>
 
-                  <!-- Attach Robotiq Hand-E -->
+                  <!-- ================= Hand-E Integration ================= -->
                   <body name="robotiq_hande_mount" pos="0 0.1 0" quat="-1 1 0 0">
 
-                    <!-- Coupler and main body -->
-                    <geom name="hande_coupler" type="mesh" contype="0" conaffinity="0"
-                          rgba="0.1 0.1 0.1 1" mesh="coupler"/>
-                    <geom name="hande_base" type="mesh" contype="0" conaffinity="0"
-                          rgba="0.1 0.1 0.1 1" mesh="hande"/>
-                    <geom name="hande-collision" type="mesh" contype="1" conaffinity="1"
-                          rgba="0.1 0.1 0.1 0.2" mesh="hande-collision"/>
-
-                    <!-- Tool center point (TCP) -->
-                    <site name="tcp" pos="0 0 0.135" rgba="0 0 1 0.2" size="0.003"/>
+                    <!-- Main hand body -->
+                    <geom name="hande_coupler" type="mesh" mesh="coupler" rgba="0.1 0.1 0.1 1"/>
+                    <geom name="hande_base" type="mesh" mesh="hande" rgba="0.1 0.1 0.1 1"/>
+                    <site name="tcp" pos="0 0 0.135" rgba="0 0 0 0.1" size="0.001"/>
 
                     <!-- Left finger -->
-                    <body name="left_finger" pos="0 0 0.099">
-                      <joint name="left_finger_joint" type="slide" axis="1 0 0" range="0 0.025"/>
-                      <geom name="finger_2_visual" type="mesh" contype="0" conaffinity="0"
-                            rgba="0.4 0.4 0.4 1" mesh="finger_2"/>
-                      <geom name="finger_2-collision" type="mesh" contype="1" conaffinity="1"
-                            rgba="0.4 0.4 0.4 0.2" mesh="finger_2-collision"/>
+                    <body name="hande_left_finger" pos="0 0 0.099">
+                      <inertial pos="0.02262 -0.00759 0.00738"
+                                quat="0.871952 0.0369732 -0.211073 0.440205"
+                                mass="0.03804"
+                                diaginertia="1.22763e-05 1.22763e-05 1.22763e-05"/>
+                      <joint name="hande_left_finger_joint" type="slide" axis="1 0 0" range="0 0.025"/>
+                      <geom type="mesh" mesh="left_finger" rgba="0.4 0.4 0.4 1"/>
                     </body>
 
                     <!-- Right finger -->
-                    <body name="right_finger" pos="0 0 0.099">
-                      <joint name="right_finger_joint" type="slide" axis="-1 0 0" range="0 0.025"/>
-                      <geom name="finger_1_visual" type="mesh" contype="0" conaffinity="0"
-                            rgba="0.4 0.4 0.4 1" mesh="finger_1"/>
-                      <geom name="finger_1-collision" type="mesh" contype="1" conaffinity="1"
-                            rgba="0.4 0.4 0.4 0.2" mesh="finger_1-collision"/>
+                    <body name="hande_right_finger" pos="0 0 0.099">
+                      <inertial pos="-0.02262 0.00759 0.00738"
+                                quat="0.871952 -0.0369732 0.211073 0.440205"
+                                mass="0.03804"
+                                diaginertia="1.22763e-05 1.22763e-05 1.22763e-05"/>
+                      <joint name="hande_right_finger_joint" type="slide" axis="-1 0 0" range="0 0.025"/>
+                      <geom type="mesh" mesh="right_finger" rgba="0.4 0.4 0.4 1"/>
                     </body>
                   </body>
                 </body>
@@ -169,12 +179,26 @@
     </body>
   </worldbody>
 
-  <!-- Keep fingers symmetric -->
+  <!-- ================= Hand-E Mechanics ================= -->
+  <contact>
+    <exclude body1="robotiq_hande_mount" body2="hande_left_finger"/>
+    <exclude body1="robotiq_hande_mount" body2="hande_right_finger"/>
+  </contact>
+
   <equality>
-    <joint joint1="left_finger_joint" joint2="right_finger_joint" polycoef="0 1 0 0 0"/>
+    <joint joint1="hande_left_finger_joint" joint2="hande_right_finger_joint" polycoef="0 1 0 0 0"/>
+
   </equality>
 
+  <tendon>
+    <fixed name="split">
+      <joint joint="hande_left_finger_joint" coef="0.5"/>
+      <joint joint="hande_right_finger_joint" coef="0.5"/>
+    </fixed>
+  </tendon>
+
   <actuator>
+    <!-- Arm actuators -->
     <general class="size4" name="shoulder_pan" joint="shoulder_pan_joint"/>
     <general class="size4" name="shoulder_lift" joint="shoulder_lift_joint"/>
     <general class="size3_limited" name="elbow" joint="elbow_joint"/>
@@ -182,18 +206,14 @@
     <general class="size2" name="wrist_2" joint="wrist_2_joint"/>
     <general class="size2" name="wrist_3" joint="wrist_3_joint"/>
 
-    <!-- Gripper actuator (opens/closes fingers symmetrically) -->
-    <general name="hande_finger_actuator"
-            joint="left_finger_joint"
-            ctrlrange="0 0.025"
-            forcerange="-200 200"
-            gaintype="affine"
-            biastype="affine"
-            gainprm="1000"
-            biasprm="0 -100 -10"/>
+    <!-- Hand-E tendon actuator (as original) -->
+    <general name="hande_fingers_actuator" tendon="split" ctrlrange="0 255"
+             forcerange="-200 200" gaintype="affine" biastype="affine"
+             gainprm="0.00980392" biasprm="0 -100 -10"/>
   </actuator>
 
+
   <keyframe>
-    <key name="home" qpos="-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0" ctrl="-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0"/>
+    <key name="home" qpos="-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0 0 0" />
   </keyframe>
 </mujoco>

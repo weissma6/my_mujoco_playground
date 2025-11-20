@@ -66,13 +66,7 @@ class UR10PickCube(ur10_base.UR10Base):
     ):
 
         # ------------------------------------------------------------------------------------
-        # xml_path = (
-        #     mjx_env.ROOT_PATH
-        #     / "manipulation"
-        #     / "my_ur10"
-        #     / "xmls"
-        #     / "mjx_single_cube.xml"
-        # )
+
         xml_path = (
             mjx_env.ROOT_PATH
             / "manipulation"
@@ -88,7 +82,7 @@ class UR10PickCube(ur10_base.UR10Base):
             config,
             config_overrides,
         )
-        self._post_init(obj_name="box", keyframe="task_home")
+        self._post_init(obj_name="box", keyframe="home")
         self._sample_orientation = sample_orientation
 
         # --- No finger sensors on UR10 ---
@@ -141,6 +135,10 @@ class UR10PickCube(ur10_base.UR10Base):
             .at[self._obj_qposadr : self._obj_qposadr + 3]
             .set(box_pos)
         )
+
+        # Use home pose for all arm joints at reset
+        init_q = init_q.at[self._robot_qposadr].set(self._init_q[self._robot_qposadr])
+
         data = mjx_env.make_data(
             self._mj_model,
             qpos=init_q,

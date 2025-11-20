@@ -45,8 +45,8 @@ _ARM_JOINTS = [
 ]
 # _FINGER_JOINTS = ["finger_joint1", "finger_joint2"]
 _FINGER_JOINTS = [
-    "left_finger_joint",
-    "right_finger_joint",
+    "hande_left_finger_joint",
+    "hande_right_finger_joint",
 ]
 _MENAGERIE_UR10_DIR = "universal_robots_ur10e"
 
