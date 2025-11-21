@@ -199,18 +199,16 @@
   </tendon>
 
   <actuator>
-    <!-- Arm actuators -->
-    <general class="size4" name="shoulder_pan" joint="shoulder_pan_joint"/>
-    <general class="size4" name="shoulder_lift" joint="shoulder_lift_joint"/>
-    <general class="size3_limited" name="elbow" joint="elbow_joint"/>
-    <general class="size2" name="wrist_1" joint="wrist_1_joint"/>
-    <general class="size2" name="wrist_2" joint="wrist_2_joint"/>
-    <general class="size2" name="wrist_3" joint="wrist_3_joint"/>
+    <!-- Arm actuators with torque -->
+    <motor name="shoulder_pan" joint="shoulder_pan_joint" gear="1"/>
+    <motor name="shoulder_lift" joint="shoulder_lift_joint" gear="1"/>
+    <motor name="elbow" joint="elbow_joint" gear="1"/>
+    <motor name="wrist_1" joint="wrist_1_joint" gear="1"/>
+    <motor name="wrist_2" joint="wrist_2_joint" gear="1"/>
+    <motor name="wrist_3" joint="wrist_3_joint" gear="1"/>
 
     <!-- Hand-E tendon actuator (as original) -->
-    <general name="hande_fingers_actuator" tendon="split" ctrlrange="0 255"
-             forcerange="-200 200" gaintype="affine" biastype="affine"
-             gainprm="0.00980392" biasprm="0 -100 -10"/>
+    <motor name="gripper" tendon="split" gear="1"/>
              
   </actuator>
   

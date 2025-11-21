@@ -1,0 +1,11 @@
+<mujoco>
+  <option gravity="0 0 -9.81"/>
+  
+  <worldbody>
+    <geom name="floor" type="plane" size="10 10 0.1" pos="0 0 0"/>
+    <body name="ball" pos="0 0 2">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>

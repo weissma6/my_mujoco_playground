@@ -103,7 +103,7 @@ class UR10Base(mjx_env.MjxEnv):
         self._action_scale = config.action_scale
 
     # Post-init setup (keyframes, IDs, and body references)
-    def _post_init(self, obj_name: str, keyframe: str):
+    def _post_init(self, obj_name: str, keyframe: str = "home"):
         # ------------------------------------------------------------------------------------
         all_joints = _ARM_JOINTS + _FINGER_JOINTS
         # ------------------------------------------------------------------------------------
@@ -116,16 +116,6 @@ class UR10Base(mjx_env.MjxEnv):
         self._robot_qposadr = np.array(
             [self._mj_model.jnt_qposadr[self._mj_model.joint(j).id] for j in all_joints]
         )
-
-        # # Panda-specific site/geom names
-        # self._gripper_site = self._mj_model.site("gripper").id
-        # self._left_finger_geom = self._mj_model.geom("left_finger_pad").id
-        # self._right_finger_geom = self._mj_model.geom("right_finger_pad").id
-        # self._hand_geom = self._mj_model.geom("hand_capsule").id
-        # self._obj_body = self._mj_model.body(obj_name).id
-        # self._obj_qposadr = self._mj_model.jnt_qposadr[
-        #     self._mj_model.body(obj_name).jntadr[0]
-        # ]
         # ------------------------------------------------------------------------------------
         # The end-effector site (TCP)
         geom_names = [self._mj_model.geom(i).name for i in range(self._mj_model.ngeom)]
@@ -155,13 +145,26 @@ class UR10Base(mjx_env.MjxEnv):
         self._mocap_target = self._mj_model.body("mocap_target").mocapid
         self._floor_geom = self._mj_model.geom("floor").id
 
-        # Keyframes (initial positions)
-        self._init_q = self._mj_model.keyframe(keyframe).qpos
+        # Keyframes (initial positions) - with error handling
+        try:
+            keyframe_id = self._mj_model.key(keyframe).id
+            self._init_q = self._mj_model.keyframe(keyframe).qpos
+            self._init_ctrl = self._mj_model.keyframe(keyframe).ctrl
+            print(f"✓ Using keyframe: '{keyframe}'")
+            print(f"  Initial qpos size: {len(self._init_q)}")
+            print(f"  Robot joints: {self._init_q[self._robot_qposadr]}")
+        except:
+            print(f"✗ Keyframe '{keyframe}' not found!")
+            print(f"Available keyframes:")
+            for i in range(self._mj_model.nkey):
+                print(f"  - {self._mj_model.key(i).name}")
+            raise ValueError(f"Keyframe '{keyframe}' does not exist in the model")
+
+        # Extract initial object position
         self._init_obj_pos = jp.array(
             self._init_q[self._obj_qposadr : self._obj_qposadr + 3],
             dtype=jp.float32,
         )
-        self._init_ctrl = self._mj_model.keyframe(keyframe).ctrl
 
         # Control limits
         self._lowers, self._uppers = self._mj_model.actuator_ctrlrange.T

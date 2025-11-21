@@ -82,7 +82,7 @@ class UR10PickCube(ur10_base.UR10Base):
             config,
             config_overrides,
         )
-        self._post_init(obj_name="box", keyframe="home")
+        self._post_init(obj_name="box", keyframe="task_home")
         self._sample_orientation = sample_orientation
 
         # --- No finger sensors on UR10 ---
