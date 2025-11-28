@@ -19,26 +19,6 @@
     
     <!-- Track cube position -->
     <framepos name="box_position" objtype="body" objname="box"/>
-    
-    <!-- ========== Orientation Sensors ========== -->
-    <!-- Track end-effector orientation -->
-    <framequat name="tcp_orientation" objtype="site" objname="tcp"/>
-    
-    <!-- ========== Velocity Sensors ========== -->
-    <!-- Track gripper velocity -->
-    <framelinvel name="tcp_velocity" objtype="site" objname="tcp"/>
-    
-    <!-- ========== Joint Sensors ========== -->
-    <!-- Monitor joint positions -->
-    <jointpos name="shoulder_pan_pos" joint="shoulder_pan_joint"/>
-    <jointpos name="shoulder_lift_pos" joint="shoulder_lift_joint"/>
-    <jointpos name="elbow_pos" joint="elbow_joint"/>
-    <jointpos name="wrist_1_pos" joint="wrist_1_joint"/>
-    <jointpos name="wrist_2_pos" joint="wrist_2_joint"/>
-    <jointpos name="wrist_3_pos" joint="wrist_3_joint"/>
-    
-    <!-- Monitor gripper joints -->
-    <jointpos name="left_finger_pos" joint="hande_left_finger_joint"/>
-    <jointpos name="right_finger_pos" joint="hande_right_finger_joint"/>
+
   </sensor>
 </mujoco>
