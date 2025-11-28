@@ -159,7 +159,7 @@
                                 diaginertia="1.22763e-05 1.22763e-05 1.22763e-05"/>
                       <joint name="hande_left_finger_joint" type="slide" axis="1 0 0" range="0 0.025"/>
                       <geom type="mesh" mesh="left_finger" rgba="0.4 0.4 0.4 1"/>
-                      <site name="left_finger_touch_site" pos="0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
+                      <site name="left_finger_touch_site" pos="-0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
 
                     <!-- Right finger -->

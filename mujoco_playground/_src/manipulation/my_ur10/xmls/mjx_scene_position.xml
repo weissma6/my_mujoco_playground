@@ -1,5 +1,5 @@
 <mujoco model="ur10e scene">
-<include file="../universal_robots_ur10e/ur10e.xml"/>
+<include file="../universal_robots_ur10e/ur10e_position.xml"/>
   
   <worldbody>
   <!-- World coordinate frame visualization -->

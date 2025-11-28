@@ -1,7 +1,7 @@
 <mujoco model="ur10e single cube">
 
   <!-- Include the scene setup - Robot file is in Scene -->
-  <include file="mjx_scene.xml"/>
+  <include file="mjx_scene_position.xml"/>
 
   <worldbody>
     <!-- Box to pick -->
