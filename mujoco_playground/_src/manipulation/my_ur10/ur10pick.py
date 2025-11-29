@@ -72,7 +72,7 @@ class UR10PickCube(ur10_base.UR10Base):
             / "manipulation"
             / "my_ur10"
             / "xmls"
-            / "mjx_single_cube_torque.xml"
+            / "mjx_single_cube_position.xml"
         )
 
         # ------------------------------------------------------------------------------------

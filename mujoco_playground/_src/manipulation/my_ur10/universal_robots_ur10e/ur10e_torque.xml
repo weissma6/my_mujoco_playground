@@ -73,9 +73,12 @@
 
     <!-- Robotiq Hand-E meshes -->
     <mesh name="hande" file="hande.stl"/>
+    <mesh name="hande-collision"    file="hande-collision.stl"/>
     <mesh name="coupler" file="coupler.stl"/>
     <mesh name="left_finger" file="finger_2.stl"/>
+    <mesh name="left_finger-collision" file="finger_2-collision.stl"/>
     <mesh name="right_finger" file="finger_1.stl"/>
+    <mesh name="right_finger-collision" file="finger_1-collision.stl"/>
   </asset>
 
 <!-- ================= UR10 Kinematic Chain ================= -->
@@ -149,7 +152,9 @@
                     <!-- Main hand body -->
                     <geom name="hande_coupler" type="mesh" mesh="coupler" rgba="0.1 0.1 0.1 1"/>
                     <geom name="hande_base" type="mesh" mesh="hande" rgba="0.1 0.1 0.1 1"/>
-                    <site name="tcp" pos="0 0 0.135" rgba="0 0 0 0.1" size="0.001"/>
+                    <geom name="hande-collision" type="mesh" mesh="hande-collision"    contype="1" conaffinity="1" rgba="0.1 0.1 0.1 0.15"/>   
+                    <site name="tcp" pos="0 0 0.135" rgba="0 0 0 0.1" size="0.002"/>
+                    
 
                     <!-- Left finger -->
                     <body name="hande_left_finger" pos="0 0 0.099">
@@ -158,7 +163,8 @@
                                 mass="0.03804"
                                 diaginertia="1.22763e-05 1.22763e-05 1.22763e-05"/>
                       <joint name="hande_left_finger_joint" type="slide" axis="1 0 0" range="0 0.025"/>
-                      <geom type="mesh" mesh="left_finger" rgba="0.4 0.4 0.4 1"/>
+                      <geom name="left_finger"    type="mesh" mesh="left_finger"            contype="0" conaffinity="0" rgba="0.4 0.4 0.4 1"/>
+                      <geom name="left_finger-collision" type="mesh" mesh="left_finger-collision"  contype="1" conaffinity="1" rgba="0.4 0.4 0.4 0.15"/>      
                       <site name="left_finger_touch_site" pos="-0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
 
@@ -169,7 +175,8 @@
                                 mass="0.03804"
                                 diaginertia="1.22763e-05 1.22763e-05 1.22763e-05"/>
                       <joint name="hande_right_finger_joint" type="slide" axis="-1 0 0" range="0 0.025"/>
-                      <geom type="mesh" mesh="right_finger" rgba="0.4 0.4 0.4 1"/>
+                      <geom name="right_finger"    type="mesh" mesh="right_finger"            contype="0" conaffinity="0" rgba="0.4 0.4 0.4 1"/>
+                      <geom name="right_finger-collision" type="mesh" mesh="right_finger-collision"  contype="1" conaffinity="1" rgba="0.4 0.4 0.4 0.15"/>
                       <site name="right_finger_touch_site" pos="0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
                   </body>

@@ -2,8 +2,8 @@
 <!-- Called on in mjx_single_cube.xml, before </mujoco> -->
   <sensor>
     <!-- ========== Touch/Contact Sensors ========== -->
-    <!-- Detect contact between gripper fingers and objects -->
-    <touch name="left_finger_touch" site="left_finger_touch_site"/>
+    <!-- Use your collision geoms; rename if yours differ -->
+    <touch name="left_finger_touch"  site="left_finger_touch_site"/>
     <touch name="right_finger_touch" site="right_finger_touch_site"/>
     
     <!-- Detect gripper-floor collision -->
@@ -16,8 +16,6 @@
     <!-- ========== Position Sensors ========== -->
     <!-- Track end-effector position -->
     <framepos name="tcp_position" objtype="site" objname="tcp"/>
-    
-    <!-- Track cube position -->
     <framepos name="box_position" objtype="body" objname="box"/>
 
   </sensor>
