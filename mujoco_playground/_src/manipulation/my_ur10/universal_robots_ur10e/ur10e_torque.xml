@@ -190,11 +190,11 @@
 
   <equality>
     <joint joint1="hande_left_finger_joint" joint2="hande_right_finger_joint" polycoef="0 1 0 0 0"/>
-
   </equality>
 
   <tendon>
     <fixed name="split">
+      <!-- 0.5 + 0.5 means the tendon length = 0.5*q_left + 0.5*q_right -->
       <joint joint="hande_left_finger_joint" coef="0.5"/>
       <joint joint="hande_right_finger_joint" coef="0.5"/>
     </fixed>
@@ -209,9 +209,17 @@
     <motor name="wrist_2" joint="wrist_2_joint" gear="1"/>
     <motor name="wrist_3" joint="wrist_3_joint" gear="1"/>
 
-    <!-- Hand-E tendon actuator (as original) -->
-    <motor name="gripper" tendon="split" gear="1"/>
-             
+    <!-- Hand-E tgripper with torque-->
+    <!--https://mujoco.readthedocs.io/en/stable/XMLreference.html#actuator-position-->
+    <!-- ctrlrange="-200 200": your control command is force [N], clipped -->
+    <!-- forcerange="-200 200": hard limit the actuator output force [N] -->
+    <!-- gear=1 = 1:1 scale from ctrl to force -->
+    <motor name="hande_fingers_actuator"
+      tendon="split"           
+      ctrlrange="-200 200"     
+      gear="1"                 
+      />
+
   </actuator>
   
 <keyframe>
