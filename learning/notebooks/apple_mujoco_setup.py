@@ -14,7 +14,6 @@ from typing import Callable, List, NamedTuple, Optional, Union
 import numpy as np
 from datetime import datetime
 import functools
-import os
 from typing import Any, Dict, Sequence, Tuple, Union
 from brax import base
 from brax import envs
@@ -42,11 +41,7 @@ import mujoco.viewer
 from mujoco import mjx
 import numpy as np
 from orbax import checkpoint as ocp
-import os
 import pickle
-import numpy as np
-import jax
-import os
 from mujoco_playground import wrapper
 from mujoco_playground import registry
 import mediapy as media
@@ -115,11 +110,6 @@ print("JAX:", jax.__version__)
 print("MuJoCo:", mujoco.__version__)
 print("Brax:", brax.__version__)
 print("Flax:", flax.__version__)
-
-
-# @title Import packages for plotting and creating graphics
-# Graphics and plotting.
-print("Installing mediapy & ffmpeg if needed...")
 
 # ==============================================================================
 # Install ffmpeg if not already installed

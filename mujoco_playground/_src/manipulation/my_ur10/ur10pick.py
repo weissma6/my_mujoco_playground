@@ -88,11 +88,15 @@ class UR10PickCube(ur10_base.UR10Base):
         # --- No finger sensors on UR10 ---
         self._floor_hand_found_sensor = []
 
-        # # Contact sensor IDs.
-        # self._floor_hand_found_sensor = [
-        #     self._mj_model.sensor(f"{geom}_floor_found").id
-        #     for geom in ["left_finger_pad", "right_finger_pad", "hand_capsule"]
-        # ]
+        # Contact sensor IDs.
+        self._floor_hand_found_sensor = [
+            self._mj_model.sensor(f"{geom}_floor_found").id
+            for geom in [
+                "left_finger_touch",
+                "right_finger_touch",
+                "gripper_floor_contact",
+            ]
+        ]
 
     def reset(self, rng: jax.Array) -> State:
         rng, rng_box, rng_target = jax.random.split(rng, 3)
@@ -217,16 +221,16 @@ class UR10PickCube(ur10_base.UR10Base):
         # floor_collision = sum(hand_floor_collision) > 0
         # no_floor_collision = (1 - floor_collision).astype(float)
 
-        # Check for collisions with the floor
+        # --- Floor collision via touch sensors ---
         if self._floor_hand_found_sensor:
-            hand_floor_collision = [
-                data.sensordata[self._mj_model.sensor_adr[sensor_id]] > 0
-                for sensor_id in self._floor_hand_found_sensor
-            ]
-            floor_collision = sum(hand_floor_collision) > 0
-            no_floor_collision = (1 - floor_collision).astype(float)
+            vals = []
+            for sid in self._floor_hand_found_sensor:
+                s = self._mj_model.sensor(sid)
+                adr, dim = s.adr, s.dim
+                vals.append(jp.sum(data.sensordata[adr : adr + dim]))
+            floor_collision = jp.any(jp.array(vals) > 1e-9)
+            no_floor_collision = 1.0 - floor_collision.astype(float)
         else:
-            # No sensors -> assume no collision
             no_floor_collision = jp.array(1.0)
         # ------------------------------------------------------------------------------------
 
