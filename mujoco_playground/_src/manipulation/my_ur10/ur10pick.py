@@ -88,10 +88,10 @@ class UR10PickCube(ur10_base.UR10Base):
         # --- No finger sensors on UR10 ---
         self._floor_hand_found_sensor = []
 
-        # Contact sensor IDs.
+        # Contact sensor IDs (UR10 + Hand-E).
         self._floor_hand_found_sensor = [
-            self._mj_model.sensor(f"{geom}_floor_found").id
-            for geom in [
+            self._mj_model.sensor(name).id
+            for name in [
                 "left_finger_touch",
                 "right_finger_touch",
                 "gripper_floor_contact",
@@ -212,31 +212,18 @@ class UR10PickCube(ur10_base.UR10Base):
                 - self._init_q[self._robot_arm_qposadr]
             )
         )
-        # ------------------------------------------------------------------------------------
-        # # Check for collisions with the floor
-        # hand_floor_collision = [
-        #     data.sensordata[self._mj_model.sensor_adr[sensor_id]] > 0
-        #     for sensor_id in self._floor_hand_found_sensor
-        # ]
-        # floor_collision = sum(hand_floor_collision) > 0
-        # no_floor_collision = (1 - floor_collision).astype(float)
 
-        # --- Floor collision via touch sensors ---
-        if self._floor_hand_found_sensor:
-            vals = []
-            for sid in self._floor_hand_found_sensor:
-                s = self._mj_model.sensor(sid)
-                adr, dim = s.adr, s.dim
-                vals.append(jp.sum(data.sensordata[adr : adr + dim]))
-            floor_collision = jp.any(jp.array(vals) > 1e-9)
-            no_floor_collision = 1.0 - floor_collision.astype(float)
-        else:
-            no_floor_collision = jp.array(1.0)
+        # --- Floor collision via touch sensors (Panda-style) ---
+        hand_floor_collision = [
+            data.sensordata[self._mj_model.sensor_adr[sensor_id]] > 0
+            for sensor_id in self._floor_hand_found_sensor
+        ]
+        floor_collision = sum(hand_floor_collision) > 0
+        no_floor_collision = (1 - floor_collision).astype(float)
         # ------------------------------------------------------------------------------------
 
         info["reached_box"] = 1.0 * jp.maximum(
-            info["reached_box"],
-            (jp.linalg.norm(box_pos - gripper_pos) < 0.012),
+            info["reached_box"], (jp.linalg.norm(box_pos - gripper_pos) < 0.012)
         )
 
         rewards = {

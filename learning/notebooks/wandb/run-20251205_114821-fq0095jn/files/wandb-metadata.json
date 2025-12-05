@@ -1,0 +1,37 @@
+{
+  "os": "macOS-15.6.1-arm64-arm-64bit",
+  "python": "CPython 3.10.19",
+  "startedAt": "2025-12-05T10:48:21.279393Z",
+  "program": "/Users/matthiasweiss/Desktop/ZHAW/MSE/3_VT1_Model Based RL/My_Mujoco/my_mujoco_playground/learning/notebooks/UR10_training_diagnostic.ipynb",
+  "codePath": "/Users/matthiasweiss/Desktop/ZHAW/MSE/3_VT1_Model Based RL/My_Mujoco/my_mujoco_playground/learning/notebooks/UR10_training_diagnostic.ipynb",
+  "codePathLocal": "UR10_training_diagnostic.ipynb",
+  "git": {
+    "remote": "https://github.com/weissma6/my_mujoco_playground.git",
+    "commit": "0fd8c0e44c30a322649f03667ba4ebe05d76f367"
+  },
+  "email": "weissma6@students.zhaw.ch",
+  "root": "/Users/matthiasweiss/Desktop/ZHAW/MSE/3_VT1_Model Based RL/My_Mujoco/my_mujoco_playground/learning/notebooks",
+  "host": "MBPvonMatthias.galaxus.box",
+  "executable": "/Users/matthiasweiss/miniconda3/envs/mujoco/bin/python",
+  "cpu_count": 14,
+  "cpu_count_logical": 14,
+  "disk": {
+    "/": {
+      "total": "494384795648",
+      "used": "459308519424"
+    }
+  },
+  "memory": {
+    "total": "25769803776"
+  },
+  "apple": {
+    "name": "Apple M4 Pro",
+    "ecpuCores": 4,
+    "pcpuCores": 10,
+    "gpuCores": 20,
+    "memoryGb": 24,
+    "swapTotalBytes": "8589934592",
+    "ramTotalBytes": "25769803776"
+  },
+  "writerId": "khkcaut64h35b7hxdp5stc8w0ddqu7vg"
+}

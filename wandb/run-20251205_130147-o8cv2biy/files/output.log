@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/Users/matthiasweiss/Desktop/ZHAW/MSE/3_VT1_Model Based RL/My_Mujoco/my_mujoco_playground/learning/notebooks/train_panda_ppo.py", line 296, in <module>
+    ppo_networks.make_ppo_networks, **ppo_params.network_factory
+AttributeError: 'dict' object has no attribute 'network_factory'
+Traceback (most recent call last):
+  File "/Users/matthiasweiss/Desktop/ZHAW/MSE/3_VT1_Model Based RL/My_Mujoco/my_mujoco_playground/learning/notebooks/train_panda_ppo.py", line 296, in <module>
+    ppo_networks.make_ppo_networks, **ppo_params.network_factory
+AttributeError: 'dict' object has no attribute 'network_factory'

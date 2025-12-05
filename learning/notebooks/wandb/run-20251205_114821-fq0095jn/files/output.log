@@ -1,0 +1,2 @@
+/Users/matthiasweiss/miniconda3/envs/mujoco/lib/python3.10/site-packages/jax/_src/interpreters/xla.py:119: RuntimeWarning: overflow encountered in cast
+  return np.asarray(x, dtypes.canonicalize_dtype(x.dtype))
