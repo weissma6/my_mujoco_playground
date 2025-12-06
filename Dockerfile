@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM docker.io/nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
 # GPU-capable base image (cluster will have NVIDIA + CUDA)
 
