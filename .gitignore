@@ -7,3 +7,5 @@ mujoco_menagerie
 checkpoints/
 logs
 zhaw-panda-ppo.tar
+panda-test.tar
+mujoco_env.tar

@@ -2,7 +2,6 @@
 This file loads all the mujoco and checks for cuda of appe
 """
 
-# @title Install pre-requisites (CPU-only for Apple Silicon)
 import os
 import platform
 import subprocess
@@ -16,114 +15,61 @@ from datetime import datetime
 import functools
 from typing import Any, Dict, Sequence, Tuple, Union
 
+# -----------------------------------------------------------------------------
+# Environment / backend selection
+# -----------------------------------------------------------------------------
+
+
+def is_nvidia_available() -> bool:
+    """Return True if nvidia-smi is available and reports a GPU."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+system = platform.system()
+
+if system == "Linux":
+    # Cluster-first: assume we want GPU if available
+    if is_nvidia_available():
+        # EGL is the usual choice on headless GPU clusters
+        os.environ.setdefault("MUJOCO_GL", "egl")
+        # Let JAX auto-select GPU; do NOT force JAX_PLATFORM_NAME
+        print("[INFO] Detected NVIDIA GPU on Linux – using MUJOCO_GL=egl")
+    else:
+        # CPU fallback on Linux
+        os.environ.setdefault("MUJOCO_GL", "osmesa")
+        os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+        print("[INFO] No NVIDIA GPU detected – falling back to CPU (osmesa)")
+
+elif system == "Darwin":
+    # macOS (your Mac)
+    os.environ.setdefault("MUJOCO_GL", "glfw")
+    os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+    print("[INFO] Running on macOS – forcing CPU backend (glfw)")
+
+else:
+    # Very conservative default for any other OS
+    os.environ.setdefault("MUJOCO_GL", "osmesa")
+    os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+    print(f"[INFO] Unknown system '{system}' – using CPU fallback")
+
+# -----------------------------------------------------------------------------
+# (rest of your imports remain as they were)
+# -----------------------------------------------------------------------------
 from brax import base
 from brax import envs
 from brax import math
 from brax.base import Base, Motion, Transform
 from brax.base import State as PipelineState
 from brax.envs.base import Env, PipelineEnv, State
-
-from brax.io import html, mjcf, model
-from brax.mjx.base import State as MjxState
-
-from brax.training.agents.ppo import networks as ppo_networks
-from brax.training.agents.ppo import train as ppo
-from brax.training.agents.sac import networks as sac_networks
-from brax.training.agents.sac import train as sac
-
-from etils import epath
-from flax import struct
-from flax.training import orbax_utils
-from IPython.display import HTML, clear_output
-
-import jax
-from jax import numpy as jp
-
-from matplotlib import pyplot as plt
-
-import mediapy as media
-import mujoco
-import mujoco.viewer
-from mujoco import mjx
-
-from orbax import checkpoint as ocp
-import pickle
-
-from mujoco_playground import wrapper
-from mujoco_playground import registry
-from copy import deepcopy
-from mujoco_playground.config import manipulation_params
-
-import wandb
-import imageio
-
-import jax, mujoco, brax, flax
-
-
-def is_nvidia_available():
-    """Check if nvidia-smi is callable (Linux/Colab with GPU)."""
-    try:
-        result = subprocess.run(
-            ["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        return result.returncode == 0
-    except FileNotFoundError:
-        return False
-
-
-system = platform.system()
-machine = platform.machine()
-
-if system == "Darwin":  # macOS (Apple Silicon / Intel Mac)
-    # Force MuJoCo to use glfw rendering
-    os.environ["MUJOCO_GL"] = "glfw"
-    # Force JAX to CPU (avoid Metal/MPS backend issues)
-    os.environ["JAX_PLATFORM_NAME"] = "cpu"
-
-elif is_nvidia_available():  # Linux + NVIDIA GPU
-    os.environ["MUJOCO_GL"] = "egl"
-
-    # Add missing EGL ICD config if necessary (Colab hack)
-    NVIDIA_ICD_CONFIG_PATH = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
-    if not os.path.exists(NVIDIA_ICD_CONFIG_PATH):
-        with open(NVIDIA_ICD_CONFIG_PATH, "w") as f:
-            f.write(
-                """{
-    "file_format_version" : "1.0.0",
-    "ICD" : {
-        "library_path" : "libEGL_nvidia.so.0"
-    }
-}
-"""
-            )
-else:  # Fallback (no GPU)
-    os.environ["MUJOCO_GL"] = "osmesa"
-    os.environ["JAX_PLATFORM_NAME"] = "cpu"
-
-# ==============================================================================
-# Install ffmpeg if not already installed
-# ==============================================================================
-
-# Check ffmpeg
-try:
-    subprocess.run(
-        ["ffmpeg", "-version"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=5,
-    )
-
-except:
-    print("⚠ ffmpeg not found (optional for video rendering)")
-
-
-# =============================================================================
-# ## Number of CPU Cores used
-# =============================================================================
-# must be done BEFORE "import jax"
-os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
-devices = jax.devices()
-device_count = len(devices)
 
 
 # -----------------------------------------------------------------------------
