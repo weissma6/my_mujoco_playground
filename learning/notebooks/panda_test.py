@@ -14,14 +14,13 @@ import numpy as np
 from datetime import datetime
 import functools
 from typing import Any, Dict, Sequence, Tuple, Union
+from mujoco_playground.config import manipulation_params
+
 
 # -----------------------------------------------------------------------------
 # Environment / backend selection
 # -----------------------------------------------------------------------------
-
-
 def is_nvidia_available() -> bool:
-    """Return True if nvidia-smi is available and reports a GPU."""
     try:
         result = subprocess.run(
             ["nvidia-smi"],
@@ -36,30 +35,23 @@ def is_nvidia_available() -> bool:
 
 system = platform.system()
 
-if system == "Linux":
-    # Cluster-first: assume we want GPU if available
-    if is_nvidia_available():
-        # EGL is the usual choice on headless GPU clusters
-        os.environ.setdefault("MUJOCO_GL", "egl")
-        # Let JAX auto-select GPU; do NOT force JAX_PLATFORM_NAME
-        print("[INFO] Detected NVIDIA GPU on Linux – using MUJOCO_GL=egl")
-    else:
-        # CPU fallback on Linux
-        os.environ.setdefault("MUJOCO_GL", "osmesa")
-        os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
-        print("[INFO] No NVIDIA GPU detected – falling back to CPU (osmesa)")
-
-elif system == "Darwin":
-    # macOS (your Mac)
-    os.environ.setdefault("MUJOCO_GL", "glfw")
-    os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
-    print("[INFO] Running on macOS – forcing CPU backend (glfw)")
-
+if "MUJOCO_GL" in os.environ:
+    # Respect what the user / container set
+    print(
+        f"[INFO] MUJOCO_GL already set to {os.environ['MUJOCO_GL']!r}, not overriding."
+    )
 else:
-    # Very conservative default for any other OS
-    os.environ.setdefault("MUJOCO_GL", "osmesa")
-    os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
-    print(f"[INFO] Unknown system '{system}' – using CPU fallback")
+    if system == "Linux" and is_nvidia_available():
+        os.environ["MUJOCO_GL"] = "egl"
+        print("[INFO] Detected NVIDIA GPU on Linux – using MUJOCO_GL=egl")
+    elif system == "Darwin":
+        os.environ["MUJOCO_GL"] = "glfw"
+        os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+        print("[INFO] Running on macOS – forcing CPU backend (glfw)")
+    else:
+        os.environ["MUJOCO_GL"] = "osmesa"
+        os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+        print(f"[INFO] No GPU / unknown system – using MUJOCO_GL=osmesa")
 
 # -----------------------------------------------------------------------------
 # (rest of your imports remain as they were)
@@ -70,6 +62,32 @@ from brax import math
 from brax.base import Base, Motion, Transform
 from brax.base import State as PipelineState
 from brax.envs.base import Env, PipelineEnv, State
+from brax.io import html, mjcf, model
+from brax.mjx.base import State as MjxState
+from brax.training.agents.ppo import networks as ppo_networks
+from brax.training.agents.ppo import train as ppo
+from brax.training.agents.sac import networks as sac_networks
+from brax.training.agents.sac import train as sac
+from etils import epath
+from flax import struct
+from flax.training import orbax_utils
+from IPython.display import HTML, clear_output
+import jax
+from jax import numpy as jp
+from matplotlib import pyplot as plt
+import mediapy as media
+from ml_collections import config_dict
+import mujoco
+import mujoco.viewer
+from mujoco import mjx
+import numpy as np
+from orbax import checkpoint as ocp
+import pickle
+from mujoco_playground import wrapper
+from mujoco_playground import registry
+from copy import deepcopy
+import wandb
+import imageio
 
 
 # -----------------------------------------------------------------------------
@@ -266,7 +284,7 @@ make_inference_fn, params, final_metrics = train_fn(
 # -----------------------------------------------------------------------------
 import pickle
 
-model_path = os.path.join(wandb.run.dir, "panda_ppo_params_final.pkl")
+model_path = os.path.join(wandb.run.dir, "panda_test_final.pkl")
 to_save = {
     "params": params,
     "seed": seed,
@@ -277,7 +295,7 @@ to_save = {
 with open(model_path, "wb") as f:
     pickle.dump(to_save, f)
 
-artifact = wandb.Artifact("panda_ppo_policy", type="model")
+artifact = wandb.Artifact("panda_test_policy", type="model")
 artifact.add_file(model_path)
 wandb.log_artifact(artifact)
 
