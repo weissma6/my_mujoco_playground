@@ -143,7 +143,7 @@ def progress_wandb(num_steps, metrics):
     Called periodically during PPO training.
     Logs scalar metrics to W&B.
     """
-    print("WANDB CALLBACK:", num_steps, list(metrics.keys()))
+    print("WANDB CALLBACK:", num_steps, metrics["eval/episode_reward"])
     log_dict = {"training/num_steps": int(num_steps)}
     for k, v in metrics.items():
         try:
@@ -236,7 +236,13 @@ def policy_params_wandb(num_steps, make_policy, params):
     wandb.run.summary["latest_num_steps"] = int(num_steps)
     wandb.run.summary["latest_eval_idx"] = int(eval_idx)
 
-    if eval_idx % video_state["video_every_evals"] == 0:
+    total_timesteps = ppo_params.get("num_timesteps", None)
+    is_last_eval = total_timesteps is not None and int(num_steps) >= int(
+        total_timesteps
+    )
+    should_record = (eval_idx % video_state["video_every_evals"] == 0) or is_last_eval
+
+    if should_record:
         rollout_and_log_video(
             num_steps=num_steps,
             make_policy=make_policy,
