@@ -125,13 +125,17 @@ wandb_cfg = {
     "algo": "PPO",
     "seed": seed,
 }
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M")  # e.g. 20251211_1037
+run_name = f"PandaPickCube_{wandb_cfg['algo']}_{timestamp}"
+
 for k, v in ppo_params.items():
     if isinstance(v, (int, float, str, bool)):
         wandb_cfg[f"ppo/{k}"] = v
 
 run = wandb.init(
     project="panda_pick_ppo",  # <-- change to your project name
-    name=f"{env_name}_ppo_{seed}",
+    name=run_name,
     config=wandb_cfg,
 )
 
@@ -197,9 +201,9 @@ def rollout_and_log_video(
         obs = state.obs
         # If obs is not batched, add a batch dim:
         if isinstance(obs, dict):
-            batched_obs = jax.tree_util.tree_map(lambda x: x[jnp.newaxis, ...], obs)
+            batched_obs = jax.tree_util.tree_map(lambda x: x[jp.newaxis, ...], obs)
         else:
-            batched_obs = obs[jnp.newaxis, ...]
+            batched_obs = obs[jp.newaxis, ...]
 
         action = policy(batched_obs)
         # remove batch dim again
