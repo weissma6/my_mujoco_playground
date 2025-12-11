@@ -52,14 +52,15 @@ podman save -o mujoco_env.tar mujoco:env
 
 # RUN code later with the image
 Later, on any node (or in any job script):
-
+cd ~/VT1_MBRL/my_mujoco_playground
 podman load -i ~/VT1_MBRL/my_mujoco_playground/mujoco_env.tar
-podman run --rm -it \
-  -v ~/VT1_MBRL/my_mujoco_playground:/workspace \
-  -w /workspace \
-  mujoco:env \
-  python learning/notebooks/panda_test.py
 
+podman run --rm -it \
+    -e MUJOCO_GL=osmesa \
+    -v $(pwd):/workspace \
+    -w /workspace \
+    mujoco:env \
+    python -m learning.notebooks.panda_test
 
 # See your jobs (IDs in 1st column)
 squeue -u $USER -o "%.18i %.20j %.8T %.10M %.10l %N %R"
@@ -75,3 +76,19 @@ scancel -u $USER -t PENDING
 
 # Kill by name (pattern)
 scancel -u $USER -n run_dummy_py_script*
+
+
+
+
+# Do one time the weights & Biases login
+cd ~/VT1_MBRL/my_mujoco_playground
+
+podman run --rm -it \
+    -v $(pwd):/workspace \
+    -w /workspace \
+    mujoco:env \
+    bash
+
+wandb login
+# paste your key
+exit

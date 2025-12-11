@@ -93,7 +93,7 @@ import imageio
 # -----------------------------------------------------------------------------
 # 1) Basic config
 # -----------------------------------------------------------------------------
-env_name = "PandaPickCubeOrientation"
+env_name = "PandaPickCube"
 
 # Base PPO config from Mujoco Playground
 base_ppo_params = manipulation_params.brax_ppo_config(env_name)
@@ -141,6 +141,7 @@ def progress_wandb(num_steps, metrics):
     Called periodically during PPO training.
     Logs scalar metrics to W&B.
     """
+    print("WANDB CALLBACK:", num_steps, list(metrics.keys()))
     log_dict = {"training/num_steps": int(num_steps)}
     for k, v in metrics.items():
         try:
@@ -252,6 +253,11 @@ def policy_params_wandb(num_steps, make_policy, params):
 # -----------------------------------------------------------------------------
 # --- build params + network_factory exactly like Panda ---
 ppo_training_params = dict(ppo_params)
+
+ppo_params["num_timesteps"] = int(200_000)  # instead of millions
+ppo_params["num_envs"] = 16  # smaller parallelism
+ppo_params["unroll_length"] = 20  # shorter unrolls
+
 network_factory = ppo_networks.make_ppo_networks
 # Handle the optional network_factory config
 if "network_factory" in ppo_params:
