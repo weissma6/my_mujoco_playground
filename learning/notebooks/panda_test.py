@@ -110,7 +110,7 @@ except AttributeError:
 # ppo_params["num_timesteps"] = int(100_000)
 
 # Seed (store in W&B for reproducibility
-seed = int(np.random.randint(0, 2**31 - 1))
+seed = 1  # = int(np.random.randint(0, 2**31 - 1))
 
 # -----------------------------------------------------------------------------
 # 2) Init env and W&B run
@@ -192,7 +192,7 @@ def rollout_and_log_video(
 
         state = env.step(state, action)
 
-        frame = env.render(mode="rgb_array", **camera_kwargs)
+        frame = env.render(**camera_kwargs)
         frames.append(frame)
 
         if bool(state.done):
@@ -213,7 +213,7 @@ def rollout_and_log_video(
 # -----------------------------------------------------------------------------
 # 5) Hook into PPO internals: policy_params_fn for videos every N evals
 # -----------------------------------------------------------------------------
-VIDEO_EVERY_EVALS = 3  # <-- "every n episodes": every 3 eval callbacks
+VIDEO_EVERY_EVALS = 5  # <-- "every n episodes": every  eval callbacks
 
 video_state = {
     "eval_idx": 0,
