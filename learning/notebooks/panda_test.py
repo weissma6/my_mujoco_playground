@@ -256,9 +256,9 @@ def policy_params_wandb(num_steps, make_policy, params):
 # --- build params + network_factory exactly like Panda ---
 ppo_training_params = dict(ppo_params)
 
-ppo_params["num_timesteps"] = int(200_000)  # instead of millions
-ppo_params["num_envs"] = 16  # smaller parallelism
-ppo_params["unroll_length"] = 20  # shorter unrolls
+# ppo_params["num_timesteps"] = int(200_000)  # instead of millions
+# ppo_params["num_envs"] = 16  # smaller parallelism
+# ppo_params["unroll_length"] = 20  # shorter unrolls
 
 network_factory = ppo_networks.make_ppo_networks
 # Handle the optional network_factory config
