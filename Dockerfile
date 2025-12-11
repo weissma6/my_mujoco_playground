@@ -20,7 +20,7 @@ WORKDIR /workspace
 # jax[cuda12_pip] from SOE docs
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --upgrade pip && \
-    pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html && \
+    pip install --upgrade "jax[cuda12]" && \
     pip install -r /tmp/requirements.txt
 
 # MuJoCo/Brax environment

@@ -23,8 +23,6 @@ idna==3.11
 ImageIO==2.37.2
 importlib_resources==6.5.2
 itsdangerous==2.2.0
-jax==0.6.2
-jaxlib==0.6.2
 jaxopt==0.8.5
 Jinja2==3.1.6
 kiwisolver==1.4.9

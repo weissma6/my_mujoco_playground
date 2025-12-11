@@ -33,14 +33,9 @@ cd ~/VT1_MBRL/my_mujoco_playground
 
 # mount the GitHUB code on the image
 podman run --rm -it \
-  -v $(pwd):/workspace \
-  -w /workspace \
-  mujoco:env \
-  python learning/notebooks/panda_test.py
-
-podman run --rm -it \
     -e MUJOCO_GL=osmesa \
-    -v $(pwd):/workspace \
+    -e PYTHONPATH=/workspace \
+    -v "$(pwd):/workspace" \2
     -w /workspace \
     mujoco:env \
     python learning/notebooks/panda_test.py
