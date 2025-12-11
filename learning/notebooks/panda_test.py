@@ -90,6 +90,7 @@ from mujoco_playground import registry
 from copy import deepcopy
 import wandb
 import imageio
+import mediapy
 
 
 # -----------------------------------------------------------------------------
@@ -143,7 +144,9 @@ def progress_wandb(num_steps, metrics):
     Called periodically during PPO training.
     Logs scalar metrics to W&B.
     """
-    print("WANDB CALLBACK:", num_steps, metrics["eval/episode_reward"])
+    print(
+        "WANDB CALLBACK:", num_steps, "Episode Reward", metrics["eval/episode_reward"]
+    )
     log_dict = {"training/num_steps": int(num_steps)}
     for k, v in metrics.items():
         try:
@@ -162,52 +165,68 @@ def rollout_and_log_video(
     num_steps,
     make_policy,
     params,
-    env_name,
-    seed,
-    video_length=200,
-    fps=30,
-    camera_kwargs=None,
-    step_tag=None,
+    env_name: str,
+    seed: int,
+    video_length: int,
+    fps: int,
+    camera_kwargs: dict,
+    step_tag: str,
 ):
     """
-    Runs a single rollout with the current policy and logs a video to W&B.
-    Called during training via policy_params_fn.
+    Runs a rollout with the current policy, renders it via MuJoCo Playground's
+    MjxEnv.render(trajectory=...), and logs the video to W&B.
     """
-    import imageio  # local import to not force dependency earlier
 
-    camera_kwargs = camera_kwargs or {}
-    env = registry.load(env_name)
+    # 1) Build a *fresh* environment only for evaluation / video
+    eval_env = registry.load(env_name)
 
-    policy_fn = make_policy(params)
+    # 2) Init RNG and state
+    rng = jax.random.PRNGKey(seed)
+    state = eval_env.reset(rng)
 
-    key = jax.random.PRNGKey(seed + 123)
-    state = env.reset(key)
+    # 3) Build inference function from brax PPO
+    policy = make_policy(params)
 
-    frames = []
+    # 4) Collect a trajectory of States (MjxEnv.State) for rendering
+    trajectory = []
+
     for t in range(video_length):
+        trajectory.append(state)
+
+        # PPO policy expects batched obs; adapt if necessary
         obs = state.obs
-        key, sk = jax.random.split(key)
-        # Standard Brax policy signature: (obs, rng) -> (action, extra)
-        action, _ = policy_fn(obs, sk)
+        # If obs is not batched, add a batch dim:
+        if isinstance(obs, dict):
+            batched_obs = jax.tree_util.tree_map(lambda x: x[jnp.newaxis, ...], obs)
+        else:
+            batched_obs = obs[jnp.newaxis, ...]
 
-        state = env.step(state, action)
+        action = policy(batched_obs)
+        # remove batch dim again
+        action = action[0]
 
-        frame = env.render(**camera_kwargs)
-        frames.append(frame)
+        state = eval_env.step(state, action)
 
-        if bool(state.done):
-            break
+    # 5) Render the full trajectory in one call
+    #    IMPORTANT: first arg is the trajectory list, then height/width etc as kwargs
+    frames = eval_env.render(trajectory, **camera_kwargs)
 
-    tag = step_tag if step_tag is not None else f"{num_steps}"
-    video_filename = f"rollout_step_{tag}.mp4"
-    video_path = os.path.join(wandb.run.dir, video_filename)
+    # 6) Write video to disk
+    os.makedirs("wandb_videos", exist_ok=True)
+    video_path = os.path.join("wandb_videos", f"{env_name}_{step_tag}.mp4")
 
-    imageio.mimsave(video_path, frames, fps=fps)
+    # frames is a list/seq of HxWx3 uint8 arrays
+    mediapy.write_video(video_path, frames, fps=fps)
 
+    # 7) Log to Weights & Biases
     wandb.log(
-        {"rollout/video": wandb.Video(video_path, fps=fps, format="mp4")},
+        {
+            "eval/video": wandb.Video(video_path, fps=fps, format="mp4"),
+        },
         step=int(num_steps),
     )
+
+    print(f"[VIDEO] Logged evaluation video at step {num_steps} as {video_path}")
 
 
 # -----------------------------------------------------------------------------
