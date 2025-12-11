@@ -73,6 +73,8 @@ from flax import struct
 from flax.training import orbax_utils
 from IPython.display import HTML, clear_output
 import jax
+
+print("JAX devices:", jax.devices(), flush=True)
 from jax import numpy as jp
 from matplotlib import pyplot as plt
 import mediapy as media
