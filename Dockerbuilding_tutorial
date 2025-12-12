@@ -33,12 +33,13 @@ cd ~/VT1_MBRL/my_mujoco_playground
 
 # mount the GitHUB code on the image
 podman run --rm -it \
+    -e WANDB_API_KEY="$WANDB_API_KEY" \
     -e MUJOCO_GL=osmesa \
     -e PYTHONPATH=/workspace \
-    -v "$(pwd):/workspace" \2
+    -v "$(pwd):/workspace" \
     -w /workspace \
     mujoco:env \
-    python learning/notebooks/panda_test.py
+    python -m learning.notebooks.panda_test
 
 # Step 5 – (Recommended) Save the image to a tar on shared storage
 cd ~/VT1_MBRL/my_mujoco_playground
@@ -50,23 +51,14 @@ Later, on any node (or in any job script):
 cd ~/VT1_MBRL/my_mujoco_playground
 podman load -i ~/VT1_MBRL/my_mujoco_playground/mujoco_env.tar
 
-podman run --rm -it \
-    -e WANDB_API_KEY="$WANDB_API_KEY" \
-    -e MUJOCO_GL=osmesa \
-    -e PYTHONPATH=/workspace \
-    -v "$(pwd):/workspace" \
-    -w /workspace \
-    mujoco:env \
-    python -m learning.notebooks.panda_test
-
 # See your jobs (IDs in 1st column)
-squeue -u $USER -o "%.18i %.20j %.8T %.10M %.10l %N %R"
+squeue -u weissma6 -o "%.18i %.20j %.8T %.10M %.10l %N %R"
 
 # Kill one job
 scancel <JOBID>
 
 # Kill all your jobs
-scancel -u $USER
+scancel -u weissma6
 
 # Kill only PENDING jobs
 scancel -u $USER -t PENDING
@@ -103,5 +95,3 @@ chmod 600 ~/.secrets/wandb_key
 
 export WANDB_API_KEY=$(cat ~/.secrets/wandb_key)
 
-
-# Then mount it in the job script or podman run command as:

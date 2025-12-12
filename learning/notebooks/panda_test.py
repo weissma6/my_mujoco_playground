@@ -178,55 +178,45 @@ def rollout_and_log_video(
 ):
     """
     Runs a rollout with the current policy, renders it via MuJoCo Playground's
-    MjxEnv.render(trajectory=...), and logs the video to W&B.
+    MjxEnv.render(trajectory, ...) and logs the video to W&B.
     """
-
-    # 1) Build a *fresh* environment only for evaluation / video
     eval_env = registry.load(env_name)
 
-    # 2) Init RNG and state
+    # Main RNG -> split into reset + policy sampling streams
     rng = jax.random.PRNGKey(seed)
-    state = eval_env.reset(rng)
+    rng, reset_key, policy_key = jax.random.split(rng, 3)
 
-    # 3) Build inference function from brax PPO
+    # IMPORTANT: reset the *eval_env* (not the training env)
+    state = eval_env.reset(reset_key)
     policy = make_policy(params)
-
-    # 4) Collect a trajectory of States (MjxEnv.State) for rendering
     trajectory = []
 
     for t in range(video_length):
         trajectory.append(state)
-
-        # PPO policy expects batched obs; adapt if necessary
         obs = state.obs
-        # If obs is not batched, add a batch dim:
+        # Add batch dim (policy expects batched inputs)
         if isinstance(obs, dict):
             batched_obs = jax.tree_util.tree_map(lambda x: x[jp.newaxis, ...], obs)
         else:
             batched_obs = obs[jp.newaxis, ...]
 
-        action = policy(batched_obs)
-        # remove batch dim again
-        action = action[0]
+        # Sample action with RNG key
+        policy_key, key_sample = jax.random.split(policy_key)
+        action = policy(batched_obs, key_sample)
 
+        # Remove batch dim
+        action = action[0]
         state = eval_env.step(state, action)
 
-    # 5) Render the full trajectory in one call
-    #    IMPORTANT: first arg is the trajectory list, then height/width etc as kwargs
+    # Render the full trajectory in one call (required by MjxEnv.render)
     frames = eval_env.render(trajectory, **camera_kwargs)
 
-    # 6) Write video to disk
     os.makedirs("wandb_videos", exist_ok=True)
     video_path = os.path.join("wandb_videos", f"{env_name}_{step_tag}.mp4")
 
-    # frames is a list/seq of HxWx3 uint8 arrays
     mediapy.write_video(video_path, frames, fps=fps)
-
-    # 7) Log to Weights & Biases
     wandb.log(
-        {
-            "eval/video": wandb.Video(video_path, fps=fps, format="mp4"),
-        },
+        {"eval/video": wandb.Video(video_path, fps=fps, format="mp4")},
         step=int(num_steps),
     )
 
@@ -236,7 +226,7 @@ def rollout_and_log_video(
 # -----------------------------------------------------------------------------
 # 5) Hook into PPO internals: policy_params_fn for videos every N evals
 # -----------------------------------------------------------------------------
-VIDEO_EVERY_EVALS = 5  # <-- "every n episodes": every  eval callbacks
+VIDEO_EVERY_EVALS = 1  # <-- "every n episodes": every  eval callbacks
 
 video_state = {
     "eval_idx": 0,
