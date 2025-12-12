@@ -107,10 +107,25 @@ try:
 except AttributeError:
     ppo_params = dict(base_ppo_params)
 
-# Optional: override something for quick local runs:
-# ppo_params["num_timesteps"] = int(100_000)
+# --- More "episodes" observed (more resets) ---
+# Episodes ≈ num_timesteps / episode_length  (roughly, across envs)
+# Increase total episodes by increasing total timesteps OR using shorter episode_length (not here).
+ppo_params["num_timesteps"] = int(
+    4_000_000
+)  # increase total experience (more episodes overall)
 
-# Seed (store in W&B for reproducibility
+# --- Less steps per PPO batch / faster checkpoints ---
+# Total steps collected per batch = num_envs * unroll_length
+ppo_params["num_envs"] = 64  # smaller parallelism -> smaller batch
+ppo_params["unroll_length"] = 20  # shorter rollouts -> more frequent updates
+
+# --- Reduce compute per update (optional, keeps runs fast) ---
+# Smaller minibatches/updates reduce walltime and makes "iterations" feel shorter.
+ppo_params["num_minibatches"] = 8
+ppo_params["num_updates_per_batch"] = 4
+
+# Optional: slightly smaller networks / faster training (only if your config supports it)
+# ppo_params["network_factory"] = {"policy_hidden_layer_sizes": (128, 128), "value_hidden_layer_sizes": (128, 128)}
 seed = 1  # = int(np.random.randint(0, 2**31 - 1))
 
 # -----------------------------------------------------------------------------
@@ -165,68 +180,96 @@ def progress_wandb(num_steps, metrics):
 # -----------------------------------------------------------------------------
 # 4) Rollout + video logging helper
 # -----------------------------------------------------------------------------
-def rollout_and_log_video(
-    num_steps,
-    make_policy,
-    params,
+def final_video_rollout(
     env_name: str,
+    env_cfg,
+    make_inference_fn,
+    params,
     seed: int,
-    video_length: int,
-    fps: int,
-    camera_kwargs: dict,
-    step_tag: str,
+    tag: str = "final",
+    render_every: int = 2,
+    camera_kwargs: dict | None = None,
+    deterministic: bool = True,
 ):
     """
-    Runs a rollout with the current policy, renders it via MuJoCo Playground's
-    MjxEnv.render(trajectory, ...) and logs the video to W&B.
+    Final evaluation rollout + render + W&B video logging.
+    Video is ALWAYS written into the active W&B run directory:
+      wandb/run-*/files/
+    Matches the manipulation notebook rollout pattern.
     """
-    eval_env = registry.load(env_name)
 
-    # Main RNG -> split into reset + policy sampling streams
+    if camera_kwargs is None:
+        camera_kwargs = {}
+
+    assert (
+        wandb.run is not None
+    ), "wandb.init() must be called before final_video_rollout()"
+
+    # ------------------------------------------------------------------
+    # Environment + JIT
+    # ------------------------------------------------------------------
+    env = registry.load(env_name)
+
+    jit_reset = jax.jit(env.reset)
+    jit_step = jax.jit(env.step)
+
+    inference_fn = jax.jit(make_inference_fn(params, deterministic=deterministic))
+
+    # ------------------------------------------------------------------
+    # Rollout (same as manipulation notebook)
+    # ------------------------------------------------------------------
     rng = jax.random.PRNGKey(seed)
-    rng, reset_key, policy_key = jax.random.split(rng, 3)
+    rng, reset_rng = jax.random.split(rng)
+    state = jit_reset(reset_rng)
 
-    # IMPORTANT: reset the *eval_env* (not the training env)
-    state = eval_env.reset(reset_key)
-    policy = make_policy(params)
-    trajectory = []
+    rollout = [state]
 
-    for t in range(video_length):
-        trajectory.append(state)
-        obs = state.obs
-        # Add batch dim (policy expects batched inputs)
-        if isinstance(obs, dict):
-            batched_obs = jax.tree_util.tree_map(lambda x: x[jp.newaxis, ...], obs)
-        else:
-            batched_obs = obs[jp.newaxis, ...]
+    for _ in range(int(env_cfg.episode_length)):
+        rng, act_rng = jax.random.split(rng)
+        ctrl, _ = inference_fn(state.obs, act_rng)
+        state = jit_step(state, ctrl)
+        rollout.append(state)
 
-        # Sample action with RNG key
-        policy_key, key_sample = jax.random.split(policy_key)
-        action = policy(batched_obs, key_sample)
+    # ------------------------------------------------------------------
+    # Render trajectory
+    # ------------------------------------------------------------------
+    trajectory = rollout[:: int(render_every)]
+    frames = env.render(trajectory, **camera_kwargs)
 
-        # Remove batch dim
-        action = action[0]
-        state = eval_env.step(state, action)
+    # ------------------------------------------------------------------
+    # Save video INTO W&B RUN DIRECTORY
+    # ------------------------------------------------------------------
+    run_dir = wandb.run.dir  # <-- this is the key difference
+    video_path = os.path.join(run_dir, f"{env_name}_{tag}_seed{seed}.mp4")
 
-    # Render the full trajectory in one call (required by MjxEnv.render)
-    frames = eval_env.render(trajectory, **camera_kwargs)
-
-    os.makedirs("wandb_videos", exist_ok=True)
-    video_path = os.path.join("wandb_videos", f"{env_name}_{step_tag}.mp4")
-
+    fps = float(1.0 / env.dt) / float(render_every)
     mediapy.write_video(video_path, frames, fps=fps)
+
+    # ------------------------------------------------------------------
+    # Log to W&B (media)
+    # ------------------------------------------------------------------
     wandb.log(
-        {"eval/video": wandb.Video(video_path, fps=fps, format="mp4")},
-        step=int(num_steps),
+        {
+            "eval/final_video": wandb.Video(
+                video_path,
+                fps=int(fps),
+                format="mp4",
+            )
+        },
+        step=int(env_cfg.episode_length),
     )
 
-    print(f"[VIDEO] Logged evaluation video at step {num_steps} as {video_path}")
+    print(f"[FINAL VIDEO] saved & logged: {video_path}")
+
+    return video_path
 
 
 # -----------------------------------------------------------------------------
 # 5) Hook into PPO internals: policy_params_fn for videos every N evals
 # -----------------------------------------------------------------------------
-VIDEO_EVERY_EVALS = 1  # <-- "every n episodes": every  eval callbacks
+VIDEO_EVERY_EVALS = 1  # every N eval callbacks
+RENDER_EVERY = 2  # keep every Nth state for rendering (smaller/faster)
+VIDEO_TAG = "eval"
 
 video_state = {
     "eval_idx": 0,
@@ -236,12 +279,81 @@ video_state = {
 }
 
 
+def rollout_and_log_video_from_make_policy(
+    num_steps: int,
+    make_policy,
+    params,
+    env_name: str,
+    seed: int,
+    episode_length: int,
+    render_every: int = 2,
+    camera_kwargs: dict | None = None,
+    step_tag: str = "eval",
+):
+    """
+    SAFE MJX video rollout using make_policy(params, deterministic=True).
+
+    - builds a fresh eval env
+    - uses jit reset/step
+    - builds a trajectory list of State
+    - renders via env.render(trajectory, ...)
+    - saves into wandb.run.dir (files/)
+    - logs wandb.Video
+    """
+    import os
+    import jax
+    import mediapy
+    import wandb
+
+    if camera_kwargs is None:
+        camera_kwargs = {}
+
+    assert wandb.run is not None, "wandb.init() must be called before logging video."
+
+    eval_env = registry.load(env_name)
+    jit_reset = jax.jit(eval_env.reset)
+    jit_step = jax.jit(eval_env.step)
+
+    # IMPORTANT: deterministic=True to avoid needing key_sample / stochastic sampling
+    policy = jax.jit(make_policy(params, deterministic=True))
+
+    rng = jax.random.PRNGKey(seed)
+    rng, reset_rng = jax.random.split(rng)
+    state = jit_reset(reset_rng)
+
+    rollout = [state]
+    for _ in range(int(episode_length)):
+        rng, act_rng = jax.random.split(rng)
+
+        # make_policy(..., deterministic=True) returns a function:
+        #   action = policy(obs, rng)
+        ctrl = policy(state.obs, act_rng)
+
+        state = jit_step(state, ctrl)
+        rollout.append(state)
+
+    trajectory = rollout[:: int(render_every)]
+    frames = eval_env.render(trajectory, **camera_kwargs)
+
+    fps = float(1.0 / eval_env.dt) / float(render_every)
+
+    # Save INTO W&B run dir so it ends up under run/files/
+    video_path = os.path.join(wandb.run.dir, f"{env_name}_{step_tag}.mp4")
+    mediapy.write_video(video_path, frames, fps=fps)
+
+    wandb.log(
+        {"eval/video": wandb.Video(video_path, fps=int(fps), format="mp4")},
+        step=int(num_steps),
+    )
+
+    print(f"[VIDEO] Logged {video_path} at step={int(num_steps)}")
+
+
 def policy_params_wandb(num_steps, make_policy, params):
     """
-    Called by PPO with latest policy params at evaluation checkpoints.
-    We use this to periodically log rollout videos.
+    Called by PPO at evaluation checkpoints.
+    Logs rollout videos every N eval callbacks AND always at the last eval.
     """
-    # Track how many times we've been called (i.e., how many evals have happened)
     video_state["eval_idx"] += 1
     eval_idx = video_state["eval_idx"]
 
@@ -253,19 +365,20 @@ def policy_params_wandb(num_steps, make_policy, params):
     is_last_eval = total_timesteps is not None and int(num_steps) >= int(
         total_timesteps
     )
+
     should_record = (eval_idx % video_state["video_every_evals"] == 0) or is_last_eval
 
     if should_record:
-        rollout_and_log_video(
-            num_steps=num_steps,
+        rollout_and_log_video_from_make_policy(
+            num_steps=int(num_steps),
             make_policy=make_policy,
             params=params,
             env_name=video_state["env_name"],
-            seed=video_state["seed"],
-            video_length=env_cfg.episode_length,
-            fps=int(1.0 / env.dt),
-            camera_kwargs={},  # e.g. {"camera_id": 0} if you want a specific camera
-            step_tag=f"eval{eval_idx}",
+            seed=int(video_state["seed"]),
+            episode_length=int(env_cfg.episode_length),
+            render_every=int(RENDER_EVERY),
+            camera_kwargs={},  # optionally: {"height": 480, "width": 640, "camera": "front"}
+            step_tag=f"{VIDEO_TAG}{eval_idx}_steps{int(num_steps)}",
         )
 
 
