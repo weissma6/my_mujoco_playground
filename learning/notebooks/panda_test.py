@@ -107,25 +107,6 @@ try:
 except AttributeError:
     ppo_params = dict(base_ppo_params)
 
-# --- More "episodes" observed (more resets) ---
-# Episodes ≈ num_timesteps / episode_length  (roughly, across envs)
-# Increase total episodes by increasing total timesteps OR using shorter episode_length (not here).
-ppo_params["num_timesteps"] = int(
-    4_000_000
-)  # increase total experience (more episodes overall)
-
-# --- Less steps per PPO batch / faster checkpoints ---
-# Total steps collected per batch = num_envs * unroll_length
-ppo_params["num_envs"] = 64  # smaller parallelism -> smaller batch
-ppo_params["unroll_length"] = 20  # shorter rollouts -> more frequent updates
-
-# --- Reduce compute per update (optional, keeps runs fast) ---
-# Smaller minibatches/updates reduce walltime and makes "iterations" feel shorter.
-ppo_params["num_minibatches"] = 8
-ppo_params["num_updates_per_batch"] = 4
-
-# Optional: slightly smaller networks / faster training (only if your config supports it)
-# ppo_params["network_factory"] = {"policy_hidden_layer_sizes": (128, 128), "value_hidden_layer_sizes": (128, 128)}
 seed = 1  # = int(np.random.randint(0, 2**31 - 1))
 
 # -----------------------------------------------------------------------------
@@ -267,8 +248,8 @@ def final_video_rollout(
 # -----------------------------------------------------------------------------
 # 5) Hook into PPO internals: policy_params_fn for videos every N evals
 # -----------------------------------------------------------------------------
-VIDEO_EVERY_EVALS = 1  # every N eval callbacks
-RENDER_EVERY = 2  # keep every Nth state for rendering (smaller/faster)
+VIDEO_EVERY_EVALS = 5  # every N eval callbacks
+RENDER_EVERY = 1  # keep every Nth state for rendering (smaller/faster)
 VIDEO_TAG = "eval"
 
 video_state = {
