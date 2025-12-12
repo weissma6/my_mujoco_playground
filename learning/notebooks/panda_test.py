@@ -317,6 +317,11 @@ def rollout_and_log_video_from_make_policy(
     # IMPORTANT: deterministic=True to avoid needing key_sample / stochastic sampling
     policy = jax.jit(make_policy(params, deterministic=True))
 
+    test_out = make_policy(params, deterministic=True)(
+        state.obs, jax.random.PRNGKey(seed + 999)
+    )
+    print("[VIDEO DEBUG] policy output type:", type(test_out))
+
     rng = jax.random.PRNGKey(seed)
     rng, reset_rng = jax.random.split(rng)
     state = jit_reset(reset_rng)
@@ -325,10 +330,17 @@ def rollout_and_log_video_from_make_policy(
     for _ in range(int(episode_length)):
         rng, act_rng = jax.random.split(rng)
 
-        # make_policy(..., deterministic=True) returns a function:
-        #   action = policy(obs, rng)
-        ctrl = policy(state.obs, act_rng)
+        out = policy(state.obs, act_rng)
+        # policy outputs can be action OR (action, extras) OR dict
+        if isinstance(out, tuple):
+            ctrl = out[0]
+        elif isinstance(out, dict):
+            # common patterns
+            ctrl = out.get("action", out.get("ctrl", out))
+        else:
+            ctrl = out
 
+        ctrl = jp.asarray(ctrl)
         state = jit_step(state, ctrl)
         rollout.append(state)
 
