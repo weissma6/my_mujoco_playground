@@ -302,6 +302,7 @@ def rollout_and_log_video_from_make_policy(
     """
     import os
     import jax
+    import jax.numpy as jnp
     import mediapy
     import wandb
 
@@ -317,30 +318,31 @@ def rollout_and_log_video_from_make_policy(
     # IMPORTANT: deterministic=True to avoid needing key_sample / stochastic sampling
     policy = jax.jit(make_policy(params, deterministic=True))
 
+    rng = jax.random.PRNGKey(seed)
+    rng, reset_rng = jax.random.split(rng)
+    state = jit_reset(reset_rng)
+
+    # Debug once (now state exists)
     test_out = make_policy(params, deterministic=True)(
         state.obs, jax.random.PRNGKey(seed + 999)
     )
     print("[VIDEO DEBUG] policy output type:", type(test_out))
-
-    rng = jax.random.PRNGKey(seed)
-    rng, reset_rng = jax.random.split(rng)
-    state = jit_reset(reset_rng)
 
     rollout = [state]
     for _ in range(int(episode_length)):
         rng, act_rng = jax.random.split(rng)
 
         out = policy(state.obs, act_rng)
+
         # policy outputs can be action OR (action, extras) OR dict
         if isinstance(out, tuple):
             ctrl = out[0]
         elif isinstance(out, dict):
-            # common patterns
             ctrl = out.get("action", out.get("ctrl", out))
         else:
             ctrl = out
 
-        ctrl = jp.asarray(ctrl)
+        ctrl = jnp.asarray(ctrl)
         state = jit_step(state, ctrl)
         rollout.append(state)
 
@@ -359,6 +361,7 @@ def rollout_and_log_video_from_make_policy(
     )
 
     print(f"[VIDEO] Logged {video_path} at step={int(num_steps)}")
+    return video_path
 
 
 def policy_params_wandb(num_steps, make_policy, params):
