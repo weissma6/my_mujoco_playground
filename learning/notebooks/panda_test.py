@@ -91,6 +91,7 @@ from copy import deepcopy
 import wandb
 import imageio
 import mediapy
+import random
 
 
 # -----------------------------------------------------------------------------
@@ -379,7 +380,40 @@ def policy_params_wandb(num_steps, make_policy, params):
 
 
 # -----------------------------------------------------------------------------
-# 6) Build network_factory and call PPO train
+# 6) Run experiment function (for hyperparameter sweeps)
+# -----------------------------------------------------------------------------
+def run_experiment(cfg: dict, out_dir: str) -> None:
+    lr = float(cfg.get("lr", 3e-4))
+    batch_size = int(cfg.get("batch_size", 256))
+    seed = int(cfg.get("seed", 0))
+    algo = str(cfg.get("algo", "sac"))
+
+    random.seed(seed)
+    # If you use numpy/torch, seed them here too.
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    # TODO: Replace this with your actual panda test code
+    # Use lr, batch_size, seed, algo in place of hard-coded values.
+
+    # Example output to prove it worked:
+    with open(os.path.join(out_dir, "metrics.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "run_id": cfg.get("run_id"),
+                "lr": lr,
+                "batch_size": batch_size,
+                "seed": seed,
+                "algo": algo,
+                "status": "ok",
+            },
+            f,
+            indent=2,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 7) Build network_factory and call PPO train
 # -----------------------------------------------------------------------------
 # --- build params + network_factory exactly like Panda ---
 ppo_training_params = dict(ppo_params)
@@ -416,7 +450,7 @@ make_inference_fn, params, final_metrics = train_fn(
 )
 
 # -----------------------------------------------------------------------------
-# 7) Save final model (seed, hyperparams, params) to W&B
+# 8) Save final model (seed, hyperparams, params) to W&B
 # -----------------------------------------------------------------------------
 import pickle
 
