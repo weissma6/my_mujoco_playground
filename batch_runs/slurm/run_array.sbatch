@@ -10,8 +10,8 @@
 
 set -euo pipefail
 
-REPO_DIR="~/VT1_MBRL/my_mujoco_playground"
-IMAGE_TAR="~/VT1_MBRL/my_mujoco_playground"
+REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"
+IMAGE_TAR="$HOME/VT1_MBRL/my_mujoco_playground"
 IMAGE_TAG="mujoco:env"
 
 cd "$REPO_DIR"
@@ -31,6 +31,7 @@ podman run --rm \
   -w /workspace \
   mujoco:env \
   python batch_runs/scripts/run_one.py \
-    --jsonl batch_runs/sweeps/panda_sweep.jsonl \
+    --jsonl "batch_runs/sweeps/panda_sweep.jsonl" \
     --index "$SLURM_ARRAY_TASK_ID" \
-    --out_root results
+    --out_root "results"
+
