@@ -22,6 +22,11 @@ if [[ -f "$IMAGE_TAR" ]]; then
   podman load -i "$IMAGE_TAR" || true
 fi
 
+# Load W&B API key
+if [ -f "$HOME/.secrets/wandb_key" ]; then
+  export WANDB_API_KEY="$(cat "$HOME/.secrets/wandb_key")"
+fi
+
 # IMPORTANT: no -it in batch jobs
 podman run --rm \
   -e WANDB_API_KEY="${WANDB_API_KEY:-}" \
