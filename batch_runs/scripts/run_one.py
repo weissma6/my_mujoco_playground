@@ -2,15 +2,15 @@ import argparse
 import json
 import os
 
-from learning.notebooks.panda_test import run_experiment
-
 
 def load_config(jsonl_path: str, index_1based: int) -> dict:
     with open(jsonl_path, "r", encoding="utf-8") as f:
-        for i, line in enumerate(f, start=1):
+        i = 0
+        for line in f:
             line = line.strip()
             if not line:
                 continue
+            i += 1
             if i == index_1based:
                 return json.loads(line)
     raise IndexError(f"Index {index_1based} out of range for {jsonl_path}")
@@ -19,7 +19,9 @@ def load_config(jsonl_path: str, index_1based: int) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--jsonl", required=True, help="Path to JSONL sweep file")
-    ap.add_argument("--index", type=int, required=True, help="1-based line index")
+    ap.add_argument(
+        "--index", type=int, required=True, help="1-based line index (Slurm task id)"
+    )
     ap.add_argument("--out_root", default="results", help="Root output folder")
     args = ap.parse_args()
 
@@ -32,23 +34,11 @@ def main() -> None:
     with open(os.path.join(out_dir, "config.json"), "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 
-    # IMPORTANT: adjust this import to your actual module path
-    # Your scripts live in /learning/notebooks/panda_test
+    # This matches what worked for you: python -m learning.notebooks.panda_test
+    from learning.notebooks.panda_test import run_experiment
 
     run_experiment(cfg=cfg, out_dir=out_dir)
 
 
 if __name__ == "__main__":
-
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default=None, help="Path to JSON config (optional)")
-    ap.add_argument("--out_dir", default="results/manual_run")
-    args = ap.parse_args()
-
-    cfg = {}
-    if args.config:
-        with open(args.config, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-
-    os.makedirs(args.out_dir, exist_ok=True)
-    run_experiment(cfg=cfg, out_dir=args.out_dir)
+    main()
