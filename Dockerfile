@@ -24,7 +24,7 @@ RUN pip install --upgrade pip && \
     pip install -r /tmp/requirements.txt
 
 # MuJoCo/Brax environment
-ENV MUJOCO_GL=egl
+# ENV MUJOCO_GL=egl
 ENV WANDB_DIR=/workspace/wandb
 
 # Default command (will be overridden by sarus run)
