@@ -1,5 +1,7 @@
 #!/bin/bash
+# ===== Slurm job metadata =====
 #SBATCH --job-name=panda_sweep
+#SBATCH --account=cai_iai
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 #SBATCH --time=02:00:00
