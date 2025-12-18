@@ -393,23 +393,36 @@ def run_experiment(cfg: dict, out_dir: str) -> None:
 
     os.makedirs(out_dir, exist_ok=True)
 
-    # TODO: Replace this with your actual panda test code
-    # Use lr, batch_size, seed, algo in place of hard-coded values.
+    # If you want a clean default:
+    wandb_mode = cfg.get("wandb_mode", "online")  # or "disabled"
+    run = wandb.init(
+        project=cfg.get("wandb_project", "panda_pick_ppo"),
+        name=cfg.get("run_id", None),
+        config=cfg,
+        mode=wandb_mode,
+        dir=out_dir,  # keeps wandb files per-run
+    )
 
-    # Example output to prove it worked:
-    with open(os.path.join(out_dir, "metrics.json"), "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "run_id": cfg.get("run_id"),
-                "lr": lr,
-                "batch_size": batch_size,
-                "seed": seed,
-                "algo": algo,
-                "status": "ok",
-            },
-            f,
-            indent=2,
-        )
+    try:
+        # TODO: Replace this with your actual panda test code
+        # Use lr, batch_size, seed, algo in place of hard-coded values.
+
+        # Example output to prove it worked:
+        with open(os.path.join(out_dir, "metrics.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "run_id": cfg.get("run_id"),
+                    "lr": lr,
+                    "batch_size": batch_size,
+                    "seed": seed,
+                    "algo": algo,
+                    "status": "ok",
+                },
+                f,
+                indent=2,
+            )
+    finally:
+        run.finish()
 
 
 # -----------------------------------------------------------------------------
