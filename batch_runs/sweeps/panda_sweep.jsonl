@@ -1,3 +1,12 @@
-{"run_id":"r0001","lr":0.0003,"batch_size":256,"seed":0,"algo":"sac"}
-{"run_id":"r0002","lr":0.0003,"batch_size":256,"seed":1,"algo":"sac"}
-{"run_id":"r0003","lr":0.0010,"batch_size":256,"seed":0,"algo":"sac"}
+{"run_id":"ppo_000","algo":"ppo","seed":0,"lr":3e-4,"clip_range":0.2,"entropy_coef":0.0,"gae_lambda":0.95,"gamma":0.99,"n_steps":2048,"batch_size":256,"n_epochs":10,"value_coef":0.5,"max_grad_norm":0.5}
+{"run_id":"ppo_001","algo":"ppo","seed":1,"lr":3e-4,"clip_range":0.2,"entropy_coef":0.0,"gae_lambda":0.95,"gamma":0.99,"n_steps":2048,"batch_size":256,"n_epochs":10,"value_coef":0.5,"max_grad_norm":0.5}
+{"run_id":"ppo_002","algo":"ppo","seed":2,"lr":3e-4,"clip_range":0.2,"entropy_coef":0.0,"gae_lambda":0.95,"gamma":0.99,"n_steps":2048,"batch_size":256,"n_epochs":10,"value_coef":0.5,"max_grad_norm":0.5}
+
+{"run_id":"ppo_010","algo":"ppo","seed":0,"lr":1e-4,"clip_range":0.2,"entropy_coef":0.0,"gae_lambda":0.95,"gamma":0.99,"n_steps":2048,"batch_size":256,"n_epochs":10,"value_coef":0.5,"max_grad_norm":0.5}
+{"run_id":"ppo_011","algo":"ppo","seed":1,"lr":1e-4,"clip_range":0.2,"entropy_coef":0.0,"gae_lambda":0.95,"gamma":0.99,"n_steps":2048,"batch_size":256,"n_epochs":10,"value_coef":0.5,"max_grad_norm":0.5}
+
+{"run_id":"ppo_020","algo":"ppo","seed":0,"lr":3e-4,"clip_range":0.1,"entropy_coef":0.0,"gae_lambda":0.95,"gamma":0.99,"n_steps":2048,"batch_size":256,"n_epochs":10,"value_coef":0.5,"max_grad_norm":0.5}
+{"run_id":"ppo_021","algo":"ppo","seed":1,"lr":3e-4,"clip_range":0.1,"entropy_coef":0.0,"gae_lambda":0.95,"gamma":0.99,"n_steps":2048,"batch_size":256,"n_epochs":10,"value_coef":0.5,"max_grad_norm":0.5}
+
+{"run_id":"ppo_030","algo":"ppo","seed":0,"lr":3e-4,"clip_range":0.2,"entropy_coef":0.01,"gae_lambda":0.95,"gamma":0.99,"n_steps":2048,"batch_size":256,"n_epochs":10,"value_coef":0.5,"max_grad_norm":0.5}
+{"run_id":"ppo_031","algo":"ppo","seed":1,"lr":3e-4,"clip_range":0.2,"entropy_coef":0.01,"gae_lambda":0.95,"gamma":0.99,"n_steps":2048,"batch_size":256,"n_epochs":10,"value_coef":0.5,"max_grad_norm":0.5}

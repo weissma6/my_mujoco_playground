@@ -1,97 +1,24 @@
-# How to build a docker image on the cluster directly
-Change path in submitfile and conf Folder all files -> dongtten to weissma or so
-
 # connect to Login node
 ssh weissma6@dallas.zhaw.ch
 
-# Step 2 – From the VSCode terminal, hop to a compute node
-# Login nodes are not for heavy work (builds, big training, etc.)
-givemeagpushell sanfrancisco
-
-# Step 3 – Go to your git repo and build with Podman on the compute node:
+# Step 1 – Go to your git repo and build with Podman on the compute node:
 cd ~/VT1_MBRL/my_mujoco_playground
 
-## Make sure Dockerfile & requirements.txt are here
-ls Dockerfile requirements.txt
+# Step 3 – Submit the SLURM array job:
+sbatch batch_runs/slurm/run_array.sbatch
 
-## Build the image
-podman build -t mujoco:env .
+#### -----------------------
+# Sanity checks
+#### -----------------------
+# Ensure image tar path exists (adjust filename)
+ls -lh mujoco_env.tar
 
-# Check the image
-podman images
+# Ensure W&B key is available
+ls -l ~/.secrets/wandb_key
+export WANDB_API_KEY="$(cat ~/.secrets/wandb_key)"
+echo "WANDB_API_KEY is: ${WANDB_API_KEY:+SET}${WANDB_API_KEY:-MISSING}"
 
-
-
-# Step 4 – RUN the image with your local code mounted
-
-# check Job Queue and cancel job
-squeue -u weissma6
-scancel -u weissma6
-
-# first cd into pyfile directory
-cd ~/VT1_MBRL/my_mujoco_playground
-
-# mount the GitHUB code on the image
-podman run --rm -it \
-    -e WANDB_API_KEY="$WANDB_API_KEY" \
-    -e MUJOCO_GL=osmesa \
-    -e PYTHONPATH=/workspace \
-    -v "$(pwd):/workspace" \
-    -w /workspace \
-    mujoco:env \
-    python -m learning.notebooks.panda_test
-
-# Step 5 – (Recommended) Save the image to a tar on shared storage
-cd ~/VT1_MBRL/my_mujoco_playground
-podman save -o mujoco_env.tar mujoco:env
-
-
-# RUN code later with the image
-Later, on any node (or in any job script):
-cd ~/VT1_MBRL/my_mujoco_playground
-podman load -i ~/VT1_MBRL/my_mujoco_playground/mujoco_env.tar
-
-# See your jobs (IDs in 1st column)
-squeue -u weissma6 -o "%.18i %.20j %.8T %.10M %.10l %N %R"
-
-# Kill one job
-scancel <JOBID>
-
-# Kill all your jobs
-scancel -u weissma6
-
-# Kill only PENDING jobs
-scancel -u $USER -t PENDING
-
-# Kill by name (pattern)
-scancel -u $USER -n run_dummy_py_script*
-
-
-
-
-# Do one time the weights & Biases login
-cd ~/VT1_MBRL/my_mujoco_playground
-
-podman run --rm -it \
-    -v $(pwd):/workspace \
-    -w /workspace \
-    mujoco:env \
-    bash
-
-wandb login
-# paste your key
-exit
-
-# Test JAX with GPU
-podman run --rm -it \
-  mujoco:env \
-  python -c "import jax; print(jax.devices())"
-
-
-# save wandb api key in a file
-mkdir -p ~/.secrets
-echo 'YOUR_REAL_WANDB_KEY_HERE' > ~/.secrets/wandb_key
-chmod 600 ~/.secrets/wandb_key
-
-export WANDB_API_KEY=$(cat ~/.secrets/wandb_key)
+# Sanity: check JSONL sweep file exists
+ls -lh batch_runs/sweeps/panda_sweep.jsonl
+wc -l batch_runs/sweeps/panda_sweep.jsonl
 

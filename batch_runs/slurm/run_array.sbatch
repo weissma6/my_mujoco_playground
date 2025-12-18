@@ -6,13 +6,15 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-<2>%<2>
+#SBATCH --array=1-10%4
 
 set -euo pipefail
 
 REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"
-IMAGE_TAR="$HOME/VT1_MBRL/my_mujoco_playground"
+IMAGE_TAR="$REPO_DIR/mujoco_env.tar"
 IMAGE_TAG="mujoco:env"
+
+podman image exists "$IMAGE_TAG" || podman load -i "$IMAGE_TAR"
 
 cd "$REPO_DIR"
 mkdir -p logs results
