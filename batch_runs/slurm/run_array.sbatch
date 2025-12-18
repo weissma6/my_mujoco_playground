@@ -2,9 +2,10 @@
 # ===== Slurm job metadata =====
 #SBATCH --job-name=panda_sweep
 #SBATCH --account=cai_iai
+#SBATCH --partition=gpu
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
-#SBATCH --time=00:30:00
+#SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
