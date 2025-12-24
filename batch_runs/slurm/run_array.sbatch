@@ -14,17 +14,25 @@
 set -euo pipefail
 
 REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"
+cd "$REPO_DIR"
+
+# Use tmp directory in your home for podman instead of node /tmp
+export TMPDIR="$HOME/tmp_podman"
+mkdir -p "$TMPDIR"
+echo "Using TMPDIR=$TMPDIR"   # optional debug print
+
 IMAGE_TAR="$REPO_DIR/mujoco_env.tar"
 IMAGE_TAG="mujoco:env"
 
-podman image exists "$IMAGE_TAG" || podman load -i "$IMAGE_TAR"
-
-cd "$REPO_DIR"
 mkdir -p logs results
 
-# Load the image tar if needed
-if [[ -f "$IMAGE_TAR" ]]; then
-  podman load -i "$IMAGE_TAR" || true
+IMAGE_TAG="mujoco:env"
+IMAGE_TAR="$REPO_DIR/mujoco_env.tar"
+
+# Load image if needed (now using TMPDIR in home)
+if ! podman image exists "$IMAGE_TAG"; then
+  echo "Image $IMAGE_TAG not found; loading from $IMAGE_TAR"
+  podman load -i "$IMAGE_TAR"
 fi
 
 # Load W&B API key
