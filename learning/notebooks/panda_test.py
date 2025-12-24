@@ -222,6 +222,10 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
                 )
 
         ppo_training_params = dict(ppo_params)
+        # REMOVE parameters we pass explicitly below
+        for k in ["seed", "progress_fn", "policy_params_fn", "network_factory"]:
+            ppo_training_params.pop(k, None)
+
         network_factory = ppo_networks.make_ppo_networks
         if "network_factory" in ppo_params and isinstance(
             ppo_params["network_factory"], dict
