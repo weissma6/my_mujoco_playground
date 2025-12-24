@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-10%2
+#SBATCH --array=1-6%2
 
 set -euo pipefail
 

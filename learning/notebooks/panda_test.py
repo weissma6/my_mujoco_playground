@@ -5,485 +5,270 @@ This file loads all the mujoco and checks for cuda of appe
 import os
 import platform
 import subprocess
-import sys
 import json
-import itertools
-import time
-from typing import Callable, List, NamedTuple, Optional, Union
-import numpy as np
-from datetime import datetime
 import functools
-from typing import Any, Dict, Sequence, Tuple, Union
+import random
+from datetime import datetime
+from typing import Any, Dict
 from mujoco_playground.config import manipulation_params
+from mujoco_playground import registry, wrapper
+from brax.training.agents.ppo import networks as ppo_networks
+from brax.training.agents.ppo import train as ppo
+import jax
+import wandb
+import mediapy
 
 
-# -----------------------------------------------------------------------------
-# Environment / backend selection
-# -----------------------------------------------------------------------------
 def is_nvidia_available() -> bool:
     try:
         result = subprocess.run(
-            ["nvidia-smi"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=5,
+            ["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5
         )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
 
-system = platform.system()
-
-if "MUJOCO_GL" in os.environ:
-    # Respect what the user / container set
-    print(
-        f"[INFO] MUJOCO_GL already set to {os.environ['MUJOCO_GL']!r}, not overriding."
-    )
-else:
+def _setup_mujoco_backend() -> None:
+    system = platform.system()
+    if "MUJOCO_GL" in os.environ:
+        print(
+            f"[INFO] MUJOCO_GL already set to {os.environ['MUJOCO_GL']!r}, not overriding.",
+            flush=True,
+        )
+        return
     if system == "Linux" and is_nvidia_available():
         os.environ["MUJOCO_GL"] = "egl"
-        print("[INFO] Detected NVIDIA GPU on Linux – using MUJOCO_GL=egl")
+        print("[INFO] Detected NVIDIA GPU on Linux – using MUJOCO_GL=egl", flush=True)
     elif system == "Darwin":
         os.environ["MUJOCO_GL"] = "glfw"
         os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
-        print("[INFO] Running on macOS – forcing CPU backend (glfw)")
+        print("[INFO] Running on macOS – forcing CPU backend (glfw)", flush=True)
     else:
         os.environ["MUJOCO_GL"] = "osmesa"
         os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
-        print(f"[INFO] No GPU / unknown system – using MUJOCO_GL=osmesa")
-
-# -----------------------------------------------------------------------------
-# (rest of your imports remain as they were)
-# -----------------------------------------------------------------------------
-from brax import base
-from brax import envs
-from brax import math
-from brax.base import Base, Motion, Transform
-from brax.base import State as PipelineState
-from brax.envs.base import Env, PipelineEnv, State
-from brax.io import html, mjcf, model
-from brax.mjx.base import State as MjxState
-from brax.training.agents.ppo import networks as ppo_networks
-from brax.training.agents.ppo import train as ppo
-from brax.training.agents.sac import networks as sac_networks
-from brax.training.agents.sac import train as sac
-from etils import epath
-from flax import struct
-from flax.training import orbax_utils
-from IPython.display import HTML, clear_output
-import jax
-
-print("JAX devices:", jax.devices(), flush=True)
-from jax import numpy as jp
-from matplotlib import pyplot as plt
-import mediapy as media
-from ml_collections import config_dict
-import mujoco
-import mujoco.viewer
-from mujoco import mjx
-import numpy as np
-from orbax import checkpoint as ocp
-import pickle
-from mujoco_playground import wrapper
-from mujoco_playground import registry
-from copy import deepcopy
-import wandb
-import imageio
-import mediapy
-import random
+        print("[INFO] No GPU / unknown system – using MUJOCO_GL=osmesa", flush=True)
 
 
-# -----------------------------------------------------------------------------
-# 1) Basic config
-# -----------------------------------------------------------------------------
-env_name = "PandaPickCube"
-
-# Base PPO config from Mujoco Playground
-base_ppo_params = manipulation_params.brax_ppo_config(env_name)
-
-# Convert to plain dict for easier manipulation / W&B
-try:
-    ppo_params = base_ppo_params.to_dict()
-except AttributeError:
-    ppo_params = dict(base_ppo_params)
-
-seed = 1  # = int(np.random.randint(0, 2**31 - 1))
-
-# -----------------------------------------------------------------------------
-# 2) Init env and W&B run
-# -----------------------------------------------------------------------------
-env = registry.load(env_name)
-env_cfg = registry.get_default_config(env_name)
-
-# Flatten config for W&B
-wandb_cfg = {
-    "env_name": env_name,
-    "algo": "PPO",
-    "seed": seed,
-}
-
-timestamp = datetime.now().strftime("%Y%m%d_%H%M")  # e.g. 20251211_1037
-run_name = f"PandaPickCube_{wandb_cfg['algo']}_{timestamp}"
-
-for k, v in ppo_params.items():
-    if isinstance(v, (int, float, str, bool)):
-        wandb_cfg[f"ppo/{k}"] = v
-
-run = wandb.init(
-    project="panda_pick_ppo",  # <-- change to your project name
-    name=run_name,
-    config=wandb_cfg,
-)
+def _deep_update(dst: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
+    for k, v in src.items():
+        if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            _deep_update(dst[k], v)
+        else:
+            dst[k] = v
+    return dst
 
 
-# -----------------------------------------------------------------------------
-# 3) Progress function: log metrics to W&B (no plotting)
-# -----------------------------------------------------------------------------
-def progress_wandb(num_steps, metrics):
-    """
-    Called periodically during PPO training.
-    Logs scalar metrics to W&B.
-    """
-    print(
-        "WANDB CALLBACK:", num_steps, "Episode Reward", metrics["eval/episode_reward"]
-    )
-    log_dict = {"training/num_steps": int(num_steps)}
-    for k, v in metrics.items():
-        try:
-            log_dict[k] = float(v)
-        except Exception:
-            # Skip non-scalars / weird values
-            pass
-
-    wandb.log(log_dict, step=int(num_steps))
-
-
-# -----------------------------------------------------------------------------
-# 4) Rollout + video logging helper
-# -----------------------------------------------------------------------------
-def final_video_rollout(
-    env_name: str,
-    env_cfg,
-    make_inference_fn,
-    params,
-    seed: int,
-    tag: str = "final",
-    render_every: int = 2,
-    camera_kwargs: dict | None = None,
-    deterministic: bool = True,
-):
-    """
-    Final evaluation rollout + render + W&B video logging.
-    Video is ALWAYS written into the active W&B run directory:
-      wandb/run-*/files/
-    Matches the manipulation notebook rollout pattern.
-    """
-
-    if camera_kwargs is None:
-        camera_kwargs = {}
-
-    assert (
-        wandb.run is not None
-    ), "wandb.init() must be called before final_video_rollout()"
-
-    # ------------------------------------------------------------------
-    # Environment + JIT
-    # ------------------------------------------------------------------
-    env = registry.load(env_name)
-
-    jit_reset = jax.jit(env.reset)
-    jit_step = jax.jit(env.step)
-
-    inference_fn = jax.jit(make_inference_fn(params, deterministic=deterministic))
-
-    # ------------------------------------------------------------------
-    # Rollout (same as manipulation notebook)
-    # ------------------------------------------------------------------
-    rng = jax.random.PRNGKey(seed)
-    rng, reset_rng = jax.random.split(rng)
-    state = jit_reset(reset_rng)
-
-    rollout = [state]
-
-    for _ in range(int(env_cfg.episode_length)):
-        rng, act_rng = jax.random.split(rng)
-        ctrl, _ = inference_fn(state.obs, act_rng)
-        state = jit_step(state, ctrl)
-        rollout.append(state)
-
-    # ------------------------------------------------------------------
-    # Render trajectory
-    # ------------------------------------------------------------------
-    trajectory = rollout[:: int(render_every)]
-    frames = env.render(trajectory, **camera_kwargs)
-
-    # ------------------------------------------------------------------
-    # Save video INTO W&B RUN DIRECTORY
-    # ------------------------------------------------------------------
-    run_dir = wandb.run.dir  # <-- this is the key difference
-    video_path = os.path.join(run_dir, f"{env_name}_{tag}_seed{seed}.mp4")
-
-    fps = float(1.0 / env.dt) / float(render_every)
-    mediapy.write_video(video_path, frames, fps=fps)
-
-    # ------------------------------------------------------------------
-    # Log to W&B (media)
-    # ------------------------------------------------------------------
-    wandb.log(
-        {
-            "eval/final_video": wandb.Video(
-                video_path,
-                fps=int(fps),
-                format="mp4",
-            )
-        },
-        step=int(env_cfg.episode_length),
-    )
-
-    print(f"[FINAL VIDEO] saved & logged: {video_path}")
-
-    return video_path
+def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    reserved = {
+        "run_id",
+        "wandb_project",
+        "wandb_mode",
+        "wandb_group",
+        "wandb_tags",
+        "out_dir",
+        "video_every_evals",
+        "render_every",
+        "video_tag",
+        "camera_kwargs",
+        "deterministic",
+        "env_name",
+        "algo",
+        "notes",
+    }
+    overrides: Dict[str, Any] = {}
+    for k, v in cfg.items():
+        if k in reserved:
+            continue
+        overrides[k] = v
+    if "network_factory" in cfg and isinstance(cfg["network_factory"], dict):
+        overrides["network_factory"] = cfg["network_factory"]
+    return overrides
 
 
-# -----------------------------------------------------------------------------
-# 5) Hook into PPO internals: policy_params_fn for videos every N evals
-# -----------------------------------------------------------------------------
-VIDEO_EVERY_EVALS = 5  # every N eval callbacks
-RENDER_EVERY = 1  # keep every Nth state for rendering (smaller/faster)
-VIDEO_TAG = "eval"
+def _make_progress_wandb():
+    def progress_wandb(num_steps, metrics):
+        log_dict = {"training/num_steps": int(num_steps)}
+        for k, v in metrics.items():
+            try:
+                log_dict[k] = float(v)
+            except Exception:
+                pass
+        wandb.log(log_dict, step=int(num_steps))
 
-video_state = {
-    "eval_idx": 0,
-    "video_every_evals": VIDEO_EVERY_EVALS,
-    "env_name": env_name,
-    "seed": seed,
-}
+    return progress_wandb
 
 
-def rollout_and_log_video_from_make_policy(
+def _rollout_and_log_video_from_make_policy(
+    *,
     num_steps: int,
     make_policy,
     params,
     env_name: str,
     seed: int,
     episode_length: int,
-    render_every: int = 2,
-    camera_kwargs: dict | None = None,
-    step_tag: str = "eval",
+    render_every: int,
+    camera_kwargs: Dict[str, Any],
+    step_tag: str,
 ):
-    """
-    SAFE MJX video rollout using make_policy(params, deterministic=True).
-
-    - builds a fresh eval env
-    - uses jit reset/step
-    - builds a trajectory list of State
-    - renders via env.render(trajectory, ...)
-    - saves into wandb.run.dir (files/)
-    - logs wandb.Video
-    """
-    import os
-    import jax
     import jax.numpy as jnp
-    import mediapy
-    import wandb
-
-    if camera_kwargs is None:
-        camera_kwargs = {}
-
-    assert wandb.run is not None, "wandb.init() must be called before logging video."
 
     eval_env = registry.load(env_name)
     jit_reset = jax.jit(eval_env.reset)
     jit_step = jax.jit(eval_env.step)
-
-    # IMPORTANT: deterministic=True to avoid needing key_sample / stochastic sampling
     policy = jax.jit(make_policy(params, deterministic=True))
-
     rng = jax.random.PRNGKey(seed)
     rng, reset_rng = jax.random.split(rng)
     state = jit_reset(reset_rng)
-
-    # Debug once (now state exists)
-    test_out = make_policy(params, deterministic=True)(
-        state.obs, jax.random.PRNGKey(seed + 999)
-    )
-    print("[VIDEO DEBUG] policy output type:", type(test_out))
-
     rollout = [state]
     for _ in range(int(episode_length)):
         rng, act_rng = jax.random.split(rng)
-
         out = policy(state.obs, act_rng)
-
-        # policy outputs can be action OR (action, extras) OR dict
         if isinstance(out, tuple):
             ctrl = out[0]
         elif isinstance(out, dict):
             ctrl = out.get("action", out.get("ctrl", out))
         else:
             ctrl = out
-
         ctrl = jnp.asarray(ctrl)
         state = jit_step(state, ctrl)
         rollout.append(state)
-
     trajectory = rollout[:: int(render_every)]
-    frames = eval_env.render(trajectory, **camera_kwargs)
-
+    frames = eval_env.render(trajectory, **(camera_kwargs or {}))
     fps = float(1.0 / eval_env.dt) / float(render_every)
-
-    # Save INTO W&B run dir so it ends up under run/files/
     video_path = os.path.join(wandb.run.dir, f"{env_name}_{step_tag}.mp4")
     mediapy.write_video(video_path, frames, fps=fps)
-
     wandb.log(
         {"eval/video": wandb.Video(video_path, fps=int(fps), format="mp4")},
         step=int(num_steps),
     )
 
-    print(f"[VIDEO] Logged {video_path} at step={int(num_steps)}")
-    return video_path
 
-
-def policy_params_wandb(num_steps, make_policy, params):
-    """
-    Called by PPO at evaluation checkpoints.
-    Logs rollout videos every N eval callbacks AND always at the last eval.
-    """
-    video_state["eval_idx"] += 1
-    eval_idx = video_state["eval_idx"]
-
-    # Store latest training step in W&B summary
-    wandb.run.summary["latest_num_steps"] = int(num_steps)
-    wandb.run.summary["latest_eval_idx"] = int(eval_idx)
-
-    total_timesteps = ppo_params.get("num_timesteps", None)
-    is_last_eval = total_timesteps is not None and int(num_steps) >= int(
-        total_timesteps
-    )
-
-    should_record = (eval_idx % video_state["video_every_evals"] == 0) or is_last_eval
-
-    if should_record:
-        rollout_and_log_video_from_make_policy(
-            num_steps=int(num_steps),
-            make_policy=make_policy,
-            params=params,
-            env_name=video_state["env_name"],
-            seed=int(video_state["seed"]),
-            episode_length=int(env_cfg.episode_length),
-            render_every=int(RENDER_EVERY),
-            camera_kwargs={},  # optionally: {"height": 480, "width": 640, "camera": "front"}
-            step_tag=f"{VIDEO_TAG}{eval_idx}_steps{int(num_steps)}",
-        )
-
-
-# -----------------------------------------------------------------------------
-# 6) Run experiment function (for hyperparameter sweeps)
-# -----------------------------------------------------------------------------
-def run_experiment(cfg: dict, out_dir: str) -> None:
-    lr = float(cfg.get("lr", 3e-4))
-    batch_size = int(cfg.get("batch_size", 256))
+def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
+    _setup_mujoco_backend()
+    env_name = str(cfg.get("env_name", "PandaPickCube"))
     seed = int(cfg.get("seed", 0))
-    algo = str(cfg.get("algo", "sac"))
-
     random.seed(seed)
-    # If you use numpy/torch, seed them here too.
-
     os.makedirs(out_dir, exist_ok=True)
-
-    # If you want a clean default:
-    wandb_mode = cfg.get("wandb_mode", "online")  # or "disabled"
+    wandb_mode = str(cfg.get("wandb_mode", "online"))
     run = wandb.init(
-        project=cfg.get("wandb_project", "panda_pick_ppo"),
-        name=cfg.get("run_id", None),
+        project=str(cfg.get("wandb_project", "panda_pick_ppo")),
+        name=str(cfg.get("run_id", "")) or None,
+        group=str(cfg.get("wandb_group", "")) or None,
+        tags=cfg.get("wandb_tags", None),
         config=cfg,
         mode=wandb_mode,
-        dir=out_dir,  # keeps wandb files per-run
+        dir=out_dir,
     )
-
     try:
-        # TODO: Replace this with your actual panda test code
-        # Use lr, batch_size, seed, algo in place of hard-coded values.
+        print("JAX devices:", jax.devices(), flush=True)
+        env = registry.load(env_name)
+        env_cfg = registry.get_default_config(env_name)
+        base = manipulation_params.brax_ppo_config(env_name)
+        try:
+            ppo_params = base.to_dict()
+        except AttributeError:
+            ppo_params = dict(base)
+        overrides = _extract_ppo_overrides(cfg)
+        _deep_update(ppo_params, overrides)
+        if "learning_rate" in ppo_params:
+            ppo_params["learning_rate"] = float(ppo_params["learning_rate"])
+        if "batch_size" in ppo_params:
+            ppo_params["batch_size"] = int(ppo_params["batch_size"])
+        if "num_envs" in ppo_params:
+            ppo_params["num_envs"] = int(ppo_params["num_envs"])
+        if "num_timesteps" in ppo_params:
+            ppo_params["num_timesteps"] = int(ppo_params["num_timesteps"])
+        if "unroll_length" in ppo_params:
+            ppo_params["unroll_length"] = int(ppo_params["unroll_length"])
+        if "num_minibatches" in ppo_params:
+            ppo_params["num_minibatches"] = int(ppo_params["num_minibatches"])
+        if "num_updates_per_batch" in ppo_params:
+            ppo_params["num_updates_per_batch"] = int(
+                ppo_params["num_updates_per_batch"]
+            )
+        if "episode_length" in ppo_params:
+            ppo_params["episode_length"] = int(ppo_params["episode_length"])
+        if "discounting" in ppo_params:
+            ppo_params["discounting"] = float(ppo_params["discounting"])
+        if "entropy_cost" in ppo_params:
+            ppo_params["entropy_cost"] = float(ppo_params["entropy_cost"])
+        video_every_evals = int(cfg.get("video_every_evals", 5))
+        render_every = int(cfg.get("render_every", 1))
+        video_tag = str(cfg.get("video_tag", "eval"))
+        camera_kwargs = cfg.get("camera_kwargs", {}) or {}
+        episode_length = int(env_cfg.episode_length)
+        video_state = {"eval_idx": 0}
 
-        # Example output to prove it worked:
-        with open(os.path.join(out_dir, "metrics.json"), "w", encoding="utf-8") as f:
+        def policy_params_fn(num_steps, make_policy, params):
+            video_state["eval_idx"] += 1
+            eval_idx = video_state["eval_idx"]
+            total_timesteps = ppo_params.get("num_timesteps", None)
+            is_last_eval = total_timesteps is not None and int(num_steps) >= int(
+                total_timesteps
+            )
+            should_record = (eval_idx % video_every_evals == 0) or is_last_eval
+            if should_record:
+                _rollout_and_log_video_from_make_policy(
+                    num_steps=int(num_steps),
+                    make_policy=make_policy,
+                    params=params,
+                    env_name=env_name,
+                    seed=seed,
+                    episode_length=episode_length,
+                    render_every=render_every,
+                    camera_kwargs=camera_kwargs,
+                    step_tag=f"{video_tag}{eval_idx}_steps{int(num_steps)}",
+                )
+
+        ppo_training_params = dict(ppo_params)
+        network_factory = ppo_networks.make_ppo_networks
+        if "network_factory" in ppo_params and isinstance(
+            ppo_params["network_factory"], dict
+        ):
+            nf_cfg = dict(ppo_params["network_factory"])
+            if "policy_hidden_layer_sizes" in nf_cfg and isinstance(
+                nf_cfg["policy_hidden_layer_sizes"], list
+            ):
+                nf_cfg["policy_hidden_layer_sizes"] = tuple(
+                    nf_cfg["policy_hidden_layer_sizes"]
+                )
+            if "value_hidden_layer_sizes" in nf_cfg and isinstance(
+                nf_cfg["value_hidden_layer_sizes"], list
+            ):
+                nf_cfg["value_hidden_layer_sizes"] = tuple(
+                    nf_cfg["value_hidden_layer_sizes"]
+                )
+            del ppo_training_params["network_factory"]
+            network_factory = functools.partial(
+                ppo_networks.make_ppo_networks, **nf_cfg
+            )
+        train_fn = functools.partial(
+            ppo.train,
+            **ppo_training_params,
+            network_factory=network_factory,
+            progress_fn=_make_progress_wandb(),
+            policy_params_fn=policy_params_fn,
+            seed=seed,
+        )
+        make_inference_fn, params, final_metrics = train_fn(
+            environment=env, wrap_env_fn=wrapper.wrap_for_brax_training
+        )
+        with open(
+            os.path.join(out_dir, "final_metrics.json"), "w", encoding="utf-8"
+        ) as f:
             json.dump(
                 {
-                    "run_id": cfg.get("run_id"),
-                    "lr": lr,
-                    "batch_size": batch_size,
-                    "seed": seed,
-                    "algo": algo,
-                    "status": "ok",
+                    k: float(v)
+                    for k, v in final_metrics.items()
+                    if isinstance(v, (int, float))
                 },
                 f,
                 indent=2,
             )
+        if "eval/episode_reward" in final_metrics:
+            wandb.run.summary["final_eval_return"] = float(
+                final_metrics["eval/episode_reward"]
+            )
     finally:
         run.finish()
-
-
-# -----------------------------------------------------------------------------
-# 7) Build network_factory and call PPO train
-# -----------------------------------------------------------------------------
-# --- build params + network_factory exactly like Panda ---
-ppo_training_params = dict(ppo_params)
-
-# ppo_params["num_timesteps"] = int(200_000)  # instead of millions
-# ppo_params["num_envs"] = 16  # smaller parallelism
-# ppo_params["unroll_length"] = 20  # shorter unrolls
-
-network_factory = ppo_networks.make_ppo_networks
-# Handle the optional network_factory config
-if "network_factory" in ppo_params:
-    # Remove it from the params dict so we don't pass it twice
-    del ppo_training_params["network_factory"]
-
-    # Build the partial network factory
-    network_factory = functools.partial(
-        ppo_networks.make_ppo_networks,
-        **ppo_params["network_factory"],
-    )
-
-# Build train_fn exactly like the Panda example
-train_fn = functools.partial(
-    ppo.train,
-    **ppo_training_params,
-    network_factory=network_factory,
-    progress_fn=progress_wandb,  # your custom W&B logger
-    policy_params_fn=policy_params_wandb,  # your video logger
-    seed=seed,  # reproducibility
-)
-
-make_inference_fn, params, final_metrics = train_fn(
-    environment=env,
-    wrap_env_fn=wrapper.wrap_for_brax_training,
-)
-
-# -----------------------------------------------------------------------------
-# 8) Save final model (seed, hyperparams, params) to W&B
-# -----------------------------------------------------------------------------
-import pickle
-
-model_path = os.path.join(wandb.run.dir, "panda_test_final.pkl")
-to_save = {
-    "params": params,
-    "seed": seed,
-    "env_name": env_name,
-    "ppo_config": ppo_params,
-    "timestamp": datetime.now().isoformat(),
-}
-with open(model_path, "wb") as f:
-    pickle.dump(to_save, f)
-
-artifact = wandb.Artifact("panda_test_policy", type="model")
-artifact.add_file(model_path)
-wandb.log_artifact(artifact)
-
-# Log final eval return in W&B summary
-if "eval/episode_reward" in final_metrics:
-    wandb.run.summary["final_eval_return"] = float(final_metrics["eval/episode_reward"])
-
-wandb.finish()
