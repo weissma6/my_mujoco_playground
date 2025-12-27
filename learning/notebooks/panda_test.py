@@ -221,16 +221,17 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
                     step_tag=f"{video_tag}{eval_idx}_steps{int(num_steps)}",
                 )
 
+        # Build PPO training params and network factory
         ppo_training_params = dict(ppo_params)
-        # REMOVE parameters we pass explicitly below
-        for k in ["seed", "progress_fn", "policy_params_fn", "network_factory"]:
+
+        # Remove parameters that we pass explicitly to ppo.train below
+        for k in ["network_factory", "seed", "progress_fn", "policy_params_fn"]:
             ppo_training_params.pop(k, None)
 
         network_factory = ppo_networks.make_ppo_networks
-        if "network_factory" in ppo_params and isinstance(
-            ppo_params["network_factory"], dict
-        ):
-            nf_cfg = dict(ppo_params["network_factory"])
+        nf_cfg = ppo_params.get("network_factory")
+        if isinstance(nf_cfg, dict):
+            # If sweep config uses lists for layer sizes, convert to tuples
             if "policy_hidden_layer_sizes" in nf_cfg and isinstance(
                 nf_cfg["policy_hidden_layer_sizes"], list
             ):
@@ -243,10 +244,10 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
                 nf_cfg["value_hidden_layer_sizes"] = tuple(
                     nf_cfg["value_hidden_layer_sizes"]
                 )
-            del ppo_training_params["network_factory"]
             network_factory = functools.partial(
                 ppo_networks.make_ppo_networks, **nf_cfg
             )
+
         train_fn = functools.partial(
             ppo.train,
             **ppo_training_params,
@@ -255,6 +256,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             policy_params_fn=policy_params_fn,
             seed=seed,
         )
+
         make_inference_fn, params, final_metrics = train_fn(
             environment=env, wrap_env_fn=wrapper.wrap_for_brax_training
         )
