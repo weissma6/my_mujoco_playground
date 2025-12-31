@@ -1,6 +1,6 @@
 #!/bin/bash
 # ===== Slurm job metadata =====
-#SBATCH --job-name=panda_sweep
+#SBATCH --job-name=UR10_sweep
 #SBATCH --account=cai_iai
 #SBATCH --partition=gpu
 #SBATCH --output=logs/%x_%A_%a.out
@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-6%2
+#SBATCH --array=1-6%4
 
 set -euo pipefail
 
@@ -49,7 +49,7 @@ podman run --rm \
   -w /workspace \
   mujoco:env \
   python batch_runs/scripts/run_one.py \
-    --jsonl "batch_runs/sweeps/panda_sweep.jsonl" \
+    --jsonl "batch_runs/sweeps/UR10_sweep.jsonl" \
     --index "$SLURM_ARRAY_TASK_ID" \
     --out_root "results"
 

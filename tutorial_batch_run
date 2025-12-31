@@ -4,6 +4,13 @@ ssh weissma6@dallas.zhaw.ch
 # Step 1.3 – Go to your git repo and build with Podman on the compute node:
 cd ~/VT1_MBRL/my_mujoco_playground
 
+# Load the image tar
+givemeagpushell sanfrancisco
+podman load -i ~/VT1_MBRL/my_mujoco_playground/mujoco_env.tar
+podman images
+exit 
+
+
 # step 1.2 – Weights & Biases setup – once per session
 ls -l ~/.secrets/wandb_key
 export WANDB_API_KEY="$(cat ~/.secrets/wandb_key)"
@@ -20,6 +27,7 @@ nano batch_runs/slurm/run_array.sbatch
 
 # Step 3 – Submit the SLURM array job:
 sbatch batch_runs/slurm/run_array.sbatch
+sbatch --array=2 batch_runs/slurm/run_array.sbatch
 
 # ------------------------------------------------
 # Step 4 Monitoring the job:
@@ -34,13 +42,18 @@ squeue -u weissma6 -o "%.18i %.9P %.20j %.8T %.10M %.10l %.6D %R"
 squeue -j <job_id>
 
 # More detailed tracking
-tail -f logs/panda_sweep_76142_1.out
+tail -f logs/panda_sweep_77228_2.out
+tail -f logs/panda_sweep_77228_2.err
 
 # Stop trailing:
 # Press Ctrl + C
 
 # See detailed job info
 scontrol show job <job_id>  
+
+# check after finished jobs
+sacct -X -u weissma6 --format=JobID,JobName,State,ExitCode,Elapsed
+
 
 
 # connect to Login node

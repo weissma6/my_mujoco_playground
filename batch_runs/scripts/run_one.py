@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+from learning.notebooks.panda_test import run_experiment
 
 
 def load_config(jsonl_path: str, index_1based: int) -> dict:
@@ -35,8 +36,6 @@ def main() -> None:
         json.dump(cfg, f, indent=2)
 
     # This matches what worked for you: python -m learning.notebooks.panda_test
-    from learning.notebooks.panda_test import run_experiment
-
     run_experiment(cfg=cfg, out_dir=out_dir)
 
 
