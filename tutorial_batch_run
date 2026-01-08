@@ -42,8 +42,8 @@ squeue -u weissma6 -o "%.18i %.9P %.20j %.8T %.10M %.10l %.6D %R"
 squeue -j <job_id>
 
 # More detailed tracking
-tail -f logs/panda_sweep_77228_2.out
-tail -f logs/panda_sweep_77228_2.err
+tail -f logs/UR10_sweep_80049_2.out
+tail -f logs/UR10_sweep_80049_2.err
 
 # Stop trailing:
 # Press Ctrl + C

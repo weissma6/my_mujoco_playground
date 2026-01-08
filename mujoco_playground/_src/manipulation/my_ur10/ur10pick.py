@@ -104,7 +104,7 @@ class UR10PickCube(ur10_base.UR10Base):
     def reset(self, rng: jax.Array) -> State:
         rng, rng_box, rng_target = jax.random.split(rng, 3)
 
-        # intialize box position
+        # initialize box position
         box_pos = (
             jax.random.uniform(
                 rng_box,
@@ -129,14 +129,15 @@ class UR10PickCube(ur10_base.UR10Base):
         # Optional orientation sampling
         target_quat = jp.array([1.0, 0.0, 0.0, 0.0], dtype=float)
         if self._sample_orientation:
-            # sample a random direction
             rng, rng_axis, rng_theta = jax.random.split(rng, 3)
             perturb_axis = jax.random.uniform(rng_axis, (3,), minval=-1, maxval=1)
             perturb_axis = perturb_axis / math.norm(perturb_axis)
             perturb_theta = jax.random.uniform(rng_theta, maxval=np.deg2rad(45))
             target_quat = math.axis_angle_to_quat(perturb_axis, perturb_theta)
 
-        # initialize data
+        # -----------------------------
+        # Build initial qpos - qpos says: “robot is at home pose”
+        # -----------------------------
         init_q = (
             jp.array(self._init_q)
             .at[self._obj_qposadr : self._obj_qposadr + 3]
@@ -146,14 +147,33 @@ class UR10PickCube(ur10_base.UR10Base):
         # Use home pose for all arm joints at reset
         init_q = init_q.at[self._robot_qposadr].set(self._init_q[self._robot_qposadr])
 
+        # -----------------------------
+        # IMPORTANT FIX: make ctrl consistent with init_q - ctrl says: “robot should be somewhere else”
+        # -----------------------------
+        init_ctrl = jp.array(self._init_ctrl)
+
+        # Arm joints: ctrl = joint positions
+        init_ctrl = init_ctrl.at[:6].set(init_q[self._robot_arm_qposadr])
+
+        # Gripper: open at reset
+        init_ctrl = init_ctrl.at[6].set(self._uppers[6])
+
+        # -----------------------------
+        # Create data with CONSISTENT qpos / ctrl
+        # -----------------------------
         data = mjx_env.make_data(
             self._mj_model,
             qpos=init_q,
             qvel=jp.zeros(self._mjx_model.nv, dtype=float),
-            ctrl=self._init_ctrl,
+            ctrl=init_ctrl,  # ✅ FIXED
             impl=self._mjx_model.impl.value,
             nconmax=self._config.nconmax,
             njmax=self._config.njmax,
+        )
+
+        print(
+            "Reset arm ctrl-qpos error:",
+            jp.linalg.norm(data.ctrl[:6] - data.qpos[self._robot_arm_qposadr]),
         )
 
         # set target mocap position
