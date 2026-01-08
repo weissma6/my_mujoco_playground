@@ -85,6 +85,9 @@ class UR10PickCube(ur10_base.UR10Base):
         self._post_init(obj_name="box", keyframe="task_home")
         self._sample_orientation = sample_orientation
 
+        self._left_tip_site = self._mj_model.site("left_finger_touch_site").id
+        self._right_tip_site = self._mj_model.site("right_finger_touch_site").id
+
         # --- No finger sensors on UR10 ---
         self._floor_hand_found_sensor = []
 
@@ -196,14 +199,21 @@ class UR10PickCube(ur10_base.UR10Base):
         return state
 
     def _get_reward(self, data: mjx.Data, info: Dict[str, Any]) -> Dict[str, Any]:
+        # --- target + box pose errors ---
         target_pos = info["target_pos"]
         box_pos = data.xpos[self._obj_body]
-        gripper_pos = data.site_xpos[self._gripper_site]
+
         pos_err = jp.linalg.norm(target_pos - box_pos)
         box_mat = data.xmat[self._obj_body]
         target_mat = math.quat_to_mat(data.mocap_quat[self._mocap_target])
         rot_err = jp.linalg.norm(target_mat.ravel()[:6] - box_mat.ravel()[:6])
 
+        # --- UR10 Hand-E adaptation: use fingertip midpoint as "gripper_pos" ---
+        left_tip_pos = data.site_xpos[self._left_tip_site]
+        right_tip_pos = data.site_xpos[self._right_tip_site]
+        gripper_pos = 0.5 * (left_tip_pos + right_tip_pos)
+
+        # --- Reward terms identical to Panda, only gripper_pos definition changed ---
         box_target = 1 - jp.tanh(5 * (0.9 * pos_err + 0.1 * rot_err))
         gripper_box = 1 - jp.tanh(5 * jp.linalg.norm(box_pos - gripper_pos))
         robot_target_qpos = 1 - jp.tanh(
@@ -213,17 +223,18 @@ class UR10PickCube(ur10_base.UR10Base):
             )
         )
 
-        # --- Floor collision via touch sensors (Panda-style) ---
+        # --- Floor collision via touch sensors (same as Panda) ---
         hand_floor_collision = [
             data.sensordata[self._mj_model.sensor_adr[sensor_id]] > 0
             for sensor_id in self._floor_hand_found_sensor
         ]
         floor_collision = sum(hand_floor_collision) > 0
         no_floor_collision = (1 - floor_collision).astype(float)
-        # ------------------------------------------------------------------------------------
 
+        # --- Same "reached_box" gate as Panda, but based on fingertip midpoint ---
         info["reached_box"] = 1.0 * jp.maximum(
-            info["reached_box"], (jp.linalg.norm(box_pos - gripper_pos) < 0.012)
+            info["reached_box"],
+            (jp.linalg.norm(box_pos - gripper_pos) < 0.02),  # Panda threshold was 0.012
         )
 
         rewards = {
