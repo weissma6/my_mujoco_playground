@@ -105,11 +105,11 @@ def _rollout_and_log_video_from_make_policy(
     make_policy,
     params,
     env_name: str,
+    run_id: str,
     seed: int,
     episode_length: int,
     render_every: int,
     camera_kwargs: Dict[str, Any],
-    step_tag: str,
 ):
     import jax.numpy as jnp
 
@@ -120,7 +120,10 @@ def _rollout_and_log_video_from_make_policy(
     rng = jax.random.PRNGKey(seed)
     rng, reset_rng = jax.random.split(rng)
     state = jit_reset(reset_rng)
+
     rollout = [state]
+    ep_reward = 0.0
+
     for _ in range(int(episode_length)):
         rng, act_rng = jax.random.split(rng)
         out = policy(state.obs, act_rng)
@@ -131,23 +134,37 @@ def _rollout_and_log_video_from_make_policy(
         else:
             ctrl = out
         ctrl = jnp.asarray(ctrl)
+
         state = jit_step(state, ctrl)
         rollout.append(state)
+
+        ep_reward += float(jnp.asarray(state.reward))
+
+    # Build tag using episode reward + steps
+    step_tag = f"{run_id}_rew{ep_reward:.1f}_steps{int(num_steps)}"
+
     trajectory = rollout[:: int(render_every)]
     frames = eval_env.render(trajectory, **(camera_kwargs or {}))
     fps = float(1.0 / eval_env.dt) / float(render_every)
     video_path = os.path.join(wandb.run.dir, f"{env_name}_{step_tag}.mp4")
     mediapy.write_video(video_path, frames, fps=fps)
+
     wandb.log(
-        {"eval/video": wandb.Video(video_path, fps=int(fps), format="mp4")},
+        {
+            "eval/video": wandb.Video(video_path, fps=int(fps), format="mp4"),
+            "eval/episode_reward_video": ep_reward,  # optional but useful
+        },
         step=int(num_steps),
     )
+
+    return ep_reward
 
 
 def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
     _setup_mujoco_backend()
     env_name = str(cfg.get("env_name", "UR10PickCube"))
     seed = int(cfg.get("seed", 0))
+    run_id = str(cfg.get("run_id", "run"))
     random.seed(seed)
     os.makedirs(out_dir, exist_ok=True)
     wandb_mode = str(cfg.get("wandb_mode", "online"))
@@ -214,11 +231,11 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
                     make_policy=make_policy,
                     params=params,
                     env_name=env_name,
+                    run_id=run_id,
                     seed=seed,
                     episode_length=episode_length,
                     render_every=render_every,
                     camera_kwargs=camera_kwargs,
-                    step_tag=f"{video_tag}{eval_idx}_steps{int(num_steps)}",
                 )
 
         # Build PPO training params and network factory
