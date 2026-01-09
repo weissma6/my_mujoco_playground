@@ -98,7 +98,9 @@ class UR10PickCube(ur10_base.UR10Base):
                 "gripper_floor_contact",
             ]
         ]
-        print([kf.name for kf in self._mj_model.keyframes], flush=True)
+
+        print("Model has keyframe support:", hasattr(self._mj_model, "keyframe"), flush=True)
+
 
     def reset(self, rng: jax.Array) -> State:
         rng, rng_box, rng_target = jax.random.split(rng, 3)
@@ -243,7 +245,7 @@ class UR10PickCube(ur10_base.UR10Base):
             target_mat.ravel()[:6] - box_mat.ravel()[:6]
         )  # Rotation error between box and target - scalar JAX float64
 
-        # --- Reward terms identical to Panda, only gripper_pos definition changed ---
+        # --- Reward terms identical to Panda, only gripper_pos definition changed --
         box_target = 1 - jp.tanh(
             5 * (0.9 * pos_err + 0.1 * rot_err)
         )  # Reward for box being at target - scalar JAX float64
