@@ -49,7 +49,7 @@ podman run --rm \
   -e PYTHONPATH=/workspace \
   -v "$REPO_DIR:/workspace" \
   -w /workspace \
-  IMAGE_TAG \
+  "$IMAGE_TAG" \
   python batch_runs/scripts/run_one_ur10.py \
     --jsonl "batch_runs/sweeps/UR10_sweep.jsonl" \
     --index "$SLURM_ARRAY_TASK_ID" \

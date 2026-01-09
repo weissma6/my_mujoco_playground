@@ -29,7 +29,7 @@ nano batch_runs/slurm/run_array_panda.sbatch
 sbatch batch_runs/slurm/run_array_panda.sbatch
 sbatch batch_runs/slurm/run_array_ur10.sbatch
 
-sbatch --array=2 batch_runs/slurm/run_array.sbatch
+sbatch --array=1 batch_runs/slurm/run_array.sbatch
 
 # ------------------------------------------------
 # Step 4 Monitoring the job:
@@ -48,8 +48,11 @@ squeue -j <job_id>
 tail -f logs/panda_sweep_80540_1.err
 tail -f logs/panda_sweep_80540_1.out
 
-tail -f logs/ur10_sweep_80476_1.err
-tail -f logs/ur10_sweep_80544_1.out
+tail -f logs/ur10_sweep_80559_1.err
+tail -f logs/ur10_sweep_80559_2.err
+tail -f logs/ur10_sweep_80559_3.err
+tail -f logs/ur10_sweep_80559_4.err
+tail -f logs/ur10_sweep_80559_1.out
 
 # Stop trailing:
 # Press Ctrl + C

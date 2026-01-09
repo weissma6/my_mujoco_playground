@@ -1,4 +1,4 @@
-{"run_id":"freqlog_default","env_name":"UR10PickCube","seed":0,"num_timesteps":20000000,"num_envs":2048,"unroll_length":10,"num_evals":40}
-{"run_id":"freqlog_seed6","env_name":"UR10PickCube","seed":6,"num_timesteps":20000000,"num_envs":2048,"unroll_length":10,"num_evals":40,"video_every_evals":2}
-{"run_id":"freqlog_lr_small","env_name":"UR10PickCube","seed":0,"num_timesteps":20000000,"learning_rate":0.0003,"num_envs":2048,"unroll_length":10,"num_evals":40}
-{"run_id":"freqlog_lr_large","env_name":"UR10PickCube","seed":0,"num_timesteps":20000000,"learning_rate":0.001,"num_envs":2048,"unroll_length":10,"num_evals":40}
+{"run_id":"default","env_name":"UR10PickCube","seed":0,"num_timesteps":20000000,"num_envs":2048,"unroll_length":10,"num_evals":40}
+{"run_id":"seed6","env_name":"UR10PickCube","seed":6,"num_timesteps":20000000,"num_envs":2048,"unroll_length":10,"num_evals":40}
+{"run_id":"lr_small","env_name":"UR10PickCube","seed":0,"num_timesteps":20000000,"learning_rate":0.0003,"num_envs":2048,"unroll_length":10,"num_evals":40}
+{"run_id":"lr_large","env_name":"UR10PickCube","seed":0,"num_timesteps":20000000,"learning_rate":0.001,"num_envs":2048,"unroll_length":10,"num_evals":40}

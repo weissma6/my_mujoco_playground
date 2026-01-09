@@ -261,7 +261,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
                 ppo_networks.make_ppo_networks, **nf_cfg
             )
 
-        print("\nPPO training with params:\n", ppo_training_params, "\n")
+        print("\nPPO training with params:\n", ppo_training_params, "\n", flush=True)
 
         train_fn = functools.partial(
             ppo.train,
