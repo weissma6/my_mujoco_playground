@@ -1,5 +1,4 @@
-{"run_id":"default","env_name":"UR10PickCube","seed":0,"num_timesteps":20000000}
-{"run_id":"default_seed6","env_name":"UR10PickCube","seed":6,"num_timesteps":20000000}
-{"run_id":"lr_small","env_name":"UR10PickCube","seed":0,"num_timesteps":20000000,"learning_rate":0.0003}
-{"run_id":"lr_large","env_name":"UR10PickCube","seed":0,"num_timesteps":20000000,"learning_rate":0.001}
-
+{"run_id":"default","env_name":"PandaPickCube","seed":0}
+{"run_id":"default_seed6","env_name":"PandaPickCube","seed":6,"num_timesteps":20000000}
+{"run_id":"lr_small","env_name":"PandaPickCube","seed":0,"num_timesteps":20000000,"learning_rate":0.0003}
+{"run_id":"lr_large","env_name":"PandaPickCube","seed":0,"num_timesteps":20000000,"learning_rate":0.001}

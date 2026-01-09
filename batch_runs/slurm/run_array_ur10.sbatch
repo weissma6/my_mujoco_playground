@@ -26,9 +26,6 @@ IMAGE_TAG="mujoco:env"
 
 mkdir -p logs results
 
-IMAGE_TAG="mujoco:env"
-IMAGE_TAR="$REPO_DIR/mujoco_env.tar"
-
 # Load image if needed (now using TMPDIR in home)
 if ! podman image exists "$IMAGE_TAG"; then
   echo "Image $IMAGE_TAG not found; loading from $IMAGE_TAR"
