@@ -26,12 +26,12 @@
   <keyframe>
     <!-- Task-specific home: includes cube position -->
     <key name="task_home"
-      qpos="-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0 0 0 0.4 0 0.025 1 0 0 0"
+      qpos="-1.5708 -1.5708 1.5708 -1.5708 -1.5708  0.4 0 0.025 1 0 0 0"
       ctrl="-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0 0"/>
     
     <!-- Low home position from camera file -->
     <key name="low_home"
-      qpos="0 -1.26 1.57 -1.95 -1.5 -1.5 0 0 0 0 0 0.4 0 0.025 1 0 0 0"
+      qpos="0 -1.26 1.57 -1.95 -1.5 -1.5 0 0 0.4 0 0.025 1 0 0 0"
       ctrl="0 -1.26 1.57 -1.95 -1.5 -1.5 0 0"/>
     
     <!-- Picked position from camera file -->
