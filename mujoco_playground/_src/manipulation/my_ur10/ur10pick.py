@@ -84,9 +84,7 @@ class UR10PickCube(ur10_base.UR10Base):
         )
         self._post_init(obj_name="box", keyframe="low_home")
         self._sample_orientation = sample_orientation
-
-        self._left_tip_site = self._mj_model.site("left_finger_touch_site").id
-        self._right_tip_site = self._mj_model.site("right_finger_touch_site").id
+        self._gripper_site = (self._mj_model.site("tcp").id,)
 
         # --- No finger sensors on UR10 ---
         self._floor_hand_found_sensor = []
@@ -221,44 +219,63 @@ class UR10PickCube(ur10_base.UR10Base):
 
     def _get_reward(self, data: mjx.Data, info: Dict[str, Any]) -> Dict[str, Any]:
         # --- target + box pose errors ---
-        target_pos = info["target_pos"]
-        box_pos = data.xpos[self._obj_body]
+        target_pos = info[
+            "target_pos"
+        ]  # Endposition of the mocap target - JAX array (3,) float64
+        box_pos = data.xpos[
+            self._obj_body
+        ]  # Current position of the box - JAX array (3,) float64
+        gripper_pos = data.site_xpos[
+            self._gripper_site
+        ]  # World-frame Cartesian position of the TCP site - JAX array (3,) float64
+        pos_err = jp.linalg.norm(
+            target_pos - box_pos
+        )  # Euclidean distance between box and target - scalar JAX float64
 
-        pos_err = jp.linalg.norm(target_pos - box_pos)
-        box_mat = data.xmat[self._obj_body]
-        target_mat = math.quat_to_mat(data.mocap_quat[self._mocap_target])
-        rot_err = jp.linalg.norm(target_mat.ravel()[:6] - box_mat.ravel()[:6])
-
-        # --- UR10 Hand-E adaptation: use fingertip midpoint as "gripper_pos" ---
-        left_tip_pos = data.site_xpos[self._left_tip_site]
-        right_tip_pos = data.site_xpos[
-            self._right_tip_site
-        ]  # check the xpos if it is a scalar we want the position wrt worldframe
-        gripper_pos = 0.5 * (left_tip_pos + right_tip_pos)
+        # --- Rotation related computations ---
+        box_mat = data.xmat[
+            self._obj_body
+        ]  # World-frame rotation matrix of the box - JAX array (3,3) float64
+        target_mat = math.quat_to_mat(
+            data.mocap_quat[self._mocap_target]
+        )  # World-frame rotation matrix of the mocap target - JAX array (3,3) float64
+        rot_err = jp.linalg.norm(
+            target_mat.ravel()[:6] - box_mat.ravel()[:6]
+        )  # Rotation error between box and target - scalar JAX float64
 
         # --- Reward terms identical to Panda, only gripper_pos definition changed ---
-        box_target = 1 - jp.tanh(5 * (0.9 * pos_err + 0.1 * rot_err))
-        gripper_box = 1 - jp.tanh(5 * jp.linalg.norm(box_pos - gripper_pos))
+        box_target = 1 - jp.tanh(
+            5 * (0.9 * pos_err + 0.1 * rot_err)
+        )  # Reward for box being at target - scalar JAX float64
+        gripper_box = 1 - jp.tanh(
+            5 * jp.linalg.norm(box_pos - gripper_pos)
+        )  # Reward for gripper being at box - scalar JAX float64
         robot_target_qpos = 1 - jp.tanh(
             jp.linalg.norm(
                 data.qpos[self._robot_arm_qposadr]
                 - self._init_q[self._robot_arm_qposadr]
             )
-        )
+        )  # Penalty for deviating too far from the initial arm configuration - scalar JAX float64
 
         # --- Floor collision via touch sensors (same as Panda) ---
         hand_floor_collision = [
             data.sensordata[self._mj_model.sensor_adr[sensor_id]] > 0
-            for sensor_id in self._floor_hand_found_sensor
+            for sensor_id in self._floor_hand_found_sensor  # List of booleans indicating if each sensor detects contact with the floor
         ]
-        floor_collision = sum(hand_floor_collision) > 0
-        no_floor_collision = (1 - floor_collision).astype(float)
+        floor_collision = (
+            sum(hand_floor_collision) > 0
+        )  # Boolean indicating if any sensor detects contact with the floor
+        no_floor_collision = (1 - floor_collision).astype(
+            float
+        )  # Reward for no floor collision - scalar JAX float64
 
         # --- Same "reached_box" gate as Panda, but based on fingertip midpoint ---
         info["reached_box"] = 1.0 * jp.maximum(
             info["reached_box"],
-            (jp.linalg.norm(box_pos - gripper_pos) < 0.02),  # Panda threshold was 0.012
-        )
+            (
+                jp.linalg.norm(box_pos - gripper_pos) < 0.012
+            ),  # Panda threshold was 0.012
+        )  # Binary indicator if the gripper has reached the box - scalar JAX float64
 
         rewards = {
             "gripper_box": gripper_box,
@@ -266,7 +283,7 @@ class UR10PickCube(ur10_base.UR10Base):
             "no_floor_collision": no_floor_collision,
             "robot_target_qpos": robot_target_qpos,
         }
-        return rewards
+        return rewards  # Dictionary of individual reward components - calculated later in step()
 
     def _get_obs(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
         gripper_pos = data.site_xpos[self._gripper_site]
