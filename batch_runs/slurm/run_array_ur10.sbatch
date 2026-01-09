@@ -13,6 +13,17 @@
 
 set -euo pipefail
 
+
+set -x
+echo "=== SBATCH START ==="
+date
+pwd
+hostname
+echo "SLURM_JOB_ID=$SLURM_JOB_ID"
+echo "SLURM_ARRAY_TASK_ID=$SLURM_ARRAY_TASK_ID"
+ls -la
+echo "=== BEFORE PODMAN ==="
+
 REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"
 cd "$REPO_DIR"
 
@@ -31,11 +42,13 @@ mkdir -p "$HOME/.locks"
 LOCKFILE="$HOME/.locks/podman_load.lock"
 (
   flock -x 200
-  if ! podman image exists "$IMAGE_TAG"; then
+  if [ -z "$(podman images -q "$IMAGE_TAG")" ]; then
     echo "Image $IMAGE_TAG not found; loading from $IMAGE_TAR"
     podman load -i "$IMAGE_TAR"
+    podman images | head -20
   fi
 ) 200>"$LOCKFILE"
+
 
 # Load W&B API key
 if [ -f "$HOME/.secrets/wandb_key" ]; then
