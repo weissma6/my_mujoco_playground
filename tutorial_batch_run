@@ -22,7 +22,7 @@ sacctmgr show assoc where user=weissma6 format=User,Account,Partition,QOS -P
 
 
 # step 2 Edit sbatch to set the account (only when first setting up or when it changes)
-nano batch_runs/slurm/run_array.sbatch
+nano batch_runs/slurm/run_array_panda.sbatch
 
 
 # Step 3 – Submit the SLURM array job:
@@ -45,11 +45,11 @@ squeue -j <job_id>
 
 # More detailed tracking
 
-tail -f logs/panda_sweep_80514_1.err
-tail -f logs/panda_sweep_80514_1.out
+tail -f logs/panda_sweep_80540_1.err
+tail -f logs/panda_sweep_80540_1.out
 
 tail -f logs/ur10_sweep_80476_1.err
-tail -f logs/ur10_sweep_80476_1.out
+tail -f logs/ur10_sweep_80544_1.out
 
 # Stop trailing:
 # Press Ctrl + C

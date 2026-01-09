@@ -147,15 +147,11 @@ def _rollout_and_log_video_from_make_policy(
     frames = eval_env.render(trajectory, **(camera_kwargs or {}))
     fps = float(1.0 / eval_env.dt) / float(render_every)
     video_path = os.path.join(wandb.run.dir, f"{env_name}_{step_tag}.mp4")
-    mediapy.write_video(video_path, frames, fps=fps)
-
-    wandb.log(
-        {
-            "eval/video": wandb.Video(video_path, fps=int(fps), format="mp4"),
-            "eval/episode_reward_video": ep_reward,  # optional but useful
-        },
-        step=int(num_steps),
-    )
+    try:
+        mediapy.write_video(video_path, frames, fps=fps)
+        wandb.log({"eval/video": wandb.Video(video_path, fps=int(fps), format="mp4")}, step=int(num_steps))
+    except Exception as e:
+        print(f"[WARN] Video skipped: {e}", flush=True)
 
     return ep_reward
 
