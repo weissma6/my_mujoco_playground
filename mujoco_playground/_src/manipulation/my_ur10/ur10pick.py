@@ -82,7 +82,7 @@ class UR10PickCube(ur10_base.UR10Base):
             config,
             config_overrides,
         )
-        self._post_init(obj_name="box", keyframe="task_home")
+        self._post_init(obj_name="box", keyframe="low_home")
         self._sample_orientation = sample_orientation
 
         self._left_tip_site = self._mj_model.site("left_finger_touch_site").id
@@ -100,6 +100,7 @@ class UR10PickCube(ur10_base.UR10Base):
                 "gripper_floor_contact",
             ]
         ]
+        print([kf.name for kf in self._mj_model.keyframes], flush=True)
 
     def reset(self, rng: jax.Array) -> State:
         rng, rng_box, rng_target = jax.random.split(rng, 3)

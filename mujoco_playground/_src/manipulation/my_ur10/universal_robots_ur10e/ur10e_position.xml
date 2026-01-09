@@ -233,10 +233,6 @@
   </actuator>
   
 <keyframe>
-  <key name="gravity_test"
-    qpos="0 -1.9 1.2 -1.6 -1.6 0 0 0"
-    ctrl="0 0 0 0 0 0 0"/><!-- No ctrl - actuators do nothing -->
-
   <key name="home" 
     qpos="0 -1.5708 1.5708 -1.5708 -1.5708 0 0 0" 
     ctrl="0 -1.5708 1.5708 -1.5708 -1.5708 0 0"/>

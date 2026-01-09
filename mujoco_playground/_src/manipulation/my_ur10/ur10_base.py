@@ -103,7 +103,7 @@ class UR10Base(mjx_env.MjxEnv):
         self._action_scale = config.action_scale
 
     # Post-init setup (keyframes, IDs, and body references)
-    def _post_init(self, obj_name: str, keyframe: str = "home"):
+    def _post_init(self, obj_name: str, keyframe: str = "low_home"):
         # ------------------------------------------------------------------------------------
         all_joints = _ARM_JOINTS + _FINGER_JOINTS
         # ------------------------------------------------------------------------------------
