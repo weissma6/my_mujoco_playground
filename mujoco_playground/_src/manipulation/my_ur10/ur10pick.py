@@ -230,7 +230,9 @@ class UR10PickCube(ur10_base.UR10Base):
 
         # --- UR10 Hand-E adaptation: use fingertip midpoint as "gripper_pos" ---
         left_tip_pos = data.site_xpos[self._left_tip_site]
-        right_tip_pos = data.site_xpos[self._right_tip_site]
+        right_tip_pos = data.site_xpos[
+            self._right_tip_site
+        ]  # check the xpos if it is a scalar we want the position wrt worldframe
         gripper_pos = 0.5 * (left_tip_pos + right_tip_pos)
 
         # --- Reward terms identical to Panda, only gripper_pos definition changed ---

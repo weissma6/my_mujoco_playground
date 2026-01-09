@@ -46,7 +46,7 @@ podman run --rm \
   -v "$REPO_DIR:/workspace" \
   -w /workspace \
   mujoco:env \
-  python batch_runs/scripts/run_one.py \
+  python batch_runs/scripts/run_one_panda.py \
     --jsonl "batch_runs/sweeps/panda_sweep.jsonl" \
     --index "$SLURM_ARRAY_TASK_ID" \
     --out_root "results"
