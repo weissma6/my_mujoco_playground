@@ -16,21 +16,26 @@ set -euo pipefail
 REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"
 cd "$REPO_DIR"
 
-# Use tmp directory in your home for podman instead of node /tmp
-export TMPDIR="$HOME/tmp_podman"
-mkdir -p "$TMPDIR"
-echo "Using TMPDIR=$TMPDIR"   # optional debug print
-
-IMAGE_TAR="$REPO_DIR/mujoco_env.tar"
-IMAGE_TAG="mujoco:env"
-
 mkdir -p logs results
 
-# Load image if needed (now using TMPDIR in home)
-if ! podman image exists "$IMAGE_TAG"; then
-  echo "Image $IMAGE_TAG not found; loading from $IMAGE_TAR"
-  podman load -i "$IMAGE_TAR"
-fi
+# Unique tmp per task
+export TMPDIR="$HOME/tmp_podman/${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+mkdir -p "$TMPDIR"
+echo "Using TMPDIR=$TMPDIR"
+
+IMAGE_TAR="$REPO_DIR/mujoco_env_ffmpeg.tar"
+IMAGE_TAG="mujoco:env-ffmpeg"
+
+# Load image safely (avoid parallel podman load)
+mkdir -p "$HOME/.locks"
+LOCKFILE="$HOME/.locks/podman_load.lock"
+(
+  flock -x 200
+  if ! podman image exists "$IMAGE_TAG"; then
+    echo "Image $IMAGE_TAG not found; loading from $IMAGE_TAR"
+    podman load -i "$IMAGE_TAR"
+  fi
+) 200>"$LOCKFILE"
 
 # Load W&B API key
 if [ -f "$HOME/.secrets/wandb_key" ]; then
@@ -44,7 +49,7 @@ podman run --rm \
   -e PYTHONPATH=/workspace \
   -v "$REPO_DIR:/workspace" \
   -w /workspace \
-  mujoco:env \
+  IMAGE_TAG \
   python batch_runs/scripts/run_one_ur10.py \
     --jsonl "batch_runs/sweeps/UR10_sweep.jsonl" \
     --index "$SLURM_ARRAY_TASK_ID" \
