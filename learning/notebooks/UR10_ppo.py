@@ -206,7 +206,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             ppo_params["discounting"] = float(ppo_params["discounting"])
         if "entropy_cost" in ppo_params:
             ppo_params["entropy_cost"] = float(ppo_params["entropy_cost"])
-        video_every_evals = int(cfg.get("video_every_evals", 5))
+        video_every_evals = int(cfg.get("video_every_evals", 10))           # Log video every N evals
         render_every = int(cfg.get("render_every", 1))
         video_tag = str(cfg.get("video_tag", "eval"))
         camera_kwargs = cfg.get("camera_kwargs", {}) or {}
