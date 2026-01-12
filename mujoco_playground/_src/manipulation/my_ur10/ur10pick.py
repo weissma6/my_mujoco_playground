@@ -15,7 +15,7 @@
 """Bring a box to a target and orientation."""
 
 from typing import Any, Dict, Optional, Union
-
+from jax import debug
 import jax
 import jax.numpy as jp
 from ml_collections import config_dict
@@ -112,8 +112,8 @@ class UR10PickCube(ur10_base.UR10Base):
             jax.random.uniform(
                 rng_box,
                 (3,),
-                minval=jp.array([-0.2, -0.2, 0.0]),
-                maxval=jp.array([0.2, 0.2, 0.0]),
+                minval=jp.array([-0.15, -0.15, 0.0]),
+                maxval=jp.array([0.15, 0.15, 0.0]),
             )
             + self._init_obj_pos
         )
@@ -174,10 +174,7 @@ class UR10PickCube(ur10_base.UR10Base):
             njmax=self._config.njmax,
         )
 
-        print(
-            "Reset arm ctrl-qpos error:",
-            jp.linalg.norm(data.ctrl[:6] - data.qpos[self._robot_arm_qposadr]),
-        )
+
 
         # set target mocap position
         data = data.replace(
@@ -194,6 +191,31 @@ class UR10PickCube(ur10_base.UR10Base):
         obs = self._get_obs(data, info)
         reward, done = jp.zeros(2)
         state = State(data, obs, reward, done, metrics, info)
+
+
+        # -- print debug block --
+        # --- robot joint positions (arm + gripper) ---
+        robot_qpos = data.qpos[self._robot_qposadr]   # shape (7 or 8)
+
+        # --- box position from qpos (freejoint translation) ---
+        box_qpos = data.qpos[self._obj_qposadr : self._obj_qposadr + 3]
+
+        # --- controls ---
+        robot_ctrl = data.ctrl[: robot_qpos.shape[0]]
+
+        # --- consistency error ---
+        ctrl_qpos_err = jp.linalg.norm(
+            data.ctrl[:6] - data.qpos[self._robot_arm_qposadr]
+        )
+
+        debug.print(
+            "[RESET] robot_qpos={rq} | box_qpos={bq} | ctrl={c} | ctrl-qpos-err={e}",
+            rq=robot_qpos,
+            bq=box_qpos,
+            c=robot_ctrl,
+            e=ctrl_qpos_err,
+        )
+
         return state
 
     def step(self, state: State, action: jax.Array) -> State:

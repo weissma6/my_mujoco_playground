@@ -3,9 +3,18 @@
   <!-- Include the scene setup - Robot file is in Scene -->
   <include file="mjx_scene_position.xml"/>
 
+  <default>
+    <default class="collision">
+      <geom type="capsule" group="3"/>
+    </default>
+    <default class="eef_collision">
+      <geom type="capsule" group="3"/>
+    </default>
+  </default>
+
   <worldbody>
     <!-- Box to pick -->
-    <body name="box" pos="0.8 0 0.03">
+    <body name="box" pos="1.0 0 0.03">
       <freejoint/>
       <geom type="box" name="box" size="0.02 0.02 0.03" condim="3"
        friction="1 .03 .003" rgba="0 1 0 1" contype="2" conaffinity="1" solref="0.01 1"/>
@@ -30,7 +39,7 @@
     <!-- Low home position from camera file -->
     <key name="low_home"
       qpos="0 -1.26 1.57 -1.95 -1.5 -1.5 0 0 
-      0.8 0 0.025 
+      1.2 0. 0.03 
       1 0 0 0"
       ctrl="0 -1.26 1.57 -1.95 -1.5 -1.5 0"/>
     
