@@ -22,8 +22,10 @@
     <camera name="side" pos="-1.5 0 1.0" quat="0.5 0.5 -0.5 0.5" fovy="50"/>
     <!-- Top-down -->
     <camera name="topdown" pos="0 0 2.5" quat="1 0 0 0" fovy="50"/>
-    <!-- Perspective view (like your screenshot) -->
+    <!-- Perspective view -->
     <camera name="perspective" pos="1.2 1.2 1" mode="targetbody" target="base" fovy="60"/>
+    <!-- Side view from 120 degrees -->
+    <camera name="side_120" pos="0.4 -1.385 1.2" mode="targetbody" target="base" fovy="60"/>
   </worldbody>
 
 

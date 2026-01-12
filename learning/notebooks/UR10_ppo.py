@@ -144,7 +144,18 @@ def _rollout_and_log_video_from_make_policy(
     step_tag = f"{run_id}_rew{ep_reward:.1f}_steps{int(num_steps)}"
 
     trajectory = rollout[:: int(render_every)]
-    frames = eval_env.render(trajectory, **(camera_kwargs or {}))
+    # --------------------------------------------------
+    # Video angle selection based on camera kwargs
+    default_cam = {
+        "camera": None,
+        "lookat": [0.4, 0.0, 0.4],
+        "distance": 1.6,
+        "azimuth": 120.0,
+        "elevation": -30.0,
+    }
+
+    cam = camera_kwargs or default_cam
+    frames = eval_env.render(trajectory, **cam)
     fps = float(1.0 / eval_env.dt) / float(render_every)
     video_path = os.path.join(wandb.run.dir, f"{env_name}_{step_tag}.mp4")
     try:
