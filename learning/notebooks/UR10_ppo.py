@@ -144,17 +144,8 @@ def _rollout_and_log_video_from_make_policy(
     step_tag = f"{run_id}_rew{ep_reward:.1f}_steps{int(num_steps)}"
 
     trajectory = rollout[:: int(render_every)]
-    # --------------------------------------------------
-    # Video angle selection based on camera kwargs
-    default_cam = {
-        "camera": None,
-        "lookat": [0.4, 0.0, 0.4],
-        "distance": 1.6,
-        "azimuth": 120.0,
-        "elevation": -30.0,
-    }
-
-    cam = camera_kwargs or default_cam
+ 
+    cam = camera_kwargs or {"camera": "side_130"}
     frames = eval_env.render(trajectory, **cam)
     fps = float(1.0 / eval_env.dt) / float(render_every)
     video_path = os.path.join(wandb.run.dir, f"{env_name}_{step_tag}.mp4")
@@ -172,6 +163,8 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
     env_name = str(cfg.get("env_name", "UR10PickCube"))
     seed = int(cfg.get("seed", 0))
     run_id = str(cfg.get("run_id", "run"))
+    camera_kwargs = cfg.get("camera_kwargs") or {"camera": "side_130"}
+
     random.seed(seed)
     os.makedirs(out_dir, exist_ok=True)
     wandb_mode = str(cfg.get("wandb_mode", "online"))

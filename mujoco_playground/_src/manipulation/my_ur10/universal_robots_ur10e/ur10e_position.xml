@@ -33,12 +33,7 @@
         <geom type="mesh" contype="0" conaffinity="0" group="2"/>
       </default>
       
-      <default class="collision">
-        <geom type="capsule" group="3"/>
-        <default class="eef_collision">
-          <geom type="cylinder"/>
-        </default>
-      </default>
+c
       <site size="0.001" rgba="0.5 0.5 0.5 0.3" group="4"/>
     </default>
   </default>

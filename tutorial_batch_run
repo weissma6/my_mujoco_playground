@@ -48,7 +48,7 @@ squeue -j <job_id>
 tail -f logs/panda_sweep_80540_1.err
 tail -f logs/panda_sweep_80540_1.out
 
-tail -f logs/UR10_sweep_80713_2.err
+tail -f logs/UR10_sweep_80902_1.err
 tail -f logs/UR10_sweep_80663_1.out
 
 

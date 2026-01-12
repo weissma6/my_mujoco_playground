@@ -74,6 +74,8 @@ class UR10PickCube(ur10_base.UR10Base):
             / "xmls"
             / "mjx_single_cube_position.xml"
         )
+        print("XML PATH:", xml_path, flush=True)
+
 
         # ------------------------------------------------------------------------------------
 
