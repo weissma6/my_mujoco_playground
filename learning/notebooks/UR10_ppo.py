@@ -151,7 +151,7 @@ def _rollout_and_log_video_from_make_policy(
     video_path = os.path.join(wandb.run.dir, f"{env_name}_{step_tag}.mp4")
     try:
         mediapy.write_video(video_path, frames, fps=fps)
-        wandb.log({"eval/video": wandb.Video(video_path, fps=int(fps), format="mp4")}, step=int(num_steps))
+        wandb.log({f"eval/video{run_id}": wandb.Video(video_path, fps=int(fps), format="mp4")}, step=int(num_steps))
     except Exception as e:
         print(f"[WARN] Video skipped: {e}", flush=True)
 
