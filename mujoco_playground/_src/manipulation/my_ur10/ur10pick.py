@@ -226,61 +226,49 @@ class UR10PickCube(ur10_base.UR10Base):
 
     def step(self, state: State, action: jax.Array) -> State:
         delta = action * self._action_scale
-        ctrl = state.data.ctrl + delta
-        ctrl = jp.clip(ctrl, self._lowers, self._uppers)
+        ctrl = jp.clip(state.data.ctrl + delta, self._lowers, self._uppers)
 
         data = mjx_env.step(self._mjx_model, state.data, ctrl, self.n_substeps)
 
-        # copy/update info for next state
         info = dict(state.info)
-        info["step"] = info["step"] + 1 # increment step counter for debug printing
+        info["step"] = info["step"] + 1
 
-        raw_rewards, raw_signals = self._get_reward(data, state.info)
-        rewards = {
-            k: v * self._config.reward_config.scales[k] for k, v in raw_rewards.items()
-        }
+        raw_rewards, raw_signals = self._get_reward(data, info)  # <-- pass info
+        rewards = {k: v * self._config.reward_config.scales[k] for k, v in raw_rewards.items()}
         reward = jp.clip(sum(rewards.values()), -1e4, 1e4)
+
         box_pos = data.xpos[self._obj_body]
-        out_of_bounds = jp.any(jp.abs(box_pos) > 1.0)
-        out_of_bounds |= box_pos[2] < 0.0
-        done = out_of_bounds | jp.isnan(data.qpos).any() | jp.isnan(data.qvel).any()
-        done = done.astype(float)
+        out_of_bounds = jp.any(jp.abs(box_pos) > 1.0) | (box_pos[2] < 0.0)
+        done = (out_of_bounds | jp.isnan(data.qpos).any() | jp.isnan(data.qvel).any()).astype(jp.float32)
 
-        state.metrics.update(**raw_rewards, out_of_bounds=out_of_bounds.astype(float))
+        metrics = state.metrics
+        metrics.update(**raw_rewards, out_of_bounds=out_of_bounds.astype(jp.float32))
 
-        # ----------------------------------------------------------
-        # Debug print block
-        # ----------------------------------------------------------
-        # print only on last step before reset
         dummy = jp.array(0, dtype=jp.int32)
-
         def _do_print(_):
             jax.debug.print(
                 "[EP END] t={t} pos_err={pe:.4f} rot_err={re:.4f} dist={d:.4f} "
                 "reached={rb} floor={fc} oob={oob} "
-                "gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} TOTAL={tot:.3f}",
+                "gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} TOTAL={tot<[EP END] t={t} ... TOTAL={tot:.3f}",
                 t=info["step"],
                 pe=raw_signals["pos_err"],
                 re=raw_signals["rot_err"],
                 d=raw_signals["grip_box_dist"],
                 rb=raw_signals["reached_box"],
                 fc=raw_signals["floor_collision"],
-                oob=out_of_bounds.astype(int),
+                oob=out_of_bounds.astype(jp.int32),
                 gb=rewards["gripper_box"],
                 bt=rewards["box_target"],
                 nf=rewards["no_floor_collision"],
                 ah=rewards["robot_target_qpos"],
                 tot=reward,
             )
-            return dummy  # IMPORTANT: match structure/type
+            return dummy
 
-        _ = jax.lax.cond(done > 0.0, _do_print, lambda _: dummy, operand=0)
-        # ----------------------------------------------------------
+        _ = jax.lax.cond(done > 0.0, _do_print, lambda _: dummy, operand=dummy)
 
-        obs = self._get_obs(data, state.info)
-        state = State(data, obs, reward, done, state.metrics, state.info)
-
-        return state
+        obs = self._get_obs(data, info)  # <-- use info
+        return State(data, obs, reward, done, metrics, info)  # <-- return info
 
     def _get_reward(self, data: mjx.Data, info: Dict[str, Any]) -> Dict[str, Any]:
         # --- target + box pose errors ---
