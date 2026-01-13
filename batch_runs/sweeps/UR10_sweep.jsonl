@@ -1,3 +1,4 @@
+{"run_id":"debug_tiniest","env_name":"UR10PickCube","seed":0,"num_timesteps":100,"num_envs":8,"unroll_length":5,"num_evals":2,"video_every_evals":2,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
 {"run_id":"debug_tiny","env_name":"UR10PickCube","seed":0,"num_timesteps":2000,"num_envs":16,"unroll_length":5,"num_evals":2,"video_every_evals":2,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
 {"run_id":"debug_short","env_name":"UR10PickCube","seed":0,"num_timesteps":2000,"num_envs":128,"unroll_length":5,"num_evals":2,"video_every_evals":2,"render_every":1,"camera_kwargs":{"camera":"side_130"}}
 {"run_id":"default","env_name":"UR10PickCube","seed":0,"num_timesteps":20000000,"video_every_evals":2,"render_every":1, "camera_kwargs":{"camera":"side_130"}}

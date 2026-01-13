@@ -246,23 +246,44 @@ class UR10PickCube(ur10_base.UR10Base):
 
         dummy = jp.array(0, dtype=jp.int32)
         def _do_print(_):
+            # 1) positions (one line)
             jax.debug.print(
-                "[EP END] t={t} pos_err={pe:.4f} rot_err={re:.4f} dist={d:.4f} "
-                "reached={rb} floor={fc} oob={oob} "
-                "gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} TOTAL={tot:.3f}",
+                "[EP END] t={t} POS target={tp} box={bp} gripper={gp}",
                 t=info["step"],
-                pe=raw_signals["pos_err"],
+                tp=raw_signals["target_pos"],
+                bp=raw_signals["box_pos"],
+                gp=raw_signals["gripper_pos"],
+            )
+
+            # 2) distances / errors (one line)
+            jax.debug.print(
+                "[EP END] t={t} DIST box_target={btd:.4f} rot_err={re:.4f} grip_box={gbd:.4f}",
+                t=info["step"],
+                btd=raw_signals["box_target_dist"],
                 re=raw_signals["rot_err"],
-                d=raw_signals["grip_box_dist"],
+                gbd=raw_signals["grip_box_dist"],
+            )
+
+            # 3) events (one line)
+            jax.debug.print(
+                "[EP END] t={t} EVT reached_box={rb} floor_col={fc} oob={oob}",
+                t=info["step"],
                 rb=raw_signals["reached_box"],
-                fc=raw_signals["floor_collision"],
+                fc=raw_signals["number_floor_collision"],
                 oob=out_of_bounds.astype(jp.int32),
-                gb=rewards["gripper_box"],
-                bt=rewards["box_target"],
+            )
+
+            # 4) rewards (one line)
+            jax.debug.print(
+                "[EP END] t={t} REW gbr={gb:.3f} btr={bt:.3f} nfr={nf:.3f} mp={mp:.3f} TOTAL={tot:.3f}",
+                t=info["step"],
+                gb=rewards["gripper_box_reward"],
+                bt=rewards["box_target_reward"],
                 nf=rewards["no_floor_collision"],
-                ah=rewards["robot_target_qpos"],
+                mp=rewards["movement_penalty"],
                 tot=reward,
             )
+
             return dummy
 
         _ = jax.lax.cond(done > 0.0, _do_print, lambda _: dummy, operand=dummy)
@@ -271,70 +292,95 @@ class UR10PickCube(ur10_base.UR10Base):
         return State(data, obs, reward, done, metrics, info)  # <-- return info
 
     def _get_reward(self, data: mjx.Data, info: Dict[str, Any]) -> Dict[str, Any]:
-        # --- target + box pose errors ---
+        # ==============================
+        # Postition world-frame 
+        # ==============================
+        # Endposition of the mocap target - JAX array (3,) float64
         target_pos = info[
             "target_pos"
-        ]  # Endposition of the mocap target - JAX array (3,) float64
+        ]
+        # Current position of the box - JAX array (3,) float64
         box_pos = data.xpos[
             self._obj_body
-        ]  # Current position of the box - JAX array (3,) float64
+        ]
+        # World-frame Cartesian position of the TCP site - JAX array (3,) float64
         gripper_pos = data.site_xpos[
             self._gripper_site
-        ]  # World-frame Cartesian position of the TCP site - JAX array (3,) float64
-        pos_err = jp.linalg.norm(
+        ]
+        # ==============================
+        # Distance calcluation 
+        # ==============================
+        # Euclidean distance between box and target - scalar JAX float64
+        box_target_dist = jp.linalg.norm(
             target_pos - box_pos
-        )  # Euclidean distance between box and target - scalar JAX float64
+        )
+        # Euclidean distance between gripper and box - scalar JAX float64
+        gripper_box_dist = jp.linalg.norm(
+            box_pos - gripper_pos
+        )
 
+        # ==============================
         # --- Rotation related computations ---
+        # ==============================
+        # World-frame rotation matrix of the box - JAX array (3,3) float64
         box_mat = data.xmat[
             self._obj_body
-        ]  # World-frame rotation matrix of the box - JAX array (3,3) float64
+        ]
+        # World-frame rotation matrix of the mocap target - JAX array (3,3) float64
         target_mat = math.quat_to_mat(
             data.mocap_quat[self._mocap_target]
-        )  # World-frame rotation matrix of the mocap target - JAX array (3,3) float64
+        )
+        # Rotation error between box and target - scalar JAX float64
         rot_err = jp.linalg.norm(
             target_mat.ravel()[:6] - box_mat.ravel()[:6]
-        )  # Rotation error between box and target - scalar JAX float64
+        )  
 
-        # --- Reward terms identical to Panda, only gripper_pos definition changed --
-        box_target = 1 - jp.tanh(
-            5 * (0.9 * pos_err + 0.1 * rot_err)
-        )  # Reward for box being at target - scalar JAX float64
-        gripper_box = 1 - jp.tanh(
-            5 * jp.linalg.norm(box_pos - gripper_pos)
-        )  # Reward for gripper being at box - scalar JAX float64
-        robot_target_qpos = 1 - jp.tanh(
+        # ==============================
+        # --- Reward terms ---
+        # ==============================
+        # Reward for box being at target - scalar JAX float64
+        box_target_Reward = 1 - jp.tanh(
+            5 * (1 * box_target_dist + 0 * rot_err)
+        )
+        # Reward for gripper being at box - scalar JAX float64
+        gripper_box_Reward = 1 - jp.tanh(
+            5 * gripper_box_dist
+        )
+        # Penalty for deviating too far from the initial arm configuration - scalar JAX float64
+        robot_target_qpos_penalty = 1 - jp.tanh(
             jp.linalg.norm(
                 data.qpos[self._robot_arm_qposadr]
                 - self._init_q[self._robot_arm_qposadr]
             )
-        )  # Penalty for deviating too far from the initial arm configuration - scalar JAX float64
-
-        # --- Floor collision via touch sensors (same as Panda) ---
+        )  
+        # Floor collision via touch sensors (same as Panda) - scalar JAX float64
+        # List of booleans indicating if each sensor detects contact with the floor
         hand_floor_collision = [
             data.sensordata[self._mj_model.sensor_adr[sensor_id]] > 0
-            for sensor_id in self._floor_hand_found_sensor  # List of booleans indicating if each sensor detects contact with the floor
+            for sensor_id in self._floor_hand_found_sensor  
         ]
+        # Boolean indicating if any sensor detects contact with the floor
         floor_collision = (
             sum(hand_floor_collision) > 0
-        )  # Boolean indicating if any sensor detects contact with the floor
-        no_floor_collision = (1 - floor_collision).astype(
+        )
+        # Reward for no floor collision - scalar JAX float64  
+        no_floor_collision_Reward = (1 - floor_collision).astype(
             float
-        )  # Reward for no floor collision - scalar JAX float64
-
+        )  
         # --- Same "reached_box" gate as Panda, but based on fingertip midpoint ---
+        # Binary indicator if the gripper has reached the box - scalar JAX float64
         info["reached_box"] = 1.0 * jp.maximum(
             info["reached_box"],
             (
-                jp.linalg.norm(box_pos - gripper_pos) < 0.012
+                jp.linalg.norm(gripper_box_dist) < 0.02
             ),  # Panda threshold was 0.012
-        )  # Binary indicator if the gripper has reached the box - scalar JAX float64
+        )  
 
         rewards = {
-            "gripper_box": gripper_box,
-            "box_target": box_target * info["reached_box"],
-            "no_floor_collision": no_floor_collision,
-            "robot_target_qpos": robot_target_qpos,
+            "gripper_box_reward": gripper_box_Reward,
+            "box_target_reward": box_target_Reward * info["reached_box"],
+            "no_floor_collision": no_floor_collision_Reward,
+            "movement_penalty": robot_target_qpos_penalty,
         }
         # ==============================
         # Raw signals dict (for debug)
@@ -346,13 +392,13 @@ class UR10PickCube(ur10_base.UR10Base):
             "gripper_pos": gripper_pos,
 
             # errors / distances
-            "pos_err": pos_err,
+            "box_target_dist": box_target_dist,
             "rot_err": rot_err,
-            "grip_box_dist": gripper_box,
+            "grip_box_dist": gripper_box_dist,
 
             # events
             "reached_box": info["reached_box"],
-            "floor_collision": floor_collision,
+            "number_floor_collision": floor_collision,
         }
 
         return rewards, raw
