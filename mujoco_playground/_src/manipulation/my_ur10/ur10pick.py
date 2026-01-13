@@ -333,7 +333,7 @@ class UR10PickCube(ur10_base.UR10Base):
             + rewards["robot_target_qpos"]
         )
 
-        debug.debug_print(
+        jax.debug.print(
             "[REWARD] t={t} | "
             "box=({bx:.3f},{by:.3f},{bz:.3f}) | tgt=({tx:.3f},{ty:.3f},{tz:.3f}) | grip=({gx:.3f},{gy:.3f},{gz:.3f}) | "
             "pos_err={pe:.4f} rot_err={re:.4f} | reached={rb:.0f} floor_col={fc} | "
