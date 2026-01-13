@@ -1,35 +1,31 @@
 FROM docker.io/nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
+# GPU-capable base image (cluster will have NVIDIA + CUDA)
+
 # System dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y \
     python3 python3-pip python3-dev \
     git \
-    patchelf \
+    libosmesa6-dev patchelf \
     ffmpeg \
-    # EGL/GLVND loader bits (needed for headless EGL)
-    libglvnd0 libegl1 \
-    # keep osmesa dev if you still want fallback
-    libosmesa6-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Make python3 the 'python' command
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1
 
+# Working directory inside container
 WORKDIR /workspace
 
 # Install Python deps
+# jax[cuda12_pip] from SOE docs
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --upgrade pip && \
     pip install --upgrade "jax[cuda12]" && \
     pip install -r /tmp/requirements.txt
 
-# IMPORTANT: Override the pinned PyOpenGL that breaks EGL on your setup
-# (Your debug showed PyOpenGL 3.1.10 => EGLPlatform.EGL = None)
-RUN python -m pip install --no-cache-dir --upgrade \
-    "PyOpenGL==3.1.7" \
-    PyOpenGL_accelerate
-
-# Optional: keep defaults, you set these via sbatch anyway
+# MuJoCo/Brax environment
+# ENV MUJOCO_GL=egl
 ENV WANDB_DIR=/workspace/wandb
 
+# Default command (will be overridden by sarus run)
 CMD ["bash"]
