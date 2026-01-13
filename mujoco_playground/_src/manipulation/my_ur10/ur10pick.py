@@ -245,15 +245,15 @@ class UR10PickCube(ur10_base.UR10Base):
         metrics.update(**raw_rewards, out_of_bounds=out_of_bounds.astype(jp.float32))
 
         # env index should be stored in info at reset, e.g. info["env_id"]
-        eid = state.info.get("env_id", -1)  # default to -1 if not found    
+        eid = state.info.get("env_id")  # default to -1 if not found    
         dummy = jp.array(0, dtype=jp.int32)
         def _do_print(_):
             jax.debug.print(
-                "[EP END] env={eid} t={t} "
-                "POS tp={tp} bp={bp} gp={gp} | "
-                "DIST btd={btd:.4f} re={re:.4f} gbd={gbd:.4f} | "
-                "EVT rb={rb} fc={fc} oob={oob} | "
-                "REW gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} mp={mp:.3f} TOT={tot:.3f}",
+                "[EP END] env={eid} t={t}\n"
+                "POS tp={tp} bp={bp} gp={gp}\n"
+                "DIST btd={btd:.4f} re={re:.4f} gbd={gbd:.4f}\n"
+                "EVT rb={rb} fc={fc} oob={oob}\n"
+                "REWARDS gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} mp={mp:.3f} TOT={tot:.3f}\n\n",
                 eid=eid,
                 t=info["step"],
                 tp=raw_signals["target_pos"],
@@ -274,7 +274,7 @@ class UR10PickCube(ur10_base.UR10Base):
 
             return dummy
 
-        print_this = (done > 0.0) & (eid == 0)
+        print_this = (done > 0.0) & (eid == 0) # only print for env 0 at episode end
         _ = jax.lax.cond(print_this, _do_print, lambda _: dummy, operand=dummy)
 
         obs = self._get_obs(data, info)  # <-- use info
