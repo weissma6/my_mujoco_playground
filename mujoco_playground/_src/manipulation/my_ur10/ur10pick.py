@@ -323,36 +323,41 @@ class UR10PickCube(ur10_base.UR10Base):
         }
         # --- Debug prints -----
         t = info["step"]
-        N = info.get("debug_every", jp.array(100, dtype=jp.int32))  # print every 100 steps (set here)
+        N = info.get("debug_every", jp.array(200, dtype=jp.int32))  # e.g. every 200 steps
 
-        # Print only env 0 to avoid 16x spam under vmap
-        total0 = (
-            rewards["gripper_box"][0]
-            + rewards["box_target"][0]
-            + rewards["no_floor_collision"][0]
-            + rewards["robot_target_qpos"][0]
+        total = (
+            rewards["gripper_box"]
+            + rewards["box_target"]
+            + rewards["no_floor_collision"]
+            + rewards["robot_target_qpos"]
         )
 
         _ = jax.lax.cond(
             (t % N) == 0,
             lambda _: jax.debug.print(
-                "[REWARD0] t={t} pos_err={pe:.4f} rot_err={re:.4f} reached={rb:.0f} floor_col={fc} "
-                "gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} TOTAL={tot:.3f}",
+                "[REWARD] t={t} | "
+                "box=({bx:.3f},{by:.3f},{bz:.3f}) | tgt=({tx:.3f},{ty:.3f},{tz:.3f}) | "
+                "grip=({gx:.3f},{gy:.3f},{gz:.3f}) | pos_err={pe:.4f} rot_err={re:.4f} | "
+                "reached={rb:.0f} floor_col={fc} | gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} | TOTAL={tot:.3f}",
                 t=t,
-                pe=pos_err[0],
-                re=rot_err[0],
-                rb=info["reached_box"][0],
-                fc=floor_collision[0],
-                gb=rewards["gripper_box"][0],
-                bt=rewards["box_target"][0],
-                nf=rewards["no_floor_collision"][0],
-                ah=rewards["robot_target_qpos"][0],
-                tot=total0,
+                bx=box_pos[0], by=box_pos[1], bz=box_pos[2],
+                tx=target_pos[0], ty=target_pos[1], tz=target_pos[2],
+                gx=gripper_pos[0], gy=gripper_pos[1], gz=gripper_pos[2],
+                pe=pos_err,
+                re=rot_err,
+                rb=info["reached_box"],
+                fc=floor_collision,
+                gb=rewards["gripper_box"],
+                bt=rewards["box_target"],
+                nf=rewards["no_floor_collision"],
+                ah=rewards["robot_target_qpos"],
+                tot=total,
             ),
             lambda _: 0,
             operand=0,
         )
         # ----------------------
+
 
         
         return rewards  # Dictionary of individual reward components - calculated later in step()
