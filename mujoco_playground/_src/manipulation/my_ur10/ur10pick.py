@@ -277,10 +277,10 @@ class UR10PickCube(ur10_base.UR10Base):
             jax.debug.print(
                 "[EP END] t={t} REW gbr={gb:.3f} btr={bt:.3f} nfr={nf:.3f} mp={mp:.3f} TOTAL={tot:.3f}",
                 t=info["step"],
-                gb=rewards["gripper_box_reward"],
-                bt=rewards["box_target_reward"],
+                gb=rewards["gripper_box"],
+                bt=rewards["box_target"],
                 nf=rewards["no_floor_collision"],
-                mp=rewards["movement_penalty"],
+                mp=rewards["robot_target_qpos"],
                 tot=reward,
             )
 
@@ -371,16 +371,14 @@ class UR10PickCube(ur10_base.UR10Base):
         # Binary indicator if the gripper has reached the box - scalar JAX float64
         info["reached_box"] = 1.0 * jp.maximum(
             info["reached_box"],
-            (
-                jp.linalg.norm(gripper_box_dist) < 0.02
-            ),  # Panda threshold was 0.012
+            (gripper_box_dist < 0.02),  # Panda threshold was 0.012
         )  
 
         rewards = {
-            "gripper_box_reward": gripper_box_Reward,
-            "box_target_reward": box_target_Reward * info["reached_box"],
+            "gripper_box": gripper_box_Reward,
+            "box_target": box_target_Reward * info["reached_box"],
             "no_floor_collision": no_floor_collision_Reward,
-            "movement_penalty": robot_target_qpos_penalty,
+            "robot_target_qpos": robot_target_qpos_penalty,
         }
         # ==============================
         # Raw signals dict (for debug)
