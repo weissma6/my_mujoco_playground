@@ -60,6 +60,8 @@ podman run --rm \
   -e WANDB_API_KEY="${WANDB_API_KEY:-}" \
   -e MUJOCO_GL=egl \
   -e PYOPENGL_PLATFORM=egl \
+  -e EGL_PLATFORM=surfaceless \
+  -e MUJOCO_EGL_DEVICE_ID=0 \
   -e PYTHONPATH=/workspace \
   -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
   -v "$REPO_DIR:/workspace" \
@@ -69,10 +71,19 @@ podman run --rm \
     set -euo pipefail
     echo "=== CONTAINER PREFLIGHT ==="
     echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
-    command -v nvidia-smi && nvidia-smi || echo "nvidia-smi not available in container"
+    nvidia-smi || true
     echo "MUJOCO_GL=$MUJOCO_GL"
     echo "PYOPENGL_PLATFORM=$PYOPENGL_PLATFORM"
+    echo "EGL_PLATFORM=$EGL_PLATFORM"
 
+    echo "=== EGL LIBS ==="
+    ldconfig -p | grep -i egl || true
+
+    echo "=== (Optional) PyOpenGL upgrade ==="
+    python -m pip install -U PyOpenGL PyOpenGL_accelerate >/tmp/pip_pyo.log 2>&1 || true
+    tail -n 20 /tmp/pip_pyo.log || true
+
+    echo "=== EGL SMOKE TEST ==="
     python - << "EOF"
 import os
 import mujoco
@@ -88,4 +99,6 @@ EOF
       --jsonl "batch_runs/sweeps/UR10_sweep.jsonl" \
       --index "'"$SLURM_ARRAY_TASK_ID"'" \
       --out_root "results"
+  '
+
   '

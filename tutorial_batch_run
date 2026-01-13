@@ -28,8 +28,9 @@ nano batch_runs/slurm/run_array_panda.sbatch
 # Step 3 – Submit the SLURM array job:
 sbatch batch_runs/slurm/run_array_panda.sbatch
 sbatch batch_runs/slurm/run_array_ur10.sbatch
+sbatch batch_runs/slurm/run_array_ur10_EGLTest.sbatch
 
-sbatch --array=1 batch_runs/slurm/run_array_ur10.sbatch
+sbatch --array=1 batch_runs/slurm/run_array_ur10_EGLTest.sbatch
 
 # ------------------------------------------------
 # Step 4 Monitoring the job:
@@ -48,8 +49,8 @@ squeue -j <job_id>
 tail -f logs/panda_sweep_80540_1.err
 tail -f logs/panda_sweep_80540_1.out
 
-tail -f logs/UR10_sweep_81039_1.err
-tail -f logs/UR10_sweep_81105_1.out
+tail -f logs/UR10_sweep_81113_1.err
+tail -f logs/UR10_sweep_81113_1.out
 
 
 
