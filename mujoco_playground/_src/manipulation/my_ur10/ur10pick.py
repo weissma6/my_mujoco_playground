@@ -244,39 +244,27 @@ class UR10PickCube(ur10_base.UR10Base):
         metrics = state.metrics
         metrics.update(**raw_rewards, out_of_bounds=out_of_bounds.astype(jp.float32))
 
+        # env index should be stored in info at reset, e.g. info["env_id"]
+        eid = state.info.get("env_id", -1)  # default to -1 if not found    
         dummy = jp.array(0, dtype=jp.int32)
         def _do_print(_):
-            # 1) positions (one line)
             jax.debug.print(
-                "[EP END] t={t} POS target={tp} box={bp} gripper={gp}",
+                "[EP END] env={eid} t={t} "
+                "POS tp={tp} bp={bp} gp={gp} | "
+                "DIST btd={btd:.4f} re={re:.4f} gbd={gbd:.4f} | "
+                "EVT rb={rb} fc={fc} oob={oob} | "
+                "REW gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} mp={mp:.3f} TOT={tot:.3f}",
+                eid=eid,
                 t=info["step"],
                 tp=raw_signals["target_pos"],
                 bp=raw_signals["box_pos"],
                 gp=raw_signals["gripper_pos"],
-            )
-
-            # 2) distances / errors (one line)
-            jax.debug.print(
-                "[EP END] t={t} DIST box_target={btd:.4f} rot_err={re:.4f} grip_box={gbd:.4f}",
-                t=info["step"],
                 btd=raw_signals["box_target_dist"],
                 re=raw_signals["rot_err"],
                 gbd=raw_signals["grip_box_dist"],
-            )
-
-            # 3) events (one line)
-            jax.debug.print(
-                "[EP END] t={t} EVT reached_box={rb} floor_col={fc} oob={oob}",
-                t=info["step"],
                 rb=raw_signals["reached_box"],
                 fc=raw_signals["number_floor_collision"],
                 oob=out_of_bounds.astype(jp.int32),
-            )
-
-            # 4) rewards (one line)
-            jax.debug.print(
-                "[EP END] t={t} REW gbr={gb:.3f} btr={bt:.3f} nfr={nf:.3f} mp={mp:.3f} TOTAL={tot:.3f}",
-                t=info["step"],
                 gb=rewards["gripper_box"],
                 bt=rewards["box_target"],
                 nf=rewards["no_floor_collision"],
@@ -286,7 +274,8 @@ class UR10PickCube(ur10_base.UR10Base):
 
             return dummy
 
-        _ = jax.lax.cond(done > 0.0, _do_print, lambda _: dummy, operand=dummy)
+        print_this = (done > 0.0) & (eid == 0)
+        _ = jax.lax.cond(print_this, _do_print, lambda _: dummy, operand=dummy)
 
         obs = self._get_obs(data, info)  # <-- use info
         return State(data, obs, reward, done, metrics, info)  # <-- return info
