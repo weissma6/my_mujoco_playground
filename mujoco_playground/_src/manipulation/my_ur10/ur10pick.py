@@ -251,9 +251,11 @@ class UR10PickCube(ur10_base.UR10Base):
         # ----------------------------------------------------------
         # Debug print block
         # ----------------------------------------------------------
-            # print only on last step before reset
+        # print only on last step before reset
+        dummy = jp.array(0, dtype=jp.int32)
+
         def _do_print(_):
-            return jax.debug.print(
+            jax.debug.print(
                 "[EP END] t={t} pos_err={pe:.4f} rot_err={re:.4f} dist={d:.4f} "
                 "reached={rb} floor={fc} oob={oob} "
                 "gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} TOTAL={tot:.3f}",
@@ -268,10 +270,11 @@ class UR10PickCube(ur10_base.UR10Base):
                 bt=rewards["box_target"],
                 nf=rewards["no_floor_collision"],
                 ah=rewards["robot_target_qpos"],
-                tot=reward
+                tot=reward,
             )
+            return dummy  # IMPORTANT: match structure/type
 
-        _ = jax.lax.cond(done > 0.0, _do_print, lambda _: 0, operand=0)
+        _ = jax.lax.cond(done > 0.0, _do_print, lambda _: dummy, operand=0)
         # ----------------------------------------------------------
 
         obs = self._get_obs(data, state.info)
