@@ -64,11 +64,6 @@ podman run --rm \
   -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
   -v "$REPO_DIR:/workspace" \
   -w /workspace \
-  --device /dev/nvidiactl \
-  --device /dev/nvidia-uvm \
-  --device /dev/nvidia-uvm-tools \
-  --device /dev/nvidia-modeset \
-  $(for d in /dev/nvidia[0-9]*; do echo "--device $d"; done) \
   "$IMAGE_TAG" \
   bash -lc '
     set -euo pipefail
@@ -78,7 +73,6 @@ podman run --rm \
     echo "MUJOCO_GL=$MUJOCO_GL"
     echo "PYOPENGL_PLATFORM=$PYOPENGL_PLATFORM"
 
-    # EGL smoke test: create renderer and render one frame
     python - << "EOF"
 import os
 import mujoco
