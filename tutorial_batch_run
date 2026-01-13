@@ -30,7 +30,9 @@ sbatch batch_runs/slurm/run_array_panda.sbatch
 sbatch batch_runs/slurm/run_array_ur10.sbatch
 sbatch batch_runs/slurm/run_array_ur10_EGLTest.sbatch
 
-sbatch --array=1 batch_runs/slurm/run_array_ur10_EGLTest.sbatch
+sbatch --array=1 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
+sbatch --array=1-2 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
+
 
 # ------------------------------------------------
 # Step 4 Monitoring the job:
@@ -49,9 +51,11 @@ squeue -j <job_id>
 tail -f logs/panda_sweep_80540_1.err
 tail -f logs/panda_sweep_80540_1.out
 
-tail -f logs/UR10_sweep_81113_1.err
-tail -f logs/UR10_sweep_81113_1.out
+tail -f logs/UR10_sweep_81127_1.err
+tail -f logs/UR10_sweep_81127_1.out
 
+tail -f logs/UR10_sweep_EGL_81148_1.err
+tail -f logs/UR10_sweep_EGL_81148_1.out
 
 
 # Stop trailing:
