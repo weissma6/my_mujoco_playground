@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-7%4
+#SBATCH --array=1-1%1
 
 set -euo pipefail
 set -x
@@ -62,6 +62,8 @@ podman run --rm \
   -e PYOPENGL_PLATFORM=egl \
   -e EGL_PLATFORM=surfaceless \
   -e MUJOCO_EGL_DEVICE_ID=0 \
+  -e __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json \
+  -e LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-} \
   -e PYTHONPATH=/workspace \
   -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
   -v "$REPO_DIR:/workspace" \
