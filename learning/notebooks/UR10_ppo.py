@@ -152,7 +152,7 @@ def _rollout_and_log_video_from_make_policy(
     frames = np.asarray(frames)
     if frames.dtype != np.uint8:
         frames = frames.astype(np.uint8)
-        
+
     fps = float(1.0 / eval_env.dt) / float(render_every)
     video_path = os.path.join(wandb.run.dir, f"{env_name}_{step_tag}.mp4")
     try:
@@ -277,7 +277,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
                 ppo_networks.make_ppo_networks, **nf_cfg
             )
 
-        print("\nPPO training with params:\n", ppo_training_params, "\n", flush=True)
+        # print("\nPPO training with params:\n", ppo_training_params, "\n", flush=True)
 
         train_fn = functools.partial(
             ppo.train,
