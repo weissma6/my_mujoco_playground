@@ -1,4 +1,4 @@
-{"run_id":"debug_short","env_name":"UR10PickCube","seed":0,"num_timesteps":300000,"num_envs":512,"unroll_length":5,"num_evals":20,"video_every_evals":10,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
+{"run_id":"debug_short","env_name":"UR10PickCube","seed":0,"num_timesteps":10000,"num_envs":128,"unroll_length":5,"num_evals":20,"video_every_evals":10,"render_every":2, "camera_kwargs":{"camera":"side_130"}}
 {"run_id":"default","env_name":"UR10PickCube","seed":0,"num_timesteps":20000000,"video_every_evals":2,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
 {"run_id":"default_seed6","env_name":"UR10PickCube","seed":6,"num_timesteps":20000000,"video_every_evals":2,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
 {"run_id":"explore_lr3e-4_ent3e-2_seed0","env_name":"UR10PickCube","seed":0,"num_timesteps":20000000,"learning_rate":0.0003,"entropy_cost":0.03,"video_every_evals":2,"render_every":1,"camera_kwargs":{"camera":"side_130"}}

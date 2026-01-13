@@ -74,7 +74,7 @@ class UR10PickCube(ur10_base.UR10Base):
             / "xmls"
             / "mjx_single_cube_position.xml"
         )
-        print("XML PATH:", xml_path, flush=True)
+        # print("XML PATH:", xml_path, flush=True)
 
 
         # ------------------------------------------------------------------------------------
@@ -101,7 +101,7 @@ class UR10PickCube(ur10_base.UR10Base):
             ]
         ]
 
-        print("Model has keyframe support:", hasattr(self._mj_model, "keyframe"), flush=True)
+        # print("Model has keyframe support:", hasattr(self._mj_model, "keyframe"), flush=True)
 
 
     def reset(self, rng: jax.Array) -> State:
@@ -187,7 +187,13 @@ class UR10PickCube(ur10_base.UR10Base):
             "out_of_bounds": jp.array(0.0, dtype=float),
             **{k: 0.0 for k in self._config.reward_config.scales.keys()},
         }
-        info = {"rng": rng, "target_pos": target_pos, "reached_box": 0.0}
+        info = {
+            "rng": rng,
+            "target_pos": target_pos,
+            "reached_box": 0.0,
+            "step": jp.array(0, dtype=jp.int32),        # step counter for debug printing
+            "debug_every": jp.array(10, dtype=jp.int32) # print every N steps (set N here)
+        }
         obs = self._get_obs(data, info)
         reward, done = jp.zeros(2)
         state = State(data, obs, reward, done, metrics, info)
@@ -208,13 +214,13 @@ class UR10PickCube(ur10_base.UR10Base):
             data.ctrl[:6] - data.qpos[self._robot_arm_qposadr]
         )
 
-        debug.print(
-            "[RESET] robot_qpos={rq} | box_qpos={bq} | ctrl={c} | ctrl-qpos-err={e}",
-            rq=robot_qpos,
-            bq=box_qpos,
-            c=robot_ctrl,
-            e=ctrl_qpos_err,
-        )
+        # debug.print(
+        #     "[RESET] robot_qpos={rq} | box_qpos={bq} | ctrl={c} | ctrl-qpos-err={e}",
+        #     rq=robot_qpos,
+        #     bq=box_qpos,
+        #     c=robot_ctrl,
+        #     e=ctrl_qpos_err,
+        # )
 
         return state
 
@@ -224,6 +230,10 @@ class UR10PickCube(ur10_base.UR10Base):
         ctrl = jp.clip(ctrl, self._lowers, self._uppers)
 
         data = mjx_env.step(self._mjx_model, state.data, ctrl, self.n_substeps)
+
+        # copy/update info for next state
+        info = dict(state.info)
+        info["step"] = info["step"] + 1 # increment step counter for debug printing
 
         raw_rewards = self._get_reward(data, state.info)
         rewards = {
@@ -237,6 +247,8 @@ class UR10PickCube(ur10_base.UR10Base):
         done = done.astype(float)
 
         state.metrics.update(**raw_rewards, out_of_bounds=out_of_bounds.astype(float))
+
+
 
         obs = self._get_obs(data, state.info)
         state = State(data, obs, reward, done, state.metrics, state.info)
@@ -309,6 +321,40 @@ class UR10PickCube(ur10_base.UR10Base):
             "no_floor_collision": no_floor_collision,
             "robot_target_qpos": robot_target_qpos,
         }
+        # ----------- Debug printing -----------
+        # --- Debug prints -----
+        t = info["step"]
+        N = info.get("debug_every", jp.array(1000, dtype=jp.int32))
+
+        total = (
+            rewards["gripper_box"]
+            + rewards["box_target"]
+            + rewards["no_floor_collision"]
+            + rewards["robot_target_qpos"]
+        )
+
+        debug.debug_print(
+            "[REWARD] t={t} | "
+            "box=({bx:.3f},{by:.3f},{bz:.3f}) | tgt=({tx:.3f},{ty:.3f},{tz:.3f}) | grip=({gx:.3f},{gy:.3f},{gz:.3f}) | "
+            "pos_err={pe:.4f} rot_err={re:.4f} | reached={rb:.0f} floor_col={fc} | "
+            "grip_box={gb:.4f} box_tgt={bt:.4f} no_floor={nf:.4f} arm_home={ah:.4f} | TOTAL={tot:.4f}",
+            t=t,
+            bx=box_pos[0], by=box_pos[1], bz=box_pos[2],
+            tx=target_pos[0], ty=target_pos[1], tz=target_pos[2],
+            gx=gripper_pos[0], gy=gripper_pos[1], gz=gripper_pos[2],
+            pe=pos_err,
+            re=rot_err,
+            rb=info["reached_box"],
+            fc=floor_collision,
+            gb=rewards["gripper_box"],
+            bt=rewards["box_target"],
+            nf=rewards["no_floor_collision"],
+            ah=rewards["robot_target_qpos"],
+            tot=total,
+            condition=(t % N == 0),
+        )
+        # -------------------------------------
+        
         return rewards  # Dictionary of individual reward components - calculated later in step()
 
     def _get_obs(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:

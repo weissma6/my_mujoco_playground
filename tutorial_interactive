@@ -15,7 +15,8 @@ cd ~/VT1_MBRL/my_mujoco_playground
 ls Dockerfile requirements.txt
 
 ## Build the image
-podman build -t mujoco:env .
+podman build -t mujoco:env 
+podman build -t mujoco:env_EGL .
 
 # Check the image
 podman images
@@ -44,10 +45,10 @@ podman run --rm -it \
 # Step 5 – (Recommended) Save the image to a tar on shared storage
 cd ~/VT1_MBRL/my_mujoco_playground
 podman save -o mujoco_env.tar mujoco:env
-
+podman save -o mujoco_env_EGL.tar mujoco:env_EGL
 
 # RUN code later with the image
-Later, on any node (or in any job script):
+# Later, on any node (or in any job script):
 cd ~/VT1_MBRL/my_mujoco_playground
 podman load -i ~/VT1_MBRL/my_mujoco_playground/mujoco_env.tar
 
