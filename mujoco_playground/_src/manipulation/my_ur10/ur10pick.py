@@ -323,7 +323,7 @@ class UR10PickCube(ur10_base.UR10Base):
         }
         # --- Debug prints -----
         t = info["step"]
-        N = info.get("debug_every", jp.array(200, dtype=jp.int32))  # e.g. every 200 steps
+        N = info.get("debug_every", jp.array(1000, dtype=jp.int32))
 
         total = (
             rewards["gripper_box"]
@@ -334,15 +334,10 @@ class UR10PickCube(ur10_base.UR10Base):
 
         _ = jax.lax.cond(
             (t % N) == 0,
-            lambda _: jax.debug.print(
-                "[REWARD] t={t} | "
-                "box=({bx:.3f},{by:.3f},{bz:.3f}) | tgt=({tx:.3f},{ty:.3f},{tz:.3f}) | "
-                "grip=({gx:.3f},{gy:.3f},{gz:.3f}) | pos_err={pe:.4f} rot_err={re:.4f} | "
-                "reached={rb:.0f} floor_col={fc} | gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} | TOTAL={tot:.3f}",
+            lambda _: (jax.debug.print(
+                "[REWARD] t={t} pos_err={pe:.4f} rot_err={re:.4f} reached={rb:.0f} floor_col={fc} "
+                "gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} TOTAL={tot:.3f}",
                 t=t,
-                bx=box_pos[0], by=box_pos[1], bz=box_pos[2],
-                tx=target_pos[0], ty=target_pos[1], tz=target_pos[2],
-                gx=gripper_pos[0], gy=gripper_pos[1], gz=gripper_pos[2],
                 pe=pos_err,
                 re=rot_err,
                 rb=info["reached_box"],
@@ -352,11 +347,12 @@ class UR10PickCube(ur10_base.UR10Base):
                 nf=rewards["no_floor_collision"],
                 ah=rewards["robot_target_qpos"],
                 tot=total,
-            ),
+            ), 0)[1],
             lambda _: 0,
             operand=0,
         )
         # ----------------------
+
 
 
         
