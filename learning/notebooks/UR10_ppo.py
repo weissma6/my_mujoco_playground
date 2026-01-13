@@ -17,6 +17,7 @@ from brax.training.agents.ppo import train as ppo
 import jax
 import wandb
 import mediapy
+import numpy as np
 
 
 def is_nvidia_available() -> bool:
@@ -147,11 +148,22 @@ def _rollout_and_log_video_from_make_policy(
  
     cam = camera_kwargs or {"camera": "side_130"}
     frames = eval_env.render(trajectory, **cam)
+    # frames might be list-of-arrays; make it (T,H,W,C) uint8 on CPU
+    frames = np.asarray(frames)
+    if frames.dtype != np.uint8:
+        frames = frames.astype(np.uint8)
+        
     fps = float(1.0 / eval_env.dt) / float(render_every)
     video_path = os.path.join(wandb.run.dir, f"{env_name}_{step_tag}.mp4")
     try:
         mediapy.write_video(video_path, frames, fps=fps)
-        wandb.log({f"eval/video{run_id}": wandb.Video(video_path, fps=int(fps), format="mp4")}, step=int(num_steps))
+        # Make W&B track the file explicitly
+        wandb.save(video_path)
+        # Use a stable key that changes per eval/step
+        wandb.log(
+            {f"eval/video/{run_id}/{int(num_steps)}": wandb.Video(video_path, fps=int(fps), format="mp4")},
+            step=int(num_steps),
+        )
     except Exception as e:
         print(f"[WARN] Video skipped: {e}", flush=True)
 
