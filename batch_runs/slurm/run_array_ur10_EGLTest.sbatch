@@ -1,0 +1,97 @@
+#!/bin/bash
+# ===== Slurm job metadata =====
+#SBATCH --job-name=UR10_sweep
+#SBATCH --account=cai_iai
+#SBATCH --partition=gpu
+#SBATCH --output=logs/%x_%A_%a.out
+#SBATCH --error=logs/%x_%A_%a.err
+#SBATCH --time=04:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --gres=gpu:1
+#SBATCH --array=1-7%4
+
+set -euo pipefail
+
+
+set -x
+echo "=== SBATCH START ==="
+date
+pwd
+hostname
+echo "SLURM_JOB_ID=$SLURM_JOB_ID"
+echo "SLURM_ARRAY_TASK_ID=$SLURM_ARRAY_TASK_ID"
+ls -la
+echo "=== BEFORE PODMAN ==="
+
+REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"
+cd "$REPO_DIR"
+
+mkdir -p logs results
+
+# Unique tmp per task
+export TMPDIR="$HOME/tmp_podman/${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+mkdir -p "$TMPDIR"
+echo "Using TMPDIR=$TMPDIR"
+
+IMAGE_TAR="$REPO_DIR/mujoco_env_ffmpeg.tar"
+IMAGE_TAG="mujoco:env-ffmpeg"
+
+# Load image safely (avoid parallel podman load)
+mkdir -p "$HOME/.locks"
+LOCKFILE="$HOME/.locks/podman_load.lock"
+(
+  flock -x 200
+  if [ -z "$(podman images -q "$IMAGE_TAG")" ]; then
+    echo "Image $IMAGE_TAG not found; loading from $IMAGE_TAR"
+    podman load -i "$IMAGE_TAR"
+    podman images | head -20
+  fi
+) 200>"$LOCKFILE"
+
+
+# Load W&B API key
+if [ -f "$HOME/.secrets/wandb_key" ]; then
+  export WANDB_API_KEY="$(cat "$HOME/.secrets/wandb_key")"
+fi
+
+# IMPORTANT: no -it in batch jobs
+podman run --rm \
+  -e WANDB_API_KEY="${WANDB_API_KEY:-}" \
+  -e MUJOCO_GL=egl \
+  -e PYOPENGL_PLATFORM=egl \
+  -e PYTHONPATH=/workspace \
+  -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
+  -v "$REPO_DIR:/workspace" \
+  -w /workspace \
+  --device /dev/nvidiactl \
+  --device /dev/nvidia-uvm \
+  --device /dev/nvidia-uvm-tools \
+  --device /dev/nvidia-modeset \
+  $(for d in /dev/nvidia[0-9]*; do echo "--device $d"; done) \
+  "$IMAGE_TAG" \
+  bash -lc '
+    set -euo pipefail
+    echo "=== CONTAINER PREFLIGHT ==="
+    echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+    command -v nvidia-smi && nvidia-smi || echo "nvidia-smi not available in container"
+    echo "MUJOCO_GL=$MUJOCO_GL"
+    echo "PYOPENGL_PLATFORM=$PYOPENGL_PLATFORM"
+
+    # EGL smoke test: create renderer and render one frame
+    python - << "EOF"
+import os
+import mujoco
+print("MUJOCO_GL:", os.environ.get("MUJOCO_GL"))
+m = mujoco.MjModel.from_xml_string("<mujoco><worldbody/></mujoco>")
+r = mujoco.Renderer(m)
+img = r.render()
+print("EGL render OK:", img.shape, img.dtype)
+EOF
+
+    echo "=== START TRAINING ==="
+    python batch_runs/scripts/run_one_ur10.py \
+      --jsonl "batch_runs/sweeps/UR10_sweep.jsonl" \
+      --index "'"$SLURM_ARRAY_TASK_ID"'" \
+      --out_root "results"
+  '

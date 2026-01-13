@@ -49,7 +49,7 @@ tail -f logs/panda_sweep_80540_1.err
 tail -f logs/panda_sweep_80540_1.out
 
 tail -f logs/UR10_sweep_81039_1.err
-tail -f logs/UR10_sweep_81039_1.out
+tail -f logs/UR10_sweep_81105_1.out
 
 
 
