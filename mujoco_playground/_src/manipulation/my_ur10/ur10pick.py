@@ -235,7 +235,7 @@ class UR10PickCube(ur10_base.UR10Base):
         info = dict(state.info)
         info["step"] = info["step"] + 1 # increment step counter for debug printing
 
-        raw_rewards = self._get_reward(data, state.info)
+        raw_rewards, raw_signals = self._get_reward(data, state.info)
         rewards = {
             k: v * self._config.reward_config.scales[k] for k, v in raw_rewards.items()
         }
@@ -248,7 +248,31 @@ class UR10PickCube(ur10_base.UR10Base):
 
         state.metrics.update(**raw_rewards, out_of_bounds=out_of_bounds.astype(float))
 
+        # ----------------------------------------------------------
+        # Debug print block
+        # ----------------------------------------------------------
+            # print only on last step before reset
+        def _do_print(_):
+            return jax.debug.print(
+                "[EP END] t={t} pos_err={pe:.4f} rot_err={re:.4f} dist={d:.4f} "
+                "reached={rb} floor={fc} oob={oob} "
+                "gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} TOTAL={tot:.3f}",
+                t=info["step"],
+                pe=raw_signals["pos_err"],
+                re=raw_signals["rot_err"],
+                d=raw_signals["grip_box_dist"],
+                rb=raw_signals["reached_box"],
+                fc=raw_signals["floor_collision"],
+                oob=out_of_bounds.astype(int),
+                gb=rewards["gripper_box"],
+                bt=rewards["box_target"],
+                nf=rewards["no_floor_collision"],
+                ah=rewards["robot_target_qpos"],
+                tot=reward
+            )
 
+        _ = jax.lax.cond(done > 0.0, _do_print, lambda _: 0, operand=0)
+        # ----------------------------------------------------------
 
         obs = self._get_obs(data, state.info)
         state = State(data, obs, reward, done, state.metrics, state.info)
@@ -321,42 +345,26 @@ class UR10PickCube(ur10_base.UR10Base):
             "no_floor_collision": no_floor_collision,
             "robot_target_qpos": robot_target_qpos,
         }
-        # --- Debug prints -----
-        t = info["step"]
-        N = info.get("debug_every", jp.array(1000, dtype=jp.int32))
+        # ==============================
+        # Raw signals dict (for debug)
+        # ==============================
+        raw = {
+            # positions
+            "target_pos": target_pos,
+            "box_pos": box_pos,
+            "gripper_pos": gripper_pos,
 
-        total = (
-            rewards["gripper_box"]
-            + rewards["box_target"]
-            + rewards["no_floor_collision"]
-            + rewards["robot_target_qpos"]
-        )
+            # errors / distances
+            "pos_err": pos_err,
+            "rot_err": rot_err,
+            "grip_box_dist": gripper_box,
 
-        _ = jax.lax.cond(
-            (t % N) == 0,
-            lambda _: (jax.debug.print(
-                "[REWARD] t={t} pos_err={pe:.4f} rot_err={re:.4f} reached={rb:.0f} floor_col={fc} "
-                "gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} TOTAL={tot:.3f}",
-                t=t,
-                pe=pos_err,
-                re=rot_err,
-                rb=info["reached_box"],
-                fc=floor_collision,
-                gb=rewards["gripper_box"],
-                bt=rewards["box_target"],
-                nf=rewards["no_floor_collision"],
-                ah=rewards["robot_target_qpos"],
-                tot=total,
-            ), 0)[1],
-            lambda _: 0,
-            operand=0,
-        )
-        # ----------------------
+            # events
+            "reached_box": info["reached_box"],
+            "floor_collision": floor_collision,
+        }
 
-
-
-        
-        return rewards  # Dictionary of individual reward components - calculated later in step()
+        return rewards, raw
 
     def _get_obs(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
         gripper_pos = data.site_xpos[self._gripper_site]
