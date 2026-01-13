@@ -329,11 +329,11 @@ class UR10PickCube(ur10_base.UR10Base):
         # ==============================
         # Reward for box being at target - scalar JAX float64
         box_target_Reward = 1 - jp.tanh(
-            5 * (1 * box_target_dist + 0 * rot_err)
+            2 * (1 * box_target_dist + 0 * rot_err)
         )
         # Reward for gripper being at box - scalar JAX float64
         gripper_box_Reward = 1 - jp.tanh(
-            5 * gripper_box_dist
+            2 * gripper_box_dist
         )
         # Penalty for deviating too far from the initial arm configuration - scalar JAX float64
         robot_target_qpos_penalty = 1 - jp.tanh(
