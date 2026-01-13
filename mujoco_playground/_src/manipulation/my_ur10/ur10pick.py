@@ -249,7 +249,7 @@ class UR10PickCube(ur10_base.UR10Base):
             jax.debug.print(
                 "[EP END] t={t} pos_err={pe:.4f} rot_err={re:.4f} dist={d:.4f} "
                 "reached={rb} floor={fc} oob={oob} "
-                "gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} TOTAL={tot<[EP END] t={t} ... TOTAL={tot:.3f}",
+                "gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} TOTAL={tot:.3f}",
                 t=info["step"],
                 pe=raw_signals["pos_err"],
                 re=raw_signals["rot_err"],
