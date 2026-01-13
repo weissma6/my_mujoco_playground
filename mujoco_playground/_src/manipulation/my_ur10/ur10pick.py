@@ -323,9 +323,9 @@ class UR10PickCube(ur10_base.UR10Base):
         }
         # --- Debug prints -----
         t = info["step"]
-        N = info.get("debug_every", jp.array(50, dtype=jp.int32))  # print every 50 steps
+        N = info.get("debug_every", jp.array(100, dtype=jp.int32))  # print every 100 steps (set here)
 
-        # Sum for display (env0 only)
+        # Print only env 0 to avoid 16x spam under vmap
         total0 = (
             rewards["gripper_box"][0]
             + rewards["box_target"][0]
@@ -333,25 +333,27 @@ class UR10PickCube(ur10_base.UR10Base):
             + rewards["robot_target_qpos"][0]
         )
 
-        # Only print on multiples of N (env0 only)
-        do_print = (t % N) == 0
-
-        # Print one compact line (env 0)
-        jax.debug.print(
-            "[REWARD0] t={t} pos_err={pe:.4f} rot_err={re:.4f} reached={rb:.0f} floor_col={fc} "
-            "gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} TOTAL={tot:.3f}",
-            t=t,
-            pe=jp.where(do_print, pos_err[0], 0.0),
-            re=jp.where(do_print, rot_err[0], 0.0),
-            rb=jp.where(do_print, info["reached_box"][0], 0.0),
-            fc=jp.where(do_print, floor_collision[0], False),
-            gb=jp.where(do_print, rewards["gripper_box"][0], 0.0),
-            bt=jp.where(do_print, rewards["box_target"][0], 0.0),
-            nf=jp.where(do_print, rewards["no_floor_collision"][0], 0.0),
-            ah=jp.where(do_print, rewards["robot_target_qpos"][0], 0.0),
-            tot=jp.where(do_print, total0, 0.0),
+        _ = jax.lax.cond(
+            (t % N) == 0,
+            lambda _: jax.debug.print(
+                "[REWARD0] t={t} pos_err={pe:.4f} rot_err={re:.4f} reached={rb:.0f} floor_col={fc} "
+                "gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} TOTAL={tot:.3f}",
+                t=t,
+                pe=pos_err[0],
+                re=rot_err[0],
+                rb=info["reached_box"][0],
+                fc=floor_collision[0],
+                gb=rewards["gripper_box"][0],
+                bt=rewards["box_target"][0],
+                nf=rewards["no_floor_collision"][0],
+                ah=rewards["robot_target_qpos"][0],
+                tot=total0,
+            ),
+            lambda _: 0,
+            operand=0,
         )
         # ----------------------
+
         
         return rewards  # Dictionary of individual reward components - calculated later in step()
 
