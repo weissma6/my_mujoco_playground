@@ -1,6 +1,6 @@
 #!/bin/bash
 # ===== Slurm job metadata =====
-#SBATCH --job-name=UR10_sweep_EGL_v1
+#SBATCH --job-name=UR10_sweep_EGL_v2dbg
 #SBATCH --account=cai_iai
 #SBATCH --partition=gpu
 #SBATCH --output=logs/%x_%A_%a.out
@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-1%1
+#SBATCH --array=1-7%4
 
 set -euo pipefail
 set -x
@@ -55,7 +55,6 @@ if [ -f "$HOME/.secrets/wandb_key" ]; then
   export WANDB_API_KEY="$(cat "$HOME/.secrets/wandb_key")"
 fi
 
-# Run container
 podman run --rm \
   -e WANDB_API_KEY="${WANDB_API_KEY:-}" \
   -e MUJOCO_GL=egl \
@@ -78,11 +77,33 @@ podman run --rm \
     echo 'MUJOCO_GL='\"\$MUJOCO_GL\"
     echo 'PYOPENGL_PLATFORM='\"\$PYOPENGL_PLATFORM\"
     echo 'EGL_PLATFORM='\"\$EGL_PLATFORM\"
+    echo '__EGL_VENDOR_LIBRARY_FILENAMES='\"\$__EGL_VENDOR_LIBRARY_FILENAMES\"
+    echo 'LD_LIBRARY_PATH='\"\$LD_LIBRARY_PATH\"
 
     echo '=== EGL LIBS (container) ==='
     ldconfig -p | grep -i egl || true
 
-    echo '=== VERSIONS ==='
+    echo '=== GLVND EGL VENDORS ==='
+    ls -la /usr/share/glvnd/egl_vendor.d/ || true
+    cat /usr/share/glvnd/egl_vendor.d/*.json 2>/dev/null | head -n 200 || true
+
+    echo '=== PYOPENGL DEBUG (EGL) ==='
+    python - << 'EOF'
+import os
+print('PYOPENGL_PLATFORM =', os.environ.get('PYOPENGL_PLATFORM'))
+print('EGL_PLATFORM      =', os.environ.get('EGL_PLATFORM'))
+print('__EGL_VENDOR_LIBRARY_FILENAMES =', os.environ.get('__EGL_VENDOR_LIBRARY_FILENAMES'))
+print('LD_LIBRARY_PATH   =', os.environ.get('LD_LIBRARY_PATH'))
+
+import OpenGL
+print('PyOpenGL version  =', OpenGL.__version__)
+
+from OpenGL import platform as _p
+print('platform.PLATFORM =', type(_p.PLATFORM), _p.PLATFORM)
+print('platform.PLATFORM.EGL =', getattr(_p.PLATFORM, 'EGL', None))
+EOF
+
+    echo '=== VERSIONS (mujoco + PyOpenGL) ==='
     python - << 'EOF'
 import mujoco, OpenGL
 print('mujoco:', mujoco.__version__)
@@ -91,7 +112,6 @@ EOF
 
     echo '=== EGL SMOKE TEST ==='
     python - << 'EOF'
-import os
 import mujoco
 m = mujoco.MjModel.from_xml_string('<mujoco><worldbody/></mujoco>')
 r = mujoco.Renderer(m)
@@ -105,3 +125,4 @@ EOF
       --index $SLURM_ARRAY_TASK_ID \
       --out_root results
   "
+echo "=== SBATCH END ==="
