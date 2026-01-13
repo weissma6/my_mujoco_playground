@@ -321,39 +321,37 @@ class UR10PickCube(ur10_base.UR10Base):
             "no_floor_collision": no_floor_collision,
             "robot_target_qpos": robot_target_qpos,
         }
-        # ----------- Debug printing -----------
         # --- Debug prints -----
         t = info["step"]
-        N = info.get("debug_every", jp.array(1000, dtype=jp.int32))
+        N = info.get("debug_every", jp.array(50, dtype=jp.int32))  # print every 50 steps
 
-        total = (
-            rewards["gripper_box"]
-            + rewards["box_target"]
-            + rewards["no_floor_collision"]
-            + rewards["robot_target_qpos"]
+        # Sum for display (env0 only)
+        total0 = (
+            rewards["gripper_box"][0]
+            + rewards["box_target"][0]
+            + rewards["no_floor_collision"][0]
+            + rewards["robot_target_qpos"][0]
         )
 
+        # Only print on multiples of N (env0 only)
+        do_print = (t % N) == 0
+
+        # Print one compact line (env 0)
         jax.debug.print(
-            "[REWARD] t={t} | "
-            "box=({bx:.3f},{by:.3f},{bz:.3f}) | tgt=({tx:.3f},{ty:.3f},{tz:.3f}) | grip=({gx:.3f},{gy:.3f},{gz:.3f}) | "
-            "pos_err={pe:.4f} rot_err={re:.4f} | reached={rb:.0f} floor_col={fc} | "
-            "grip_box={gb:.4f} box_tgt={bt:.4f} no_floor={nf:.4f} arm_home={ah:.4f} | TOTAL={tot:.4f}",
+            "[REWARD0] t={t} pos_err={pe:.4f} rot_err={re:.4f} reached={rb:.0f} floor_col={fc} "
+            "gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} ah={ah:.3f} TOTAL={tot:.3f}",
             t=t,
-            bx=box_pos[0], by=box_pos[1], bz=box_pos[2],
-            tx=target_pos[0], ty=target_pos[1], tz=target_pos[2],
-            gx=gripper_pos[0], gy=gripper_pos[1], gz=gripper_pos[2],
-            pe=pos_err,
-            re=rot_err,
-            rb=info["reached_box"],
-            fc=floor_collision,
-            gb=rewards["gripper_box"],
-            bt=rewards["box_target"],
-            nf=rewards["no_floor_collision"],
-            ah=rewards["robot_target_qpos"],
-            tot=total,
-            condition=(t % N == 0),
+            pe=jp.where(do_print, pos_err[0], 0.0),
+            re=jp.where(do_print, rot_err[0], 0.0),
+            rb=jp.where(do_print, info["reached_box"][0], 0.0),
+            fc=jp.where(do_print, floor_collision[0], False),
+            gb=jp.where(do_print, rewards["gripper_box"][0], 0.0),
+            bt=jp.where(do_print, rewards["box_target"][0], 0.0),
+            nf=jp.where(do_print, rewards["no_floor_collision"][0], 0.0),
+            ah=jp.where(do_print, rewards["robot_target_qpos"][0], 0.0),
+            tot=jp.where(do_print, total0, 0.0),
         )
-        # -------------------------------------
+        # ----------------------
         
         return rewards  # Dictionary of individual reward components - calculated later in step()
 
