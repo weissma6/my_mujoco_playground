@@ -59,10 +59,10 @@ podman run --rm \
   -w /workspace \
   "$IMAGE_TAG" \
   bash -lc "
-    set -euo pipefail
     python -c 'import jax; print(\"jax devices:\", jax.devices())' || true
     python batch_runs/scripts/run_one_ur10.py \
       --jsonl batch_runs/sweeps/UR10_sweep.jsonl \
       --index $SLURM_ARRAY_TASK_ID \
       --out_root results
   "
+

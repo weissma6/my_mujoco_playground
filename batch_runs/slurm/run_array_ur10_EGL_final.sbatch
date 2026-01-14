@@ -1,60 +1,53 @@
 #!/bin/bash
-# ===== Slurm job metadata =====
 #SBATCH --job-name=UR10_sweep_EGL
 #SBATCH --account=cai_iai
 #SBATCH --partition=gpu
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
-#SBATCH --time=04:00:00
+#SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-7%4
+#SBATCH --array=1-8%4
 
 set -euo pipefail
-set -x
-
-echo "=== SBATCH START ==="
-date
-hostname
-echo "SLURM_JOB_ID=$SLURM_JOB_ID"
-echo "SLURM_ARRAY_TASK_ID=$SLURM_ARRAY_TASK_ID"
-echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
 
 REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"
-cd "$REPO_DIR"
-
-mkdir -p logs results
-
-# Unique tmp per task
-export TMPDIR="$HOME/tmp_podman/${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-mkdir -p "$TMPDIR"
-echo "Using TMPDIR=$TMPDIR"
-
 IMAGE_TAR="$REPO_DIR/mujoco_env_EGL.tar"
 IMAGE_TAG="mujoco:env_EGL"
+LOCALHOST_TAG="localhost/mujoco:env_EGL"
 
-echo "=== BEFORE PODMAN ==="
+mkdir -p "$REPO_DIR/logs" "$REPO_DIR/results"
 
-# Load image safely (avoid parallel podman load)
+# Per-task tmp (helps rootless podman)
+export TMPDIR="$HOME/tmp_podman/${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+mkdir -p "$TMPDIR"
+
+# Ensure podman exists (no module needed on this cluster)
+command -v podman >/dev/null 2>&1 || { echo "ERROR: podman not found on PATH"; exit 2; }
+
+# Load image tar once per node (protect with a lock for arrays)
 mkdir -p "$HOME/.locks"
 LOCKFILE="$HOME/.locks/podman_load.lock"
 (
   flock -x 200
-  if [ -z "$(podman images -q "$IMAGE_TAG")" ]; then
-    echo "Image $IMAGE_TAG not found; loading from $IMAGE_TAR"
+  if [ -z "$(podman images -q "$IMAGE_TAG" 2>/dev/null || true)" ]; then
     podman load -i "$IMAGE_TAR"
+  fi
+  if [ -z "$(podman images -q "$IMAGE_TAG" 2>/dev/null || true)" ] && \
+     [ -n "$(podman images -q "$LOCALHOST_TAG" 2>/dev/null || true)" ]; then
+    podman tag "$LOCALHOST_TAG" "$IMAGE_TAG"
   fi
 ) 200>"$LOCKFILE"
 
-# Load W&B API key
+# Optional: W&B key
 if [ -f "$HOME/.secrets/wandb_key" ]; then
-  export WANDB_API_KEY="$(cat "$HOME/.secrets/wandb_key")"
+  export WANDB_API_KEY="$(< "$HOME/.secrets/wandb_key")"
 fi
 
-# ===============================
-# Run training inside container
-# ===============================
+cd "$REPO_DIR"
+
+# Run inside container
 podman run --rm \
   -e WANDB_API_KEY="${WANDB_API_KEY:-}" \
   -e MUJOCO_GL=egl \
@@ -62,22 +55,14 @@ podman run --rm \
   -e EGL_PLATFORM=surfaceless \
   -e PYTHONPATH=/workspace \
   -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
-  -v "$REPO_DIR:/workspace" \
+  -v "$REPO_DIR:/workspace:Z" \
   -w /workspace \
   "$IMAGE_TAG" \
   bash -lc "
-    set -euo pipefail
-
-    echo '=== CONTAINER START ==='
-    echo 'CUDA_VISIBLE_DEVICES='\"\$CUDA_VISIBLE_DEVICES\"
-    command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi || true
-
-    echo 'MUJOCO_GL='\"\$MUJOCO_GL\"
-    echo 'PYOPENGL_PLATFORM='\"\$PYOPENGL_PLATFORM\"
-    echo 'EGL_PLATFORM='\"\$EGL_PLATFORM\"
-
+    python -c 'import jax; print(\"jax devices:\", jax.devices())' || true
     python batch_runs/scripts/run_one_ur10.py \
       --jsonl batch_runs/sweeps/UR10_sweep.jsonl \
       --index $SLURM_ARRAY_TASK_ID \
       --out_root results
   "
+
