@@ -15,9 +15,11 @@ from mujoco_playground import registry, wrapper
 from brax.training.agents.ppo import networks as ppo_networks
 from brax.training.agents.ppo import train as ppo
 import jax
+from jax.tree_util import tree_leaves
 import wandb
 import mediapy
 import numpy as np
+import jax.numpy as jnp
 
 
 def is_nvidia_available() -> bool:
@@ -58,6 +60,35 @@ def _deep_update(dst: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
         else:
             dst[k] = v
     return dst
+
+def apply_validated_overrides(base: dict, overrides: dict, *, strict: bool = True) -> dict:
+    unknown = []
+    for k in overrides.keys():
+        if k not in base and k != "network_factory":
+            unknown.append(k)
+    if unknown:
+        msg = f"Unknown override keys: {unknown}"
+        if strict:
+            raise ValueError(msg)
+        print("[WARN]", msg)
+    return _deep_update(base, overrides)
+
+def cast_to_schema(values: dict, schema: dict) -> dict:
+    """
+    Cast values to the types given by schema.
+    Extra keys (not in schema) are left untouched.
+    """
+    out = {}
+    for k, v in values.items():
+        if k in schema and v is not None:
+            try:
+                out[k] = type(schema[k])(v)
+            except Exception:
+                out[k] = v
+        else:
+            out[k] = v
+    return out
+
 
 
 def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -169,6 +200,48 @@ def _rollout_and_log_video_from_make_policy(
 
     return ep_reward
 
+def _wb_jsonify(x):
+    # Make values W&B-config friendly
+    import numpy as np
+    if isinstance(x, dict):
+        return {str(k): _wb_jsonify(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_wb_jsonify(v) for v in x]
+    if hasattr(x, "item") and callable(x.item):
+        try:
+            return x.item()
+        except Exception:
+            pass
+    if isinstance(x, (np.integer, np.floating)):
+        return x.item()
+    if isinstance(x, (str, int, float, bool)) or x is None:
+        return x
+    return str(x)
+
+def _wb_log_final_train_config(*, ppo_training_params: dict, nf_cfg: dict | None, env_name: str, seed: int):
+    # Nested blobs for readability
+    wandb.config.update(
+        {
+            "final": {
+                "env_name": env_name,
+                "seed": seed,
+                "ppo": _wb_jsonify(ppo_training_params),
+                "net": _wb_jsonify(nf_cfg) if isinstance(nf_cfg, dict) else _wb_jsonify({"network_factory": nf_cfg}),
+            }
+        },
+        allow_val_change=True,
+    )
+    # Flattened keys for easy filtering/columns
+    wandb.config.update(
+        {f"ppo.{k}": _wb_jsonify(v) for k, v in ppo_training_params.items()},
+        allow_val_change=True,
+    )
+    if isinstance(nf_cfg, dict):
+        wandb.config.update(
+            {f"net.{k}": _wb_jsonify(v) for k, v in nf_cfg.items()},
+            allow_val_change=True,
+        )
+
 
 def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
     _setup_mujoco_backend()
@@ -190,42 +263,31 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         dir=out_dir,
     )
     try:
-        print("JAX devices:", jax.devices(), flush=True)
+        #print("JAX devices:", jax.devices(), flush=True)
         env = registry.load(env_name)
         env_cfg = registry.get_default_config(env_name)
         base = manipulation_params.brax_ppo_config(env_name)
         try:
             ppo_params = base.to_dict()
+            base_dict = base.to_dict()
         except AttributeError:
             ppo_params = dict(base)
+            base_dict = dict(base)
+        # ====================================================================
+        # Apply overrides from cfg to ppo_params
+        # ====================================================================
         overrides = _extract_ppo_overrides(cfg)
-        _deep_update(ppo_params, overrides)
-        if "learning_rate" in ppo_params:
-            ppo_params["learning_rate"] = float(ppo_params["learning_rate"])
-        if "batch_size" in ppo_params:
-            ppo_params["batch_size"] = int(ppo_params["batch_size"])
-        if "num_envs" in ppo_params:
-            ppo_params["num_envs"] = int(ppo_params["num_envs"])
-        if "num_timesteps" in ppo_params:
-            ppo_params["num_timesteps"] = int(ppo_params["num_timesteps"])
-        if "unroll_length" in ppo_params:
-            ppo_params["unroll_length"] = int(ppo_params["unroll_length"])
-        if "num_minibatches" in ppo_params:
-            ppo_params["num_minibatches"] = int(ppo_params["num_minibatches"])
-        if "num_updates_per_batch" in ppo_params:
-            ppo_params["num_updates_per_batch"] = int(
-                ppo_params["num_updates_per_batch"]
-            )
-        if "episode_length" in ppo_params:
-            ppo_params["episode_length"] = int(ppo_params["episode_length"])
-        if "discounting" in ppo_params:
-            ppo_params["discounting"] = float(ppo_params["discounting"])
-        if "entropy_cost" in ppo_params:
-            ppo_params["entropy_cost"] = float(ppo_params["entropy_cost"])
+        ppo_params = apply_validated_overrides(ppo_params, overrides, strict=False)
+        # cast the original types of base on ppo_params
+        schema = dict(base_dict)
+        schema.pop("network_factory", None)
+        ppo_params = cast_to_schema(ppo_params, schema)
+        # ====================================================================
+
         video_every_evals = int(cfg.get("video_every_evals", 10))           # Log video every N evals
         render_every = int(cfg.get("render_every", 1))
         video_tag = str(cfg.get("video_tag", "eval"))
-        camera_kwargs = cfg.get("camera_kwargs", {}) or {}
+
         episode_length = int(env_cfg.episode_length)
         video_state = {"eval_idx": 0}
 
@@ -250,35 +312,58 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
                     camera_kwargs=camera_kwargs,
                 )
 
-        # Build PPO training params and network factory
+        # Build training kwargs for ppo.train
         ppo_training_params = dict(ppo_params)
 
-        # Remove parameters that we pass explicitly to ppo.train below
-        for k in ["network_factory", "seed", "progress_fn", "policy_params_fn"]:
+        # Only remove keys that truly are not kwargs for ppo.train OR that you pass explicitly
+        for k in ["network_factory", "seed"]:
             ppo_training_params.pop(k, None)
 
+        # Resolve network config
+        nf_cfg = dict(ppo_params.get("network_factory") or {})
+
         network_factory = ppo_networks.make_ppo_networks
-        nf_cfg = ppo_params.get("network_factory")
         if isinstance(nf_cfg, dict):
-            # If sweep config uses lists for layer sizes, convert to tuples
-            if "policy_hidden_layer_sizes" in nf_cfg and isinstance(
-                nf_cfg["policy_hidden_layer_sizes"], list
-            ):
-                nf_cfg["policy_hidden_layer_sizes"] = tuple(
-                    nf_cfg["policy_hidden_layer_sizes"]
-                )
-            if "value_hidden_layer_sizes" in nf_cfg and isinstance(
-                nf_cfg["value_hidden_layer_sizes"], list
-            ):
-                nf_cfg["value_hidden_layer_sizes"] = tuple(
-                    nf_cfg["value_hidden_layer_sizes"]
-                )
-            network_factory = functools.partial(
-                ppo_networks.make_ppo_networks, **nf_cfg
+            if isinstance(nf_cfg.get("policy_hidden_layer_sizes"), list):
+                nf_cfg["policy_hidden_layer_sizes"] = tuple(nf_cfg["policy_hidden_layer_sizes"])
+            if isinstance(nf_cfg.get("value_hidden_layer_sizes"), list):
+                nf_cfg["value_hidden_layer_sizes"] = tuple(nf_cfg["value_hidden_layer_sizes"])
+            network_factory = functools.partial(ppo_networks.make_ppo_networks, **nf_cfg)
+
+        def _count_params(pytree) -> int:
+            return sum(x.size for x in tree_leaves(pytree))
+
+        # Try to instantiate & count params (best-effort; do not crash training if API differs)
+        try:
+            # Brax make_ppo_networks usually takes sizes as keyword args
+            networks = network_factory(
+                observation_size=env.observation_size,
+                action_size=env.action_size,
             )
 
-        # print("\nPPO training with params:\n", ppo_training_params, "\n", flush=True)
+            # Common Brax pattern: networks has policy_network and value_network
+            rng = jax.random.PRNGKey(seed)
+            rng_pi, rng_v = jax.random.split(rng)
 
+            # Dummy observation is required for init
+            dummy_obs = jnp.zeros((env.observation_size,), dtype=jnp.float32)
+
+            pi_params = networks.policy_network.init(rng_pi, dummy_obs)
+            v_params  = networks.value_network.init(rng_v, dummy_obs)
+
+            wandb.run.summary["net/policy_num_params"] = int(_count_params(pi_params))
+            wandb.run.summary["net/value_num_params"]  = int(_count_params(v_params))
+            wandb.run.summary["net/total_num_params"]  = int(_count_params(pi_params) + _count_params(v_params))
+        except Exception as e:
+            print(f"[WARN] Could not compute network param counts: {e}", flush=True)
+
+        # Log FINAL training config + FINAL network spec to W&B (once)
+        _wb_log_final_train_config(
+            ppo_training_params=ppo_training_params,
+            nf_cfg=nf_cfg if isinstance(nf_cfg, dict) else None,
+            env_name=env_name,
+            seed=seed,
+        )
         train_fn = functools.partial(
             ppo.train,
             **ppo_training_params,
@@ -309,3 +394,4 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             )
     finally:
         run.finish()
+
