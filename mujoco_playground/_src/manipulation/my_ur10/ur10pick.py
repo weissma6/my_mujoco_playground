@@ -52,6 +52,7 @@ def default_config() -> config_dict.ConfigDict:
         impl="jax",
         nconmax=24 * 8192,
         njmax=128,
+        init_keyframe="low_home",
     )
     return config
 
