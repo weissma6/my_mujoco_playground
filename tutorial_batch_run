@@ -30,8 +30,8 @@ sbatch batch_runs/slurm/run_array_panda.sbatch
 sbatch batch_runs/slurm/run_array_version_test.sbatch
 sbatch batch_runs/slurm/run_array_ur10_EGLTest.sbatch
 
-sbatch --array=3 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
-sbatch --array=1-2 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
+sbatch --array=2 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
+sbatch --array=3-3 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
 
 
 # ------------------------------------------------

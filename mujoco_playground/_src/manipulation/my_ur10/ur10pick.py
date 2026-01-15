@@ -85,7 +85,7 @@ class UR10PickCube(ur10_base.UR10Base):
             config,
             config_overrides,
         )
-        self._post_init(obj_name="box", keyframe="task_home")
+        self._post_init(obj_name="box", keyframe="low_home")
         self._sample_orientation = sample_orientation
         self._gripper_site = (self._mj_model.site("tcp").id,)
 
@@ -215,13 +215,13 @@ class UR10PickCube(ur10_base.UR10Base):
             data.ctrl[:6] - data.qpos[self._robot_arm_qposadr]
         )
 
-        # debug.print(
-        #     "[RESET] robot_qpos={rq} | box_qpos={bq} | ctrl={c} | ctrl-qpos-err={e}",
-        #     rq=robot_qpos,
-        #     bq=box_qpos,
-        #     c=robot_ctrl,
-        #     e=ctrl_qpos_err,
-        # )
+        debug.print(
+            "[RESET] robot_qpos={rq} | box_qpos={bq} | ctrl={c} | ctrl-qpos-err={e}",
+            rq=robot_qpos,
+            bq=box_qpos,
+            c=robot_ctrl,
+            e=ctrl_qpos_err,
+        )
 
         return state
 
@@ -245,38 +245,38 @@ class UR10PickCube(ur10_base.UR10Base):
         metrics = state.metrics
         metrics.update(**raw_rewards, out_of_bounds=out_of_bounds.astype(jp.float32))
 
-        # # env index should be stored in info at reset, e.g. info["env_id"]
-        # eid = state.info.get("env_id")  # default to -1 if not found    
-        # dummy = jp.array(0, dtype=jp.int32)
-        # def _do_print(_):
-        #     jax.debug.print(
-        #         "[EP END] env={eid} t={t}\n"
-        #         "POS tp={tp} bp={bp} gp={gp}\n"
-        #         "DIST btd={btd:.4f} re={re:.4f} gbd={gbd:.4f}\n"
-        #         "EVT rb={rb} fc={fc} oob={oob}\n"
-        #         "REWARDS gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} mp={mp:.3f} TOT={tot:.3f}\n\n",
-        #         eid=eid,
-        #         t=info["step"],
-        #         tp=raw_signals["target_pos"],
-        #         bp=raw_signals["box_pos"],
-        #         gp=raw_signals["gripper_pos"],
-        #         btd=raw_signals["box_target_dist"],
-        #         re=raw_signals["rot_err"],
-        #         gbd=raw_signals["grip_box_dist"],
-        #         rb=raw_signals["reached_box"],
-        #         fc=raw_signals["number_floor_collision"],
-        #         oob=out_of_bounds.astype(jp.int32),
-        #         gb=rewards["gripper_box"],
-        #         bt=rewards["box_target"],
-        #         nf=rewards["no_floor_collision"],
-        #         mp=rewards["robot_target_qpos"],
-        #         tot=reward,
-        #     )
+        # env index should be stored in info at reset, e.g. info["env_id"]
+        eid = state.info.get("env_id")  # default to -1 if not found    
+        dummy = jp.array(0, dtype=jp.int32)
+        def _do_print(_):
+            jax.debug.print(
+                "[EP END] env={eid} t={t}\n"
+                "POS tp={tp} bp={bp} gp={gp}\n"
+                "DIST btd={btd:.4f} re={re:.4f} gbd={gbd:.4f}\n"
+                "EVT rb={rb} fc={fc} oob={oob}\n"
+                "REWARDS gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} mp={mp:.3f} TOT={tot:.3f}\n\n",
+                eid=eid,
+                t=info["step"],
+                tp=raw_signals["target_pos"],
+                bp=raw_signals["box_pos"],
+                gp=raw_signals["gripper_pos"],
+                btd=raw_signals["box_target_dist"],
+                re=raw_signals["rot_err"],
+                gbd=raw_signals["grip_box_dist"],
+                rb=raw_signals["reached_box"],
+                fc=raw_signals["number_floor_collision"],
+                oob=out_of_bounds.astype(jp.int32),
+                gb=rewards["gripper_box"],
+                bt=rewards["box_target"],
+                nf=rewards["no_floor_collision"],
+                mp=rewards["robot_target_qpos"],
+                tot=reward,
+            )
 
-        #     return dummy
+            return dummy
 
-        # print_this = (done > 0.0) & (eid == 0) # only print for env 0 at episode end
-        # _ = jax.lax.cond(print_this, _do_print, lambda _: dummy, operand=dummy)
+        print_this = (done > 0.0) & (eid == 0) # only print for env 0 at episode end
+        _ = jax.lax.cond(print_this, _do_print, lambda _: dummy, operand=dummy)
 
         obs = self._get_obs(data, info)  # <-- use info
         return State(data, obs, reward, done, metrics, info)  # <-- return info
@@ -361,7 +361,7 @@ class UR10PickCube(ur10_base.UR10Base):
         # Binary indicator if the gripper has reached the box - scalar JAX float64
         info["reached_box"] = 1.0 * jp.maximum(
             info["reached_box"],
-            (gripper_box_dist < 0.02),  # Panda threshold was 0.012
+            (gripper_box_dist < 0.01),  # Panda threshold was 0.012
         )  
 
         rewards = {
