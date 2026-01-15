@@ -56,7 +56,7 @@ sacct -u weissma6 \
 find . -maxdepth 3 -type f -name "*81535*" -print
 
 tail -f logs/UR10_sweep_EGL_81661_1.out
-tail -f logs/UR10_sweep_EGL_81661_1.err
+tail -f logs/UR10_sweep_EGL_81666_1.err
 
 
 # Stop trailing:

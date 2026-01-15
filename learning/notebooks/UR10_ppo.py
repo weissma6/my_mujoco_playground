@@ -107,6 +107,7 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "env_name",
         "algo",
         "notes",
+        "init_keyframe",
     }
     overrides: Dict[str, Any] = {}
     for k, v in cfg.items():
@@ -269,8 +270,15 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
     )
     try:
         #print("JAX devices:", jax.devices(), flush=True)
-        env = registry.load(env_name)
+        # Build env overrides from cfg (env-only params)
+        env_overrides = {}
+        if "init_keyframe" in cfg:
+            env_overrides["init_keyframe"] = cfg["init_keyframe"]
+
+        # Create env with overrides
+        env = registry.load(env_name, config_overrides=env_overrides)
         env_cfg = registry.get_default_config(env_name)
+        
         base = manipulation_params.brax_ppo_config(env_name)
         try:
             ppo_params = base.to_dict()
@@ -321,7 +329,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         ppo_training_params = dict(ppo_params)
 
         # Only remove keys that truly are not kwargs for ppo.train OR that you pass explicitly
-        for k in ["network_factory", "seed"]:
+        for k in ["network_factory", "seed", "init_keyframe"]:
             ppo_training_params.pop(k, None)
 
         # Resolve network config
