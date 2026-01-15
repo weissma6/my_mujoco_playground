@@ -247,8 +247,12 @@ def _wb_log_final_train_config(*, ppo_training_params: dict, nf_cfg: dict | None
 
 
 def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
+    print("[CHK] enter run_experiment", flush=True)
     _setup_mujoco_backend()
+    print("[CHK] after _setup_mujoco_backend", flush=True)
     env_name = str(cfg.get("env_name", "UR10PickCube"))
+    print(f"[CHK] cfg keys: {list(cfg.keys())[:20]} ...", flush=True)
+    print(f"[CHK] env_name={env_name}", flush=True)
     run_id = str(cfg.get("run_id", "run"))
     camera_kwargs = cfg.get("camera_kwargs") or {"camera": "side_130"}
     # Resolve seed: sweep overrides, otherwise random-by-default
@@ -258,8 +262,9 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
     else:
         seed = int(cfg_seed)
     random.seed(seed)
-
+    print(f"seed={seed}", flush=True)
     os.makedirs(out_dir, exist_ok=True)
+    print(f"[CHK] out_dir={out_dir}", flush=True)
     wandb_mode = str(cfg.get("wandb_mode", "online"))
     run = wandb.init(
         project=str(cfg.get("wandb_project", "UR10_pick_ppo")),
@@ -270,6 +275,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         mode=wandb_mode,
         dir=out_dir,
     )
+    print("[CHK] after wandb.init", flush=True)
     try:
         #print("JAX devices:", jax.devices(), flush=True)
         # Build env overrides from cfg (env-only params)
@@ -278,8 +284,11 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_overrides["init_keyframe"] = cfg["init_keyframe"]
 
         # Create env with overrides
+        print("[CHK] before registry.load", flush=True)
         env = registry.load(env_name, config_overrides=env_overrides)
+        print("[CHK] after registry.load", flush=True)
         env_cfg = registry.get_default_config(env_name)
+        print("[CHK] after get_default_config", flush=True)
         
         base = manipulation_params.brax_ppo_config(env_name)
         try:
@@ -288,11 +297,21 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         except AttributeError:
             ppo_params = dict(base)
             base_dict = dict(base)
+
+        print("[CHK] before apply_validated_overrides", flush=True)
+        print("[DEBUG] ppo_params num_timesteps =", ppo_params.get("num_timesteps", None), flush=True)
+        print("[DEBUG] ppo_params num_envs      =", ppo_params.get("num_envs", None), flush=True)
+        print("[DEBUG] cfg init_keyframe        =", cfg.get("init_keyframe", None), flush=True)
         # ====================================================================
         # Apply overrides from cfg to ppo_params
         # ====================================================================
         overrides = _extract_ppo_overrides(cfg)
         ppo_params = apply_validated_overrides(ppo_params, overrides, strict=False)
+        print("[CHK] after overrides/cast", flush=True)
+        print("[DEBUG] ppo_params num_timesteps =", ppo_params.get("num_timesteps", None), flush=True)
+        print("[DEBUG] ppo_params num_envs      =", ppo_params.get("num_envs", None), flush=True)
+        print("[DEBUG] cfg init_keyframe        =", cfg.get("init_keyframe", None), flush=True)
+
         # cast the original types of base on ppo_params
         schema = dict(base_dict)
         schema.pop("network_factory", None)
@@ -379,10 +398,13 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_name=env_name,
             seed=seed,
         )
-        print("jax devices:", jax.devices())
-        print("[DEBUG] num_timesteps final =", ppo_params.get("num_timesteps"))
-        print("[DEBUG] num_envs final =", ppo_params.get("num_envs"))
-        print("[DEBUG] init_keyframe cfg =", cfg.get("init_keyframe"))
+        print("[DEBUG] FINAL ppo_training_params.num_timesteps =", ppo_training_params.get("num_timesteps"), flush=True)
+        print("[DEBUG] FINAL ppo_training_params.num_envs      =", ppo_training_params.get("num_envs"), flush=True)
+        print("[DEBUG] FINAL evals (if present)                =", {
+            k: ppo_training_params.get(k) for k in ["num_evals", "eval_every", "episode_length"]
+        }, flush=True)
+
+
 
         train_fn = functools.partial(
             ppo.train,
@@ -392,10 +414,11 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             policy_params_fn=policy_params_fn,
             seed=seed,
         )
-
+        print("[CHK] before train_fn(...) call", flush=True)
         make_inference_fn, params, final_metrics = train_fn(
             environment=env, wrap_env_fn=wrapper.wrap_for_brax_training
         )
+        print("[CHK] after train_fn(...) call", flush=True)
         with open(
             os.path.join(out_dir, "final_metrics.json"), "w", encoding="utf-8"
         ) as f:
