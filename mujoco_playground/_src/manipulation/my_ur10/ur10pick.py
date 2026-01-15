@@ -38,6 +38,7 @@ def default_config() -> config_dict.ConfigDict:
         action_scale=0.04,
         reward_config=config_dict.create(
             scales=config_dict.create(
+                ## Reward scaling factors
                 # Gripper goes to the box.
                 gripper_box=4.0,
                 # Box goes to the target mocap.

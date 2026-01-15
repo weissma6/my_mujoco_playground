@@ -246,7 +246,8 @@ def _wb_log_final_train_config(*, ppo_training_params: dict, nf_cfg: dict | None
 def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
     _setup_mujoco_backend()
     env_name = str(cfg.get("env_name", "UR10PickCube"))
-    seed = int(cfg.get("seed", 0))
+    # seed = int(cfg.get("seed", 0))
+    seed = random.randint(1, 2000)
     run_id = str(cfg.get("run_id", "run"))
     camera_kwargs = cfg.get("camera_kwargs") or {"camera": "side_130"}
 
