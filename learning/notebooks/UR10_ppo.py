@@ -246,12 +246,16 @@ def _wb_log_final_train_config(*, ppo_training_params: dict, nf_cfg: dict | None
 def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
     _setup_mujoco_backend()
     env_name = str(cfg.get("env_name", "UR10PickCube"))
-    # seed = int(cfg.get("seed", 0))
-    seed = random.randint(1, 2000)
     run_id = str(cfg.get("run_id", "run"))
     camera_kwargs = cfg.get("camera_kwargs") or {"camera": "side_130"}
-
+    # Resolve seed: sweep overrides, otherwise random-by-default
+    cfg_seed = cfg.get("seed", None)
+    if cfg_seed is None:
+        seed = random.getrandbits(32)   # random default, good entropy range
+    else:
+        seed = int(cfg_seed)
     random.seed(seed)
+
     os.makedirs(out_dir, exist_ok=True)
     wandb_mode = str(cfg.get("wandb_mode", "online"))
     run = wandb.init(
