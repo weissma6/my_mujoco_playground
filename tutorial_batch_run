@@ -30,8 +30,8 @@ sbatch batch_runs/slurm/run_array_panda.sbatch
 sbatch batch_runs/slurm/run_array_version_test.sbatch
 sbatch batch_runs/slurm/run_array_ur10_EGLTest.sbatch
 
-sbatch --array=1 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
-sbatch --array=6-8 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
+sbatch --array=3 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
+sbatch --array=1-2 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
 
 
 # ------------------------------------------------
@@ -47,14 +47,16 @@ squeue -u weissma6 -o "%.18i %.9P %.20j %.8T %.10M %.10l %.6D %R"
 squeue -j <job_id>
 
 # Check job history with status
-sacct -u weissma6 --state=FAILED --format=JobID,JobName,ExitCode,Elapsed,State
+sacct -u weissma6 \
+  --format=JobID,JobName%20,State,ExitCode,Elapsed \
+  | grep -v '\.'
 
 # More detailed tracking
 # find the outoutfiles with the job ID from squeue
-find . -maxdepth 3 -type f -name "*81461*" -print
+find . -maxdepth 3 -type f -name "*81535*" -print
 
 tail -f logs/UR10_sweep_EGL_81457_1.out
-tail -f logs/UR10_sweep_EGL_81457_1.err
+tail -f logs/UR10_sweep_EGL_81623_1.err
 
 
 # Stop trailing:
