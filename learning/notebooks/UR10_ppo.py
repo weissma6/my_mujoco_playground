@@ -195,7 +195,7 @@ def _rollout_and_log_video_from_make_policy(
         wandb.save(video_path)
         # Use a stable key that changes per eval/step
         wandb.log(
-            {f"eval/video/{run_id}": wandb.Video(video_path, fps=int(fps), format="mp4")},
+            {f"eval/video": wandb.Video(video_path, fps=int(fps), format="mp4")},
             step=int(num_steps),
         )
     except Exception as e:
@@ -379,6 +379,11 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_name=env_name,
             seed=seed,
         )
+        print("jax devices:", jax.devices())
+        print("[DEBUG] num_timesteps final =", ppo_params.get("num_timesteps"))
+        print("[DEBUG] num_envs final =", ppo_params.get("num_envs"))
+        print("[DEBUG] init_keyframe cfg =", cfg.get("init_keyframe"))
+
         train_fn = functools.partial(
             ppo.train,
             **ppo_training_params,
