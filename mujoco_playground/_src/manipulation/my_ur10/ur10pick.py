@@ -85,7 +85,11 @@ class UR10PickCube(ur10_base.UR10Base):
             config,
             config_overrides,
         )
-        self._post_init(obj_name="box", keyframe="low_home")
+
+        # Pull keyframe from config (supports external override)
+        init_keyframe = getattr(self.config, "init_keyframe", "low_home")
+
+        self._post_init(obj_name="box", keyframe=init_keyframe)
         self._sample_orientation = sample_orientation
         self._gripper_site = (self._mj_model.site("tcp").id,)
 
