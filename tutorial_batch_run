@@ -27,11 +27,11 @@ nano batch_runs/slurm/run_array_panda.sbatch
 
 # Step 3 – Submit the SLURM array job:
 sbatch batch_runs/slurm/run_array_panda.sbatch
-sbatch batch_runs/slurm/run_array_ur10.sbatch
+sbatch batch_runs/slurm/run_array_version_test.sbatch
 sbatch batch_runs/slurm/run_array_ur10_EGLTest.sbatch
 
 sbatch --array=1 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
-sbatch --array=1-2 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
+sbatch --array=6-8 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
 
 
 # ------------------------------------------------
@@ -46,16 +46,15 @@ squeue -u weissma6 -o "%.18i %.9P %.20j %.8T %.10M %.10l %.6D %R"
 # Track one specific job
 squeue -j <job_id>
 
+# Check job history with status
+sacct -u weissma6 --state=FAILED --format=JobID,JobName,ExitCode,Elapsed,State
+
 # More detailed tracking
+# find the outoutfiles with the job ID from squeue
+find . -maxdepth 3 -type f -name "*81461*" -print
 
-tail -f logs/panda_sweep_80540_1.err
-tail -f logs/panda_sweep_80540_1.out
-
-tail -f logs/UR10_sweep_81127_1.err
-tail -f logs/UR10_sweep_81127_1.out
-
-tail -f logs/UR10_sweep_EGL_81176_1.err
-tail -f logs/UR10_sweep_EGL_81176_1.out
+tail -f logs/UR10_sweep_EGL_81457_1.out
+tail -f logs/UR10_sweep_EGL_81457_1.err
 
 
 # Stop trailing:
@@ -63,13 +62,6 @@ tail -f logs/UR10_sweep_EGL_81176_1.out
 
 # See detailed job info
 scontrol show job <job_id>  
-
-# check after finished jobs
-sacct -X -u weissma6 --format=JobID,JobName,State,ExitCode,Elapsed
-
-# Step 3 – Submit the SLURM array job:
-squeue -u weissma6
-
 
 ## Cancel job if needed
 scancel <job_id>
@@ -81,6 +73,8 @@ scancel -u weissma6
 #### -----------------------
 # Ensure image tar path exists (adjust filename)
 ls -lh mujoco_env.tar
+
+
 
 
 
