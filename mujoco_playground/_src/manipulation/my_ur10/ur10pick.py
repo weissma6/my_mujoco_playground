@@ -87,7 +87,8 @@ class UR10PickCube(ur10_base.UR10Base):
         )
 
         # Pull keyframe from config (supports external override)
-        init_keyframe = getattr(self.config, "init_keyframe", "low_home")
+        init_keyframe = getattr(self._config, "init_keyframe", "low_home")
+
 
         self._post_init(obj_name="box", keyframe=init_keyframe)
         self._sample_orientation = sample_orientation
