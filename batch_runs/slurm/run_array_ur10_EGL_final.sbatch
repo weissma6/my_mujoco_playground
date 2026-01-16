@@ -19,21 +19,50 @@ LOCALHOST_TAG="localhost/mujoco:env_EGL"
 
 mkdir -p "$REPO_DIR/logs" "$REPO_DIR/results"
 
-# Per-task tmp (helps rootless podman)
-export TMPDIR="$HOME/tmp_podman/${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-mkdir -p "$TMPDIR"
+# --------------------------
+# Robust rootless podman dirs (per job/task) to avoid /scratch issues
+# --------------------------
+JOB_ID="${SLURM_JOB_ID:-manual}"
+TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
 
-# Ensure podman exists (no module needed on this cluster)
+export XDG_RUNTIME_DIR="$HOME/.run/${JOB_ID}"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+
+PODMAN_ROOT="$HOME/.podman/${JOB_ID}_${TASK_ID}"
+mkdir -p "$PODMAN_ROOT"/{runroot,graphroot,tmp,cache,config}
+
+export TMPDIR="$PODMAN_ROOT/tmp"
+export XDG_CACHE_HOME="$PODMAN_ROOT/cache"
+mkdir -p "$TMPDIR" "$XDG_CACHE_HOME"
+
+cat > "$PODMAN_ROOT/config/storage.conf" <<EOF
+[storage]
+driver = "vfs"
+graphroot = "$PODMAN_ROOT/graphroot"
+runroot  = "$PODMAN_ROOT/runroot"
+EOF
+
+export CONTAINERS_STORAGE_CONF="$PODMAN_ROOT/config/storage.conf"
+
+# Ensure podman exists
 command -v podman >/dev/null 2>&1 || { echo "ERROR: podman not found on PATH"; exit 2; }
 
-# Load image tar once per node (protect with a lock for arrays)
+# --------------------------
+# Load image tar once per job (protect with a lock)
+# --------------------------
 mkdir -p "$HOME/.locks"
-LOCKFILE="$HOME/.locks/podman_load.lock"
+LOCKFILE="$HOME/.locks/podman_load_${JOB_ID}.lock"
 (
   flock -x 200
+
+  # Show where podman will store its DB (debug)
+  podman info | sed -n '1,120p' || true
+
   if [ -z "$(podman images -q "$IMAGE_TAG" 2>/dev/null || true)" ]; then
     podman load -i "$IMAGE_TAR"
   fi
+
   if [ -z "$(podman images -q "$IMAGE_TAG" 2>/dev/null || true)" ] && \
      [ -n "$(podman images -q "$LOCALHOST_TAG" 2>/dev/null || true)" ]; then
     podman tag "$LOCALHOST_TAG" "$IMAGE_TAG"
@@ -47,7 +76,9 @@ fi
 
 cd "$REPO_DIR"
 
+# --------------------------
 # Run inside container
+# --------------------------
 podman run --rm \
   -e WANDB_API_KEY="${WANDB_API_KEY:-}" \
   -e MUJOCO_GL=egl \
@@ -55,14 +86,16 @@ podman run --rm \
   -e EGL_PLATFORM=surfaceless \
   -e PYTHONPATH=/workspace \
   -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
+  -e TMPDIR="$TMPDIR" \
+  -e XDG_CACHE_HOME="$XDG_CACHE_HOME" \
   -v "$REPO_DIR:/workspace:Z" \
   -w /workspace \
   "$IMAGE_TAG" \
   bash -lc "
-    python -c 'import jax; print(\"jax devices:\", jax.devices())' || true
+    set -e
+    python -c 'import jax; print(\"jax devices:\", jax.devices())'
     python batch_runs/scripts/run_one_ur10.py \
       --jsonl batch_runs/sweeps/UR10_sweep.jsonl \
-      --index $SLURM_ARRAY_TASK_ID \
+      --index $TASK_ID \
       --out_root results
   "
-
