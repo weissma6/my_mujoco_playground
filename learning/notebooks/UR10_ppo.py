@@ -193,7 +193,7 @@ def _rollout_and_log_video_from_make_policy(
         wandb.save(video_path)
         # Use a stable key that changes per eval/step
         wandb.log(
-            {f"eval/video/{run_id}/{int(num_steps)}": wandb.Video(video_path, fps=int(fps), format="mp4")},
+            {f"eval/video": wandb.Video(video_path, fps=int(fps), format="mp4")},
             step=int(num_steps),
         )
     except Exception as e:

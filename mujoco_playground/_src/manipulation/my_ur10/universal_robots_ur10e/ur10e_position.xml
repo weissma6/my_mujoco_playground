@@ -68,12 +68,9 @@ c
 
     <!-- Robotiq Hand-E meshes -->
     <mesh name="hande" file="hande.stl"/>
-    <mesh name="hande-collision"    file="hande-collision.stl"/>
     <mesh name="coupler" file="coupler.stl"/>
     <mesh name="left_finger" file="finger_2.stl"/>
-    <mesh name="left_finger-collision" file="finger_2-collision.stl"/>
     <mesh name="right_finger" file="finger_1.stl"/>
-    <mesh name="right_finger-collision" file="finger_1-collision.stl"/>
 
   </asset>
 
@@ -147,9 +144,9 @@ c
 
                     <!-- Main hand body -->
                     <!--contype="0" conaffinity="0" to make it non-colliding with other objects -->
-                    <geom name="hande_coupler" type="mesh" mesh="coupler" contype="0" conaffinity="0"rgba="0.1 0.1 0.1 1"/>
-                    <geom name="hande_base"      type="mesh" mesh="hande"              contype="0" conaffinity="0" rgba="0.1 0.1 0.1 1"/>
-                    <geom name="hande-collision" type="mesh" mesh="hande-collision"    contype="1" conaffinity="1" rgba="0.1 0.1 0.1 0.15"/>
+                    <geom name="hande_coupler" mesh="coupler" class="visual" rgba="0.1 0.1 0.1 1"/>
+                    <geom name="hande_base" mesh="hande" class="visual" rgba="0.1 0.1 0.1 1"/>
+
                     <!-- tcp is the distance position for the gripper to box -->
                     <site name="tcp" pos="0 0 0.1" rgba="0 1 0 1" size="0.002" group="2"/>
 
@@ -159,9 +156,9 @@ c
                                 quat="0.871952 0.0369732 -0.211073 0.440205"
                                 mass="0.03804"
                                 diaginertia="1.22763e-05 1.22763e-05 1.22763e-05"/>
-                      <joint name="hande_left_finger_joint" type="slide" axis="1 0 0" range="0 0.025"/>
-                      <geom name="left_finger"    type="mesh" mesh="left_finger"            contype="0" conaffinity="0" rgba="0.4 0.4 0.4 1"/>
-                      <geom name="left_finger-collision" type="mesh" mesh="left_finger-collision"  contype="1" conaffinity="1" rgba="0.4 0.4 0.4 0.15"/>      
+                      <joint name="hande_left_finger_joint" type="slide" axis="1 0 0" range="0 0.025" damping="2"/>
+                      <geom name="left_finger" mesh="left_finger" class="visual" rgba="0.4 0.4 0.4 1"/> 
+                      <geom type="box" size="0.0025 0.01 0.01" pos="-0.0275 0  0.037" rgba="0 1 0 0.3" contype="1" conaffinity="1"/>  
                       <site name="left_finger_touch_site" pos="-0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
 
@@ -171,9 +168,9 @@ c
                                 quat="0.871952 -0.0369732 0.211073 0.440205"
                                 mass="0.03804"
                                 diaginertia="1.22763e-05 1.22763e-05 1.22763e-05"/>
-                      <joint name="hande_right_finger_joint" type="slide" axis="-1 0 0" range="0 0.025"/>
-                      <geom name="right_finger"    type="mesh" mesh="right_finger"            contype="0" conaffinity="0" rgba="0.4 0.4 0.4 1"/>
-                      <geom name="right_finger-collision" type="mesh" mesh="right_finger-collision"  contype="1" conaffinity="1" rgba="0.4 0.4 0.4 0.15"/>
+                      <joint name="hande_right_finger_joint" type="slide" axis="-1 0 0" range="0 0.025" damping="2"/>
+                      <geom name="right_finger" mesh="right_finger" class="visual" rgba="0.4 0.4 0.4 1"/>
+                      <geom type="box" size="0.0025 0.01 0.01"  pos="0.0275 0 0.037" rgba="0 1 0 0.3" contype="1" conaffinity="1"/>
                       <site name="right_finger_touch_site" pos="0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
                   </body>
@@ -214,17 +211,12 @@ c
     <general class="size2" name="wrist_3" joint="wrist_3_joint"/>
 
     <!-- Hand-E tendon actuator (as original) -->
-    <!-- ctrlrange="0 0.025" 0 … 25 mm -->
-    <!-- kp="2000" stiffness (P gain) -->
-    <!-- kv="20" damping (D gain) -->
-    <!-- ctrllimited="true"  respect ctrlrange -->
-    <!-- forcerange="-200 200"   hard cap force if you want a safety limit -->
     <position name="hande_fingers_actuator" 
         tendon="split"
         ctrlrange="0 0.05"    
-        kp="8000"              
-        kv="50"                
-        forcerange="-400 400"
+        kp="100"              
+        kv="10"                
+        forcerange="-200 200"
         ctrllimited="true"     
         />     
   </actuator>
