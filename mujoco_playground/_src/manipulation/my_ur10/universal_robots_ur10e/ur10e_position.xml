@@ -32,8 +32,17 @@
       <default class="visual">
         <geom type="mesh" contype="0" conaffinity="0" group="2"/>
       </default>
-      
-c
+
+      <!-- Collision geometry -->
+      <default class="collision">
+        <geom type="capsule" group="3"/>
+      </default>
+
+      <!-- End-effector collision -->
+      <default class="eef_collision">
+        <geom type="capsule" group="3"/>
+      </default>
+
       <site size="0.001" rgba="0.5 0.5 0.5 0.3" group="4"/>
     </default>
   </default>
