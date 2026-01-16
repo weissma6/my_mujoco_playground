@@ -179,8 +179,8 @@ def _rollout_and_log_video_from_make_policy(
     trajectory = rollout[:: int(render_every)]
 
     cam = camera_kwargs or {"camera": "side_130"}
-    cam["width"] = 960
-    cam["height"] = 720
+    cam["width"] = 800
+    cam["height"] = 600 
 
     print("[DEBUG] cam passed to render:", cam, flush=True)
     frames = eval_env.render(trajectory, **cam)

@@ -31,7 +31,7 @@ sbatch batch_runs/slurm/run_array_version_test.sbatch
 sbatch batch_runs/slurm/run_array_ur10_EGLTest.sbatch
 
 sbatch --array=1 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
-sbatch --array=4-5 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
+sbatch --array=1-2 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
 
 # ------------------------------------------------
 # Step 4 Monitoring the job:
@@ -54,8 +54,8 @@ sacct -u weissma6 \
 # find the outoutfiles with the job ID from squeue
 find . -maxdepth 3 -type f -name "*81840*" -print
 
-tail -f logs/UR10_sweep_EGL_82002_1.err
-tail -f logs/UR10_sweep_EGL_82000_1.out
+tail -f logs/UR10_sweep_EGL_82047_1.err
+tail -f logs/UR10_sweep_EGL_82047_1.out
 
 
 
