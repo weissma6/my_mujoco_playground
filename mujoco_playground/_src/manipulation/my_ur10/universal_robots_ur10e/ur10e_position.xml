@@ -1,20 +1,23 @@
 <mujoco model="ur10e">
   <compiler angle="radian" eulerseq="xyz" meshdir="../universal_robots_ur10e/assets" autolimits="true"/>
-  <option integrator="implicitfast"/> 
+  <option cone="elliptic" impratio="10" integrator="implicitfast"/> 
 
   <!-- Default settings -->
   <default>
+
+    <!-- ================= UR10e defaults ================= -->
     <default class="ur10e">
       <material specular="0.5" shininess="0.25"/>
       <joint axis="0 1 0" range="-6.28319 6.28319" armature="0.1"/>
       <position ctrlrange="-6.2831 6.2831"/>
-      <general biastype="affine" ctrlrange="-6.2831 6.2831" gainprm="5000" biasprm="0 -5000 -500"/>
-      
+      <general biastype="affine" ctrlrange="-6.2831 6.2831"
+              gainprm="5000" biasprm="0 -5000 -500"/>
+
       <default class="size4">
         <joint damping="10"/>
         <general forcerange="-330 330"/>
       </default>
-      
+
       <default class="size3">
         <joint damping="5"/>
         <general forcerange="-150 150"/>
@@ -23,19 +26,33 @@
           <general ctrlrange="-3.1415 3.1415"/>
         </default>
       </default>
-      
+
       <default class="size2">
         <joint damping="2"/>
         <general forcerange="-56 56"/>
       </default>
-      
+
+      <!-- visual/collision classes used by UR10e geoms -->
       <default class="visual">
         <geom type="mesh" contype="0" conaffinity="0" group="2"/>
       </default>
-      
-c
+
+      <default class="collision">
+        <geom type="capsule" group="3"/>
+        <default class="eef_collision">
+          <geom type="capsule"/>
+        </default>
+      </default>
+
       <site size="0.001" rgba="0.5 0.5 0.5 0.3" group="4"/>
     </default>
+
+
+    <!-- ================= Hand-E defaults ================= -->
+    <default class="hande_finger">
+      <joint type="slide" range="0 0.025" pos="0 0 0" limited="true" actuatorfrcrange="-100 100"/>
+    </default>
+
   </default>
 
   <asset>
@@ -68,19 +85,15 @@ c
 
     <!-- Robotiq Hand-E meshes -->
     <mesh name="hande" file="hande.stl"/>
-    <mesh name="hande-collision"    file="hande-collision.stl"/>
     <mesh name="coupler" file="coupler.stl"/>
     <mesh name="left_finger" file="finger_2.stl"/>
-    <mesh name="left_finger-collision" file="finger_2-collision.stl"/>
     <mesh name="right_finger" file="finger_1.stl"/>
-    <mesh name="right_finger-collision" file="finger_1-collision.stl"/>
 
   </asset>
 
 <!-- ================= UR10 Kinematic Chain ================= -->
   <worldbody>
     <light name="spotlight" mode="targetbodycom" target="wrist_2_link" pos="0 -1 2"/>
-
     <body name="base" childclass="ur10e">
       <inertial mass="4.0" pos="0 0 0" diaginertia="0.0061063308908 0.0061063308908 0.01125"/>
       <geom mesh="base_0" material="black" class="visual"/>
@@ -144,13 +157,15 @@ c
 
                   <!-- ================= Hand-E Integration ================= -->
                   <body name="robotiq_hande_mount" pos="0 0.1 0" quat="-1 1 0 0">
-
+                  <geom class="eef_collision" pos="0 0 0.06" quat="0 0 1 0" size="0.038 0.015"/>
                     <!-- Main hand body -->
                     <!--contype="0" conaffinity="0" to make it non-colliding with other objects -->
-                    <geom name="hande_coupler" type="mesh" mesh="coupler" contype="0" conaffinity="0"rgba="0.1 0.1 0.1 1"/>
-                    <geom name="hande_base"      type="mesh" mesh="hande"              contype="0" conaffinity="0" rgba="0.1 0.1 0.1 1"/>
-                    <geom name="hande-collision" type="mesh" mesh="hande-collision"    contype="1" conaffinity="1" rgba="0.1 0.1 0.1 0.15"/>
-                    <site name="tcp" pos="0 0 0.135" rgba="0 0 0 0.1" size="0.002"/>
+                    <geom name="hande_coupler" mesh="coupler" class="visual" rgba="0.1 0.1 0.1 1"/>
+                    <geom name="hande_base" mesh="hande" class="visual" rgba="0.1 0.1 0.1 1"/>
+                    
+                    
+                    <!-- tcp is the distance position for the gripper to box -->
+                    <site name="tcp" pos="0 0 0.137" rgba="0 1 0 0.6" size="0.002" group="2"/>
 
                     <!-- Left finger -->
                     <body name="hande_left_finger" pos="0 0 0.099">
@@ -158,10 +173,10 @@ c
                                 quat="0.871952 0.0369732 -0.211073 0.440205"
                                 mass="0.03804"
                                 diaginertia="1.22763e-05 1.22763e-05 1.22763e-05"/>
-                      <joint name="hande_left_finger_joint" type="slide" axis="1 0 0" range="0 0.025"/>
-                      <geom name="left_finger"    type="mesh" mesh="left_finger"            contype="0" conaffinity="0" rgba="0.4 0.4 0.4 1"/>
-                      <geom name="left_finger-collision" type="mesh" mesh="left_finger-collision"  contype="1" conaffinity="1" rgba="0.4 0.4 0.4 0.15"/>      
-                      <site name="left_finger_touch_site" pos="-0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
+                      <joint name="hande_left_finger_joint" class="hande_finger" axis="1 0 0"/>
+                      <geom name="left_finger" mesh="left_finger" class="visual" rgba="0.4 0.4 0.4 1"/>
+                      <geom name="left_finger_block" type="box" pos="-0.0275 0 0.0375" size="0.0025 0.010 0.010" contype="1" conaffinity="1" rgba="0 1 0 0.2" group="3"/>      
+                      <site name="left_finger_touch_site" pos="-0.025 0 0.04" size="0.002" rgba="1 0 0 0.2" group="2"/>
                     </body>
 
                     <!-- Right finger -->
@@ -170,10 +185,10 @@ c
                                 quat="0.871952 -0.0369732 0.211073 0.440205"
                                 mass="0.03804"
                                 diaginertia="1.22763e-05 1.22763e-05 1.22763e-05"/>
-                      <joint name="hande_right_finger_joint" type="slide" axis="-1 0 0" range="0 0.025"/>
-                      <geom name="right_finger"    type="mesh" mesh="right_finger"            contype="0" conaffinity="0" rgba="0.4 0.4 0.4 1"/>
-                      <geom name="right_finger-collision" type="mesh" mesh="right_finger-collision"  contype="1" conaffinity="1" rgba="0.4 0.4 0.4 0.15"/>
-                      <site name="right_finger_touch_site" pos="0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
+                      <joint name="hande_right_finger_joint" class="hande_finger" axis="-1 0 0"/>
+                      <geom name="right_finger" mesh="right_finger" class="visual" rgba="0.4 0.4 0.4 1"/>
+                      <geom name="right_finger_block" type="box" pos="0.0275 0 0.037" size="0.0025 0.010 0.010" contype="1" conaffinity="1" rgba="0 1 0 0.2" group="3"/>
+                      <site name="right_finger_touch_site" pos="0.025 0 0.04" size="0.002" rgba="1 0 0 0.4" group="2"/>
                     </body>
                   </body>
                 </body>
@@ -196,7 +211,7 @@ c
 
   </equality>
 
-  <tendon>
+  <tendon> 
     <fixed name="split">
       <joint joint="hande_left_finger_joint" coef="0.5"/>
       <joint joint="hande_right_finger_joint" coef="0.5"/>
@@ -213,19 +228,11 @@ c
     <general class="size2" name="wrist_3" joint="wrist_3_joint"/>
 
     <!-- Hand-E tendon actuator (as original) -->
-    <!-- ctrlrange="0 0.025" 0 … 25 mm -->
-    <!-- kp="2000" stiffness (P gain) -->
-    <!-- kv="20" damping (D gain) -->
-    <!-- ctrllimited="true"  respect ctrlrange -->
-    <!-- forcerange="-200 200"   hard cap force if you want a safety limit -->
-    <position name="hande_fingers_actuator" 
+      <position
         tendon="split"
-        ctrlrange="0 0.05"    
-        kp="8000"              
-        kv="50"                
-        forcerange="-400 400"
-        ctrllimited="true"     
-        />     
+        ctrlrange="0 0.025"
+        kp="150"
+        kv="10"/>
   </actuator>
   
 <keyframe>
@@ -236,10 +243,6 @@ c
   <key name="vertical_home"
     qpos="0 -1.5708 0 -1.5708 0 0 0 0"
     ctrl="0 -1.5708 0 -1.5708 0 0 0"/>
-
-  <key name="tucked"
-    qpos="0 -2.3562 2.3562 -1.5708 -1.5708 0 0 0"
-    ctrl="0 -2.3562 2.3562 -1.5708 -1.5708 0 0"/>
 
 </keyframe>
 </mujoco>
