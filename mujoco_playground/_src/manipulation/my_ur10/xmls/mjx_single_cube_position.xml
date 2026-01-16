@@ -3,21 +3,12 @@
   <!-- Include the scene setup - Robot file is in Scene -->
   <include file="mjx_scene_position.xml"/>
 
-  <default>
-    <default class="collision">
-      <geom type="capsule" group="3"/>
-    </default>
-    <default class="eef_collision">
-      <geom type="capsule" group="3"/>
-    </default>
-  </default>
-
   <worldbody>
     <!-- Box to pick -->
     <body name="box" pos="1.0 0 0.03">
       <freejoint/>
       <geom type="box" name="box" size="0.015 0.015 0.025" condim="3"
-       friction="1 .03 .003" rgba="0 1 0 1" contype="2" conaffinity="1" solref="0.01 1"/>
+       friction="1 .03 .003" rgba="0 1 0 1" contype="1" conaffinity="1" solref="0.01 1"/>
     </body>
 
     <!-- mocap target -->

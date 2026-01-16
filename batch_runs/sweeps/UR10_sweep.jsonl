@@ -1,5 +1,7 @@
 {"run_id":"Tiny1","env_name":"UR10PickCube","num_timesteps":1000,"num_envs":2048,"init_keyframe":"low_home","num_evals":1,"video_every_evals":999999,"render_every":5}
 {"run_id":"Tiny2","env_name":"UR10PickCube","num_timesteps":1000,"num_envs":4096,"init_keyframe":"low_home","num_evals":1,"video_every_evals":999999,"render_every":5}
-{"run_id":"Test new geometry","env_name":"UR10PickCube","num_timesteps":500000,"num_envs":4096,"unroll_length":10,"num_evals":100,"video_every_evals":20,"render_every":1}
+{"run_id":"New gripper 3","env_name":"UR10PickCube","num_timesteps":1000000,"num_envs":4096,"unroll_length":10,"num_evals":100,"video_every_evals":20,"render_every":1}
+{"run_id":"New gripper 2","env_name":"UR10PickCube","num_timesteps":1000000,"num_envs":2048,"unroll_length":10,"num_evals":100,"video_every_evals":20,"render_every":1}
+{"run_id":"New gripper 1","env_name":"UR10PickCube","num_timesteps":1000000,"num_envs":1024,"unroll_length":10,"num_evals":100,"video_every_evals":20,"render_every":1}
 {"run_id":"small_S1","env_name":"UR10PickCube","num_timesteps":500000,"num_envs":4096,"unroll_length":10,"num_evals":50,"video_every_evals":50,"render_every":1}
 {"run_id":"Algo_test","env_name":"UR10PickCube", "num_timesteps":250000,"num_envs":4096,"unroll_length":10,"num_evals":50,"video_every_evals":50,"render_every":1}
