@@ -30,9 +30,8 @@ sbatch batch_runs/slurm/run_array_panda.sbatch
 sbatch batch_runs/slurm/run_array_version_test.sbatch
 sbatch batch_runs/slurm/run_array_ur10_EGLTest.sbatch
 
-sbatch --array=1-2 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
-sbatch --array=3-3 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
-
+sbatch --array=1 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
+sbatch --array=4-5 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
 
 # ------------------------------------------------
 # Step 4 Monitoring the job:
@@ -53,10 +52,11 @@ sacct -u weissma6 \
 
 # More detailed tracking
 # find the outoutfiles with the job ID from squeue
-find . -maxdepth 3 -type f -name "*81535*" -print
+find . -maxdepth 3 -type f -name "*81840*" -print
 
-tail -f logs/UR10_sweep_EGL_81687_1.err
-tail -f logs/UR10_sweep_EGL_81687_2.out
+tail -f logs/UR10_sweep_EGL_82000_1.err
+tail -f logs/UR10_sweep_EGL_82000_1.out
+
 
 
 # Stop trailing:
