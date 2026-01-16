@@ -177,8 +177,15 @@ def _rollout_and_log_video_from_make_policy(
     step_tag = f"{run_id}_rew{ep_reward:.1f}_steps{int(num_steps)}"
 
     trajectory = rollout[:: int(render_every)]
- 
+    print("camera kwargs:", camera_kwargs, flush=True)
     cam = camera_kwargs or {"camera": "side_130"}
+    cam = {
+    "camera": "side_130",
+    "width": 960,
+    "height": 720,
+    }
+    print("camera kwargs for rendering:", cam, flush=True)
+
     frames = eval_env.render(trajectory, **cam)
     # frames might be list-of-arrays; make it (T,H,W,C) uint8 on CPU
     frames = np.asarray(frames)
