@@ -41,7 +41,7 @@
   <visual>
     <headlight diffuse=".8 .8 .8" ambient=".2 .2 .2" specular="1 1 1"/>
     <rgba force="1 0 0 1"/>
-    <global azimuth="-40" elevation="-30" offwidth="960" offheight="720"/>
+    <global azimuth="-40" elevation="-30"/>
     <map force="0.01"/>
     <quality shadowsize="8192"/>
     <scale contactwidth="0.075" contactheight="0.025" forcewidth="0.05" com="0.05" framewidth="0.01" framelength="0.2"/>
