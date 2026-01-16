@@ -165,7 +165,7 @@
                     
                     
                     <!-- tcp is the distance position for the gripper to box -->
-                    <site name="tcp" pos="0 0 0.137" rgba="0 1 0 0.6" size="0.002" group="2"/>
+                    <site name="tcp" pos="0 0 0.137" rgba="0 1 0 0.6" size="0.002"/>
 
                     <!-- Left finger -->
                     <body name="hande_left_finger" pos="0 0 0.099">
