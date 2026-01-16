@@ -108,7 +108,7 @@ class UR10PickCube(ur10_base.UR10Base):
             ]
         ]
 
-        print("Model has init_keyframe support:", hasattr(self._mj_model, "init_keyframe"), flush=True)
+        #print("Model has init_keyframe support:", hasattr(self._mj_model, "init_keyframe"), flush=True)
 
 
     def reset(self, rng: jax.Array) -> State:

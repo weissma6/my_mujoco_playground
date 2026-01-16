@@ -181,12 +181,18 @@ def _rollout_and_log_video_from_make_policy(
     cam = camera_kwargs or {"camera": "side_130"}
     cam["width"] = 960
     cam["height"] = 720
+
+    print("[DEBUG] cam passed to render:", cam, flush=True)
     frames = eval_env.render(trajectory, **cam)
     # frames might be list-of-arrays; make it (T,H,W,C) uint8 on CPU
     frames = np.asarray(frames)
+
+    print("[DEBUG] frames.shape:", frames.shape, flush=True)
+    print("[DEBUG] frames.dtype:", frames.dtype, flush=True)
     if frames.dtype != np.uint8:
         frames = frames.astype(np.uint8)
 
+    print("[DEBUG] frames.shape after cast:", frames.shape, flush=True)
     fps = float(1.0 / eval_env.dt) / float(render_every)
     video_path = os.path.join(wandb.run.dir, f"{env_name}_{step_tag}.mp4")
     try:
