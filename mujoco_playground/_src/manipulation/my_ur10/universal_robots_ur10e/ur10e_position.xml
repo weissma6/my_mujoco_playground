@@ -42,6 +42,11 @@
       <default class="eef_collision">
         <geom type="capsule" group="3"/>
       </default>
+      <!-- Real collision geoms (meshes) -->
+      <default class="hande_collision">
+        <geom type="mesh" group="3" contype="2" conaffinity="0" rgba="0.7 0.7 0.7 1"/>
+      </default>
+      
 
       <site size="0.001" rgba="0.5 0.5 0.5 0.3" group="4"/>
     </default>
@@ -80,6 +85,10 @@
     <mesh name="coupler" file="coupler.stl"/>
     <mesh name="left_finger" file="finger_2.stl"/>
     <mesh name="right_finger" file="finger_1.stl"/>
+    <mesh name="hande_col" file="hande-collision.stl"/>
+    <mesh name="hande_col_right" file="finger_1-collision.stl"/>
+    <mesh name="hande_col_left" file="finger_2-collision.stl"/>
+
 
   </asset>
 
@@ -154,6 +163,7 @@
                     <!-- Main hand body -->
                     <!--contype="0" conaffinity="0" to make it non-colliding with other objects -->
                     <geom name="hande_coupler" mesh="coupler" class="visual" rgba="0.1 0.1 0.1 1"/>
+                    <geom mesh="hande_col" class="hande_collision"/>
                     <geom name="hande_base" mesh="hande" class="visual" rgba="0.1 0.1 0.1 1"/>
 
                     <!-- tcp is the distance position for the gripper to box -->
@@ -167,6 +177,7 @@
                                 diaginertia="1.22763e-05 1.22763e-05 1.22763e-05"/>
                       <joint name="hande_left_finger_joint" type="slide" axis="1 0 0" range="0 0.025" damping="2"/>
                       <geom name="left_finger" mesh="left_finger" class="visual" rgba="0.4 0.4 0.4 1"/> 
+                      <geom  class="hande_collision" mesh="hande_col_left"/>
                       <geom type="box" size="0.0025 0.01 0.01" pos="-0.0275 0  0.037" rgba="0 1 0 0.3" contype="1" conaffinity="1"/>  
                       <site name="left_finger_touch_site" pos="-0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
@@ -179,6 +190,7 @@
                                 diaginertia="1.22763e-05 1.22763e-05 1.22763e-05"/>
                       <joint name="hande_right_finger_joint" type="slide" axis="-1 0 0" range="0 0.025" damping="2"/>
                       <geom name="right_finger" mesh="right_finger" class="visual" rgba="0.4 0.4 0.4 1"/>
+                      <geom class="hande_collision" mesh="hande_col_right"/>
                       <geom type="box" size="0.0025 0.01 0.01"  pos="0.0275 0 0.037" rgba="0 1 0 0.3" contype="1" conaffinity="1"/>
                       <site name="right_finger_touch_site" pos="0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>

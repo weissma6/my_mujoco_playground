@@ -182,17 +182,13 @@ def _rollout_and_log_video_from_make_policy(
     cam["width"] = 800
     cam["height"] = 600 
 
-    print("[DEBUG] cam passed to render:", cam, flush=True)
     frames = eval_env.render(trajectory, **cam)
     # frames might be list-of-arrays; make it (T,H,W,C) uint8 on CPU
     frames = np.asarray(frames)
 
-    print("[DEBUG] frames.shape:", frames.shape, flush=True)
-    print("[DEBUG] frames.dtype:", frames.dtype, flush=True)
     if frames.dtype != np.uint8:
         frames = frames.astype(np.uint8)
 
-    print("[DEBUG] frames.shape after cast:", frames.shape, flush=True)
     fps = float(1.0 / eval_env.dt) / float(render_every)
     video_path = os.path.join(wandb.run.dir, f"{env_name}_{step_tag}.mp4")
     try:
@@ -298,7 +294,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         # Apply overrides from cfg to ppo_params
         # ====================================================================
         overrides = _extract_ppo_overrides(cfg)
-        ppo_params = apply_validated_overrides(ppo_params, overrides, strict=False)
+        ppo_params = apply_validated_overrides(ppo_params, overrides, strict=True)
         # cast the original types of base on ppo_params
         schema = dict(base_dict)
         schema.pop("network_factory", None)
@@ -385,6 +381,9 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_name=env_name,
             seed=seed,
         )
+        print("[FINAL PPO PARAMS] num_timesteps =", ppo_training_params.get("num_timesteps"), flush=True)
+        print("[FINAL PPO PARAMS] num_envs     =", ppo_training_params.get("num_envs"), flush=True)
+        print("[FINAL PPO PARAMS] unroll_length=", ppo_training_params.get("unroll_length"), flush=True)
         train_fn = functools.partial(
             ppo.train,
             **ppo_training_params,
