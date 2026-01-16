@@ -1,5 +1,5 @@
-{"run_id":"camera_front","env_name":"UR10PickCube", "num_timesteps":10000,"num_envs":16,"init_keyframe":"low_home", "camera_kwargs":{"camera":"front"}}
+{"run_id":"fast","env_name":"UR10PickCube", "num_timesteps":1000000,"num_envs":1024,"unroll_length":10,"num_evals":4,"video_every_evals":4,"render_every":1}
 {"run_id":"camera_front","env_name":"UR10PickCube", "num_timesteps":10000,"num_envs":16,"init_keyframe":"task_home", "camera_kwargs":{"camera":"side_130"}}
-{"run_id":"small_S0","env_name":"UR10PickCube", "seed":0,"num_timesteps":100000,"num_envs":128,"unroll_length":10,"num_evals":50,"video_every_evals":50,"render_every":1, "camera_kwargs":{"camera":"front"}}
+{"run_id":"small_S0","env_name":"UR10PickCube", "seed":0,"num_timesteps":100000,"num_envs":128,"unroll_length":10,"num_evals":4,"video_every_evals":4,"render_every":1}
 {"run_id":"small_S1","env_name":"UR10PickCube", "seed":1,"num_timesteps":100000,"num_envs":128,"unroll_length":10,"num_evals":50,"video_every_evals":50,"render_every":1, "camera_kwargs":{"camera":"front"}}
 {"run_id":"Algo_test","env_name":"UR10PickCube", "num_timesteps":250000,"num_envs":2048,"unroll_length":10,"num_evals":50,"video_every_evals":50,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
