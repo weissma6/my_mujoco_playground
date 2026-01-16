@@ -192,8 +192,8 @@ def _rollout_and_log_video_from_make_policy(
     trajectory = rollout[:: int(render_every)]
  
     cam = camera_kwargs or {"camera": "side_130"}
-    cam["width"] = 640
-    cam["height"] = 480
+    # cam["width"] = 640
+    # cam["height"] = 480
     frames = eval_env.render(trajectory, **cam)
     # frames might be list-of-arrays; make it (T,H,W,C) uint8 on CPU
     frames = np.asarray(frames)
