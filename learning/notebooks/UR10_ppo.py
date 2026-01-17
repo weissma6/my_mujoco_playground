@@ -303,16 +303,6 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         except AttributeError:
             ppo_params = dict(base)
             base_dict = dict(base)
-        print("\n[DBG PPO DEFAULTS] keys containing 'step/timestep/update':", flush=True)
-        for k in sorted(base_dict.keys()):
-            lk = k.lower()
-            if ("timestep" in lk) or ("step" in lk) or ("update" in lk) or ("iter" in lk):
-                print(f"[DBG PPO DEFAULTS] {k:>24} = {base_dict[k]!r}", flush=True)
-
-        print(f"[DBG PPO DEFAULTS] explicit num_timesteps = {base_dict.get('num_timesteps', None)!r}", flush=True)
-        print(f"[DBG PPO DEFAULTS] explicit num_envs     = {base_dict.get('num_envs', None)!r}", flush=True)
-        print(f"[DBG PPO DEFAULTS] explicit unroll_length= {base_dict.get('unroll_length', None)!r}", flush=True)
-        print(f"[DBG PPO DEFAULTS] explicit num_evals    = {base_dict.get('num_evals', None)!r}", flush=True)
 
         # ====================================================================
         # Apply overrides from cfg to ppo_params
@@ -324,10 +314,6 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         schema.pop("network_factory", None)
         ppo_params = cast_to_schema(ppo_params, schema)
         # ====================================================================
-        print(f"\n[DBG PPO AFTER OVERRIDE] num_timesteps = {ppo_params.get('num_timesteps', None)!r}", flush=True)
-        print(f"[DBG PPO AFTER OVERRIDE] num_envs     = {ppo_params.get('num_envs', None)!r}", flush=True)
-        print(f"[DBG PPO AFTER OVERRIDE] unroll_length= {ppo_params.get('unroll_length', None)!r}", flush=True)
-        print(f"[DBG PPO AFTER OVERRIDE] num_evals    = {ppo_params.get('num_evals', None)!r}", flush=True)
 
 
         video_every_evals = int(cfg.get("video_every_evals", 10))           # Log video every N evals
@@ -410,14 +396,49 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_name=env_name,
             seed=seed,
         )
-        print("[FINAL PPO PARAMS] num_timesteps =", ppo_training_params.get("num_timesteps"), flush=True)
-        print("[FINAL PPO PARAMS] num_envs     =", ppo_training_params.get("num_envs"), flush=True)
-        print("[FINAL PPO PARAMS] unroll_length=", ppo_training_params.get("unroll_length"), flush=True)
+        # ===================================================================
+        # debug prints for derived settings
+        nt = int(ppo_params["num_timesteps"])
+        ne = int(ppo_params["num_envs"])
+        ul = int(ppo_params["unroll_length"])
+        bs = ne * ul
+        print(f"[DBG DERIVED] batch_size_steps = num_envs*unroll_length = {ne}*{ul} = {bs}", flush=True)
+
+        # This is the “expected” update count if stopping is truly based on num_timesteps:
+        exp_updates = max(1, nt // bs)  # floor
+        print(f"[DBG DERIVED] expected_updates_floor = max(1, {nt}//{bs}) = {exp_updates}", flush=True)
+
+        # Also print eval settings
+        print(f"[DBG DERIVED] num_evals = {ppo_params.get('num_evals')}", flush=True)
+        print(f"[DBG DERIVED] num_updates_per_batch = {ppo_params.get('num_updates_per_batch')}", flush=True)
+        # ===================================================================
+        # Debugging progress function that prints to stdout
+        user_progress_fn = _make_progress_wandb()  # keep your existing one
+        MAX_DEBUG_STEPS = int(cfg.get("max_debug_steps", 200_000))
+        def debug_progress_fn(num_steps: int, metrics: dict):
+            # Print every callback (or every N)
+            print(f"[DBG TRAIN LOOP] num_steps={num_steps} metric_keys={list(metrics.keys())[:8]}", flush=True)
+            if num_steps > MAX_DEBUG_STEPS:
+                raise RuntimeError(f"Debug stop: num_steps exceeded {MAX_DEBUG_STEPS}. Check training loop length logic.")
+            if user_progress_fn is not None:
+                user_progress_fn(num_steps, metrics)
+
+            # If W&B uses a specific key as step, show it too
+            for k in ["env_steps", "num_steps", "timesteps", "steps", "_step"]:
+                if k in metrics:
+                    print(f"[DBG TRAIN LOOP] metrics[{k}]={metrics[k]}", flush=True)
+
+            if user_progress_fn is not None:
+                user_progress_fn(num_steps, metrics)
+
+        progress_fn = debug_progress_fn
+        # ====================================================================
+
         train_fn = functools.partial(
             ppo.train,
             **ppo_training_params,
             network_factory=network_factory,
-            progress_fn=_make_progress_wandb(),
+            progress_fn=progress_fn,
             policy_params_fn=policy_params_fn,
             seed=seed,
         )
