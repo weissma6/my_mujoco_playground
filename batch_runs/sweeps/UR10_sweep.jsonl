@@ -1,3 +1,4 @@
 {"run_id":"fast","env_name":"UR10PickCube", "num_timesteps": 800, "num_envs": 256,"unroll_length": 10,"num_evals": 100, "video_every_evals":100,"render_every":1}
 {"run_id":"fast2","env_name":"UR10PickCube", "num_timesteps":200,"num_envs":1024,"unroll_length":10,"num_evals":100,"video_every_evals":50,"render_every":1}
-{"run_id":"not continuous","env_name":"UR10PickCube","num_timesteps":50, "num_envs":2048,"unroll_length":10,"num_evals":100,"video_every_evals":9999,"render_every":1}
+{"run_id":"test","env_name":"UR10PickCube","num_timesteps":50, "num_envs":2048,"unroll_length":10,"num_evals":100,"video_every_evals":9999,"render_every":1}
+{"run_id":"quickest","env_name":"UR10PickCube","num_timesteps":2, "num_envs":64,"unroll_length":10,"num_evals":1,"video_every_evals":1,"render_every":1, "camera_name":"box_detail"}

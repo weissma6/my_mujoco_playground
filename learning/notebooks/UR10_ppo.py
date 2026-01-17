@@ -303,6 +303,17 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         except AttributeError:
             ppo_params = dict(base)
             base_dict = dict(base)
+        print("\n[DBG PPO DEFAULTS] keys containing 'step/timestep/update':", flush=True)
+        for k in sorted(base_dict.keys()):
+            lk = k.lower()
+            if ("timestep" in lk) or ("step" in lk) or ("update" in lk) or ("iter" in lk):
+                print(f"[DBG PPO DEFAULTS] {k:>24} = {base_dict[k]!r}", flush=True)
+
+        print(f"[DBG PPO DEFAULTS] explicit num_timesteps = {base_dict.get('num_timesteps', None)!r}", flush=True)
+        print(f"[DBG PPO DEFAULTS] explicit num_envs     = {base_dict.get('num_envs', None)!r}", flush=True)
+        print(f"[DBG PPO DEFAULTS] explicit unroll_length= {base_dict.get('unroll_length', None)!r}", flush=True)
+        print(f"[DBG PPO DEFAULTS] explicit num_evals    = {base_dict.get('num_evals', None)!r}", flush=True)
+
         # ====================================================================
         # Apply overrides from cfg to ppo_params
         # ====================================================================
@@ -313,6 +324,11 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         schema.pop("network_factory", None)
         ppo_params = cast_to_schema(ppo_params, schema)
         # ====================================================================
+        print(f"\n[DBG PPO AFTER OVERRIDE] num_timesteps = {ppo_params.get('num_timesteps', None)!r}", flush=True)
+        print(f"[DBG PPO AFTER OVERRIDE] num_envs     = {ppo_params.get('num_envs', None)!r}", flush=True)
+        print(f"[DBG PPO AFTER OVERRIDE] unroll_length= {ppo_params.get('unroll_length', None)!r}", flush=True)
+        print(f"[DBG PPO AFTER OVERRIDE] num_evals    = {ppo_params.get('num_evals', None)!r}", flush=True)
+
 
         video_every_evals = int(cfg.get("video_every_evals", 10))           # Log video every N evals
         render_every = int(cfg.get("render_every", 1))
