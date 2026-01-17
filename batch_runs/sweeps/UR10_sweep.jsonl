@@ -1,7 +1,6 @@
-{"run_id":"sweep_part1_1p2M_50eval","env_name":"UR10PickCube","num_timesteps":1200000,"num_envs":128,"unroll_length":5,"num_evals":50,"num_eval_envs":64,"video_every_evals":999,"render_every":1,"camera_kwargs":{"camera":"side_130"}}
-{"run_id":"sweep_part2_0p8M_50eval","env_name":"UR10PickCube","num_timesteps":800000,"num_envs":128,"unroll_length":5,"num_evals":50,"num_eval_envs":64,"video_every_evals":999,"render_every":1,"camera_kwargs":{"camera":"side_130"}}
-{"run_id":"smoke", "env_name":"UR10PickCube", "num_timesteps":15625, "num_envs":64,"num_eval_envs": 4,"unroll_length":8,"num_updates_per_batch":1,"num_evals":1,"video_every_evals":9999, "render_every":0}
-{"run_id":"ultra_smoke","env_name":"UR10PickCube","num_timesteps":512,"num_envs":4,"unroll_length":4,"num_updates_per_batch":1,"num_evals":1,"render_every":0}
+{"run_id":"baseling_fast","env_name":"UR10PickCube","seed":1,"num_timesteps":1000000,"num_envs": 2048,"unroll_length":10,"num_evals":2,"video_every_evals":2,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
+{"run_id":"sweep_part2_1028","env_name":"UR10PickCube","num_timesteps":1200000,"num_envs":1028,"unroll_length":5,"num_evals":4,"num_eval_envs":8,"video_every_evals":999,"render_every":1,"camera_kwargs":{"camera":"side_130"}}
+{"run_id":"default_short","env_name":"UR10PickCube","seed":0,"num_timesteps":1000000,"num_envs":2048,"unroll_length":,"num_evals":2,"video_every_evals":2,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
+{"run_id":"default_short_seed 1","env_name":"UR10PickCube","seed":1,"num_timesteps":1000000,"num_envs":2048,"unroll_length":10,"num_evals":2,"video_every_evals":2,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
 {"run_id":"fast_debug","env_name":"UR10PickCube","num_timesteps":5000,"num_envs":16,"unroll_length":10,"num_updates_per_batch":2,"num_evals":2,"video_every_evals":9999,"render_every":0}
-{"run_id":"meaningful_video","env_name":"UR10PickCube","num_timesteps":8000,"num_envs":16,"unroll_length":10,"num_updates_per_batch":2,"num_evals":2,"video_every_evals":9999,"render_every":1,"camera_name":"box_detail"}
-
+{"run_id":"meaningful_video","env_name":"UR10PickCube","num_timesteps":8000,"num_envs":16,"unroll_length":10,"num_updates_per_batch":2,"num_evals":2,"video_every_evals":9999,"render_every":1,"camera_kwargs":{"camera":"box_detail"}}
