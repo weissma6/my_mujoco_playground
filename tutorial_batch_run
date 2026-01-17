@@ -52,10 +52,10 @@ sacct -u weissma6 \
 
 # More detailed tracking
 # find the outoutfiles with the job ID from squeue
-find . -maxdepth 3 -type f -name "*81840*" -print
+find . -maxdepth 3 -type f -name "*82186*" -print
 
-tail -f logs/UR10_sweep_EGL_82163_1.err
-tail -f logs/UR10_sweep_EGL_82108_1.out
+tail -f logs/UR10_parallel_82186_2.err
+tail -f logs/UR10_sweep_EGL_82175_1.out
 
 # Watch resource usage (CPU)
 sstat -j 82108_1.batch --format=AveCPU,AveRSS,MaxRSS,MaxVMSize,AveDiskRead,AveDiskWrite
