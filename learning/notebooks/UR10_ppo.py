@@ -20,6 +20,7 @@ import wandb
 import mediapy
 import numpy as np
 import jax.numpy as jnp
+from datetime import datetime
 
 
 def is_nvidia_available() -> bool:
@@ -262,16 +263,28 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
     random.seed(seed)
 
     os.makedirs(out_dir, exist_ok=True)
+    
+    # Initialize W&B run
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    short_uid = random.randint(0, 9999)
+    run_id = cfg.get("run_id")
+    run_id_tag = f"{run_id}_{timestamp}_{short_uid}"
+    if run_id_tag is None or run_id_tag == "":
+        run_id_tag = f"ur10_{timestamp}"
+
     wandb_mode = str(cfg.get("wandb_mode", "online"))
     run = wandb.init(
         project=str(cfg.get("wandb_project", "UR10_pick_ppo")),
-        name=str(cfg.get("run_id", "")) or None,
+        name=run_id_tag,
+        id=run_id_tag,
         group=str(cfg.get("wandb_group", "")) or None,
         tags=cfg.get("wandb_tags", None),
+        resume="never",
         config=cfg,
         mode=wandb_mode,
         dir=out_dir,
     )
+
     try:
         #print("JAX devices:", jax.devices(), flush=True)
         # Build env overrides from cfg (env-only params)
