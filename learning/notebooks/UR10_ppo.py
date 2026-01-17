@@ -251,26 +251,22 @@ def _wb_log_final_train_config(*, ppo_training_params: dict, nf_cfg: dict | None
 
 def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
     _setup_mujoco_backend()
+
     env_name = str(cfg.get("env_name", "UR10PickCube"))
-    run_id = str(cfg.get("run_id", "run"))
+    base_run_id = str(cfg.get("run_id", "run"))
     camera_kwargs = cfg.get("camera_kwargs") or {"camera": "side_130"}
-    # Resolve seed: sweep overrides, otherwise random-by-default
+
+    # Seed
     cfg_seed = cfg.get("seed", None)
-    if cfg_seed is None:
-        seed = random.getrandbits(32)   # random default, good entropy range
-    else:
-        seed = int(cfg_seed)
+    seed = int(cfg_seed) if cfg_seed is not None else random.getrandbits(32)
     random.seed(seed)
 
     os.makedirs(out_dir, exist_ok=True)
-    
-    # Initialize W&B run
+
+    # W&B run identity (unique)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     short_uid = random.randint(0, 9999)
-    run_id = cfg.get("run_id")
-    run_id_tag = f"{run_id}_{timestamp}_{short_uid}"
-    if run_id_tag is None or run_id_tag == "":
-        run_id_tag = f"ur10_{timestamp}"
+    run_id_tag = f"{base_run_id}_{timestamp}_{short_uid}"
 
     wandb_mode = str(cfg.get("wandb_mode", "online"))
     run = wandb.init(
@@ -286,102 +282,126 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
     )
 
     try:
-        #print("JAX devices:", jax.devices(), flush=True)
-        # Build env overrides from cfg (env-only params)
+        # -----------------------------
+        # Env overrides + env creation
+        # -----------------------------
         env_overrides = {}
         if "init_keyframe" in cfg:
             env_overrides["init_keyframe"] = cfg["init_keyframe"]
 
-        # Create env with overrides
         env = registry.load(env_name, config_overrides=env_overrides)
         env_cfg = registry.get_default_config(env_name)
-        
+        episode_length = int(getattr(env_cfg, "episode_length", 1000))
+
+        # -----------------------------
+        # PPO defaults -> dict
+        # -----------------------------
         base = manipulation_params.brax_ppo_config(env_name)
         try:
-            ppo_params = base.to_dict()
             base_dict = base.to_dict()
         except AttributeError:
-            ppo_params = dict(base)
             base_dict = dict(base)
 
-        # ====================================================================
-        # Apply overrides from cfg to ppo_params
-        # ====================================================================
+        ppo_params = dict(base_dict)
+
+        print("\n[DBG PPO DEFAULTS] key training controls:", flush=True)
+        for k in ["num_timesteps", "num_envs", "unroll_length", "num_evals", "num_updates_per_batch"]:
+            if k in ppo_params:
+                print(f"[DBG PPO DEFAULTS] {k:>22} = {ppo_params[k]!r}", flush=True)
+
+        # -----------------------------
+        # Apply cfg overrides ONCE
+        # -----------------------------
         overrides = _extract_ppo_overrides(cfg)
         ppo_params = apply_validated_overrides(ppo_params, overrides, strict=True)
-        # cast the original types of base on ppo_params
+
+        # Cast types to schema (optional, but keep)
         schema = dict(base_dict)
         schema.pop("network_factory", None)
         ppo_params = cast_to_schema(ppo_params, schema)
-        # ====================================================================
 
+        # -----------------------------
+        # FINAL kwargs to ppo.train
+        # -----------------------------
+        ppo_train_kwargs = dict(ppo_params)
 
-        video_every_evals = int(cfg.get("video_every_evals", 10))           # Log video every N evals
+        # Remove keys not accepted by ppo.train or passed explicitly
+        for k in ["network_factory", "seed", "init_keyframe"]:
+            ppo_train_kwargs.pop(k, None)
+
+        print("\n[FINAL->ppo.train] key training controls:", flush=True)
+        for k in ["num_timesteps", "num_envs", "unroll_length", "num_evals", "num_updates_per_batch"]:
+            if k in ppo_train_kwargs:
+                print(f"[FINAL->ppo.train] {k:>22} = {ppo_train_kwargs[k]!r}", flush=True)
+
+        # Derived
+        nt = int(ppo_train_kwargs.get("num_timesteps", -1))
+        ne = int(ppo_train_kwargs.get("num_envs", -1))
+        ul = int(ppo_train_kwargs.get("unroll_length", -1))
+        bs = ne * ul if ne > 0 and ul > 0 else -1
+        if bs > 0 and nt > 0:
+            print(f"[DBG DERIVED] batch_size_steps = {ne}*{ul} = {bs}", flush=True)
+            print(f"[DBG DERIVED] expected_updates_floor = max(1, {nt}//{bs}) = {max(1, nt // bs)}", flush=True)
+
+        # DEBUG SAFETY: if asking for fewer steps than one batch, make eval sane
+        # (This avoids training being driven by eval scheduling weirdness in some implementations)
+        if bs > 0 and nt > 0 and nt < bs:
+            print("[DBG] num_timesteps < one batch; forcing num_evals=1 for debug.", flush=True)
+            ppo_train_kwargs["num_evals"] = 1
+
+        # -----------------------------
+        # Video / policy_params_fn
+        # -----------------------------
+        video_every_evals = int(cfg.get("video_every_evals", 10))
         render_every = int(cfg.get("render_every", 1))
-        video_tag = str(cfg.get("video_tag", "eval"))
-
-        episode_length = int(env_cfg.episode_length)
         video_state = {"eval_idx": 0}
+        total_timesteps = ppo_train_kwargs.get("num_timesteps", None)
 
         def policy_params_fn(num_steps, make_policy, params):
             video_state["eval_idx"] += 1
             eval_idx = video_state["eval_idx"]
-            total_timesteps = ppo_params.get("num_timesteps", None)
-            is_last_eval = total_timesteps is not None and int(num_steps) >= int(
-                total_timesteps
-            )
+
+            is_last_eval = (total_timesteps is not None) and (int(num_steps) >= int(total_timesteps))
             should_record = (eval_idx % video_every_evals == 0) or is_last_eval
+
             if should_record:
                 _rollout_and_log_video_from_make_policy(
                     num_steps=int(num_steps),
                     make_policy=make_policy,
                     params=params,
                     env_name=env_name,
-                    run_id=run_id,
+                    run_id=base_run_id,
                     seed=seed,
                     episode_length=episode_length,
                     render_every=render_every,
                     camera_kwargs=camera_kwargs,
                 )
 
-        # Build training kwargs for ppo.train
-        ppo_training_params = dict(ppo_params)
-
-        # Only remove keys that truly are not kwargs for ppo.train OR that you pass explicitly
-        for k in ["network_factory", "seed", "init_keyframe"]:
-            ppo_training_params.pop(k, None)
-
-        # Resolve network config
+        # -----------------------------
+        # Network factory resolution
+        # -----------------------------
         nf_cfg = dict(ppo_params.get("network_factory") or {})
+        if isinstance(nf_cfg.get("policy_hidden_layer_sizes"), list):
+            nf_cfg["policy_hidden_layer_sizes"] = tuple(nf_cfg["policy_hidden_layer_sizes"])
+        if isinstance(nf_cfg.get("value_hidden_layer_sizes"), list):
+            nf_cfg["value_hidden_layer_sizes"] = tuple(nf_cfg["value_hidden_layer_sizes"])
 
         network_factory = ppo_networks.make_ppo_networks
-        if isinstance(nf_cfg, dict):
-            if isinstance(nf_cfg.get("policy_hidden_layer_sizes"), list):
-                nf_cfg["policy_hidden_layer_sizes"] = tuple(nf_cfg["policy_hidden_layer_sizes"])
-            if isinstance(nf_cfg.get("value_hidden_layer_sizes"), list):
-                nf_cfg["value_hidden_layer_sizes"] = tuple(nf_cfg["value_hidden_layer_sizes"])
+        if isinstance(nf_cfg, dict) and len(nf_cfg) > 0:
             network_factory = functools.partial(ppo_networks.make_ppo_networks, **nf_cfg)
 
-        def _count_params(pytree) -> int:
-            return sum(x.size for x in tree_leaves(pytree))
-
-        # Try to instantiate & count params (best-effort; do not crash training if API differs)
+        # Best-effort param count (do not crash)
         try:
-            # Brax make_ppo_networks usually takes sizes as keyword args
-            networks = network_factory(
-                observation_size=env.observation_size,
-                action_size=env.action_size,
-            )
-
-            # Common Brax pattern: networks has policy_network and value_network
+            networks = network_factory(observation_size=env.observation_size, action_size=env.action_size)
             rng = jax.random.PRNGKey(seed)
-            rng_pi, rng_v = jax.random.split(rng)
-
-            # Dummy observation is required for init
             dummy_obs = jnp.zeros((env.observation_size,), dtype=jnp.float32)
 
-            pi_params = networks.policy_network.init(rng_pi, dummy_obs)
-            v_params  = networks.value_network.init(rng_v, dummy_obs)
+            # Depending on brax version, init signatures differ. Keep guarded.
+            pi_params = networks.policy_network.init(rng, dummy_obs)  # may fail; ok
+            v_params = networks.value_network.init(rng, dummy_obs)
+
+            def _count_params(pytree) -> int:
+                return sum(x.size for x in tree_leaves(pytree))
 
             wandb.run.summary["net/policy_num_params"] = int(_count_params(pi_params))
             wandb.run.summary["net/value_num_params"]  = int(_count_params(v_params))
@@ -389,54 +409,42 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         except Exception as e:
             print(f"[WARN] Could not compute network param counts: {e}", flush=True)
 
-        # Log FINAL training config + FINAL network spec to W&B (once)
+        # Log final config once
         _wb_log_final_train_config(
-            ppo_training_params=ppo_training_params,
+            ppo_training_params=ppo_train_kwargs,
             nf_cfg=nf_cfg if isinstance(nf_cfg, dict) else None,
             env_name=env_name,
             seed=seed,
         )
-        # ===================================================================
-        # debug prints for derived settings
-        nt = int(ppo_params["num_timesteps"])
-        ne = int(ppo_params["num_envs"])
-        ul = int(ppo_params["unroll_length"])
-        bs = ne * ul
-        print(f"[DBG DERIVED] batch_size_steps = num_envs*unroll_length = {ne}*{ul} = {bs}", flush=True)
 
-        # This is the “expected” update count if stopping is truly based on num_timesteps:
-        exp_updates = max(1, nt // bs)  # floor
-        print(f"[DBG DERIVED] expected_updates_floor = max(1, {nt}//{bs}) = {exp_updates}", flush=True)
-
-        # Also print eval settings
-        print(f"[DBG DERIVED] num_evals = {ppo_params.get('num_evals')}", flush=True)
-        print(f"[DBG DERIVED] num_updates_per_batch = {ppo_params.get('num_updates_per_batch')}", flush=True)
-        # ===================================================================
-        # Debugging progress function that prints to stdout
-        user_progress_fn = _make_progress_wandb()  # keep your existing one
+        # -----------------------------
+        # Progress fn (single logging)
+        # -----------------------------
+        user_progress_fn = _make_progress_wandb()
         MAX_DEBUG_STEPS = int(cfg.get("max_debug_steps", 200_000))
-        def debug_progress_fn(num_steps: int, metrics: dict):
-            # Print every callback (or every N)
-            print(f"[DBG TRAIN LOOP] num_steps={num_steps} metric_keys={list(metrics.keys())[:8]}", flush=True)
-            if num_steps > MAX_DEBUG_STEPS:
-                raise RuntimeError(f"Debug stop: num_steps exceeded {MAX_DEBUG_STEPS}. Check training loop length logic.")
-            if user_progress_fn is not None:
-                user_progress_fn(num_steps, metrics)
 
-            # If W&B uses a specific key as step, show it too
+        def progress_fn(num_steps: int, metrics: dict):
+            print(f"[DBG TRAIN LOOP] num_steps={num_steps}", flush=True)
+
             for k in ["env_steps", "num_steps", "timesteps", "steps", "_step"]:
                 if k in metrics:
                     print(f"[DBG TRAIN LOOP] metrics[{k}]={metrics[k]}", flush=True)
 
+            if num_steps > MAX_DEBUG_STEPS:
+                raise RuntimeError(
+                    f"Debug stop: num_steps exceeded {MAX_DEBUG_STEPS}. "
+                    "Training loop length is not respecting the intended horizon."
+                )
+
             if user_progress_fn is not None:
                 user_progress_fn(num_steps, metrics)
 
-        progress_fn = debug_progress_fn
-        # ====================================================================
-
+        # -----------------------------
+        # Train (PASS ONLY FINAL KWARGS)
+        # -----------------------------
         train_fn = functools.partial(
             ppo.train,
-            **ppo_training_params,
+            **ppo_train_kwargs,
             network_factory=network_factory,
             progress_fn=progress_fn,
             policy_params_fn=policy_params_fn,
@@ -446,22 +454,17 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         make_inference_fn, params, final_metrics = train_fn(
             environment=env, wrap_env_fn=wrapper.wrap_for_brax_training
         )
-        with open(
-            os.path.join(out_dir, "final_metrics.json"), "w", encoding="utf-8"
-        ) as f:
+
+        # Save metrics
+        with open(os.path.join(out_dir, "final_metrics.json"), "w", encoding="utf-8") as f:
             json.dump(
-                {
-                    k: float(v)
-                    for k, v in final_metrics.items()
-                    if isinstance(v, (int, float))
-                },
+                {k: float(v) for k, v in final_metrics.items() if isinstance(v, (int, float))},
                 f,
                 indent=2,
             )
+
         if "eval/episode_reward" in final_metrics:
-            wandb.run.summary["final_eval_return"] = float(
-                final_metrics["eval/episode_reward"]
-            )
+            wandb.run.summary["final_eval_return"] = float(final_metrics["eval/episode_reward"])
+
     finally:
         run.finish()
-
