@@ -341,9 +341,9 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             seed=seed,
         )
         print("\n=== PPO TRAINING PARAMETERS ===", flush=True)
+        print("seed:", seed, flush=True)
         for k in sorted(ppo_training_params.keys()):
             print(f"PPO_PARAM {k}: {ppo_training_params[k]}", flush=True)
-            print("seed:", seed, flush=True)
         print("================================\n", flush=True)
 
         train_fn = functools.partial(
