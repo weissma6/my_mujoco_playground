@@ -112,6 +112,7 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "notes",
         "init_keyframe",
         "num_eval_envs"
+        "seed",
 
     }
     overrides: Dict[str, Any] = {}
