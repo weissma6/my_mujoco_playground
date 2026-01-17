@@ -21,6 +21,8 @@ import mediapy
 import numpy as np
 import jax.numpy as jnp
 from datetime import datetime
+from flax import serialization
+import time
 
 
 def is_nvidia_available() -> bool:
@@ -418,35 +420,13 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         )
 
         # -----------------------------
-        # Progress fn (single logging)
-        # -----------------------------
-        user_progress_fn = _make_progress_wandb()
-        MAX_DEBUG_STEPS = int(cfg.get("max_debug_steps", 200_000))
-
-        def progress_fn(num_steps: int, metrics: dict):
-            print(f"[DBG TRAIN LOOP] num_steps={num_steps}", flush=True)
-
-            for k in ["env_steps", "num_steps", "timesteps", "steps", "_step"]:
-                if k in metrics:
-                    print(f"[DBG TRAIN LOOP] metrics[{k}]={metrics[k]}", flush=True)
-
-            if num_steps > MAX_DEBUG_STEPS:
-                raise RuntimeError(
-                    f"Debug stop: num_steps exceeded {MAX_DEBUG_STEPS}. "
-                    "Training loop length is not respecting the intended horizon."
-                )
-
-            if user_progress_fn is not None:
-                user_progress_fn(num_steps, metrics)
-
-        # -----------------------------
         # Train (PASS ONLY FINAL KWARGS)
         # -----------------------------
         train_fn = functools.partial(
             ppo.train,
             **ppo_train_kwargs,
             network_factory=network_factory,
-            progress_fn=progress_fn,
+            progress_fn=_make_progress_wandb(),
             policy_params_fn=policy_params_fn,
             seed=seed,
         )
@@ -454,9 +434,16 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         make_inference_fn, params, final_metrics = train_fn(
             environment=env, wrap_env_fn=wrapper.wrap_for_brax_training
         )
+        # Prepare output paths once
+        params_path = os.path.join(out_dir, "params.msgpack")
+        metrics_path = os.path.join(out_dir, "final_metrics.json")
+
+        # Save params (JAX/Flax-safe)
+        with open(params_path, "wb") as f:
+            f.write(serialization.to_bytes(params))
 
         # Save metrics
-        with open(os.path.join(out_dir, "final_metrics.json"), "w", encoding="utf-8") as f:
+        with open(metrics_path, "w", encoding="utf-8") as f:
             json.dump(
                 {k: float(v) for k, v in final_metrics.items() if isinstance(v, (int, float))},
                 f,
@@ -465,6 +452,12 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
 
         if "eval/episode_reward" in final_metrics:
             wandb.run.summary["final_eval_return"] = float(final_metrics["eval/episode_reward"])
+
+        # Log everything as a single artifact
+        artifact = wandb.Artifact(f"policy_checkpoint_{wandb.run.id}", type="model")
+        artifact.add_file(params_path)
+        artifact.add_file(metrics_path)
+        wandb.log_artifact(artifact)
 
     finally:
         run.finish()

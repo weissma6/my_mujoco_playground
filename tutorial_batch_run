@@ -31,7 +31,7 @@ sbatch batch_runs/slurm/run_array_version_test.sbatch
 sbatch batch_runs/slurm/run_array_ur10_EGLTest.sbatch
 
 sbatch --array=1 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
-sbatch --array=1-2 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
+sbatch --array=4-4 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
 
 # ------------------------------------------------
 # Step 4 Monitoring the job:
@@ -54,12 +54,14 @@ sacct -u weissma6 \
 # find the outoutfiles with the job ID from squeue
 find . -maxdepth 3 -type f -name "*81840*" -print
 
-tail -f logs/UR10_sweep_EGL_82047_1.err
-tail -f logs/UR10_sweep_EGL_82047_1.out
+tail -f logs/UR10_sweep_EGL_82108_1.err
+tail -f logs/UR10_sweep_EGL_82108_1.out
 
+# Watch resource usage (CPU)
+sstat -j 82108_1.batch --format=AveCPU,AveRSS,MaxRSS,MaxVMSize,AveDiskRead,AveDiskWrite
+srun --jobid 82108_1 -n 1 nvidia-smi
 
-
-# Stop trailing:
+# Stop trailing:srun --jobid 82108_1 -n 1 nvidia-smi
 # Press Ctrl + C
 
 # See detailed job info
