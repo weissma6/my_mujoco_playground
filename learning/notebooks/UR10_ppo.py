@@ -130,6 +130,15 @@ def _make_progress_wandb():
 
     return progress_wandb
 
+def progress_fn(num_steps: int, metrics: dict):
+    # Only log keys that actually exist (prevents KeyError)
+    log = {f"metrics/{k}": float(v) for k, v in metrics.items() if isinstance(v, (int, float))}
+    wandb.log(log, step=int(num_steps))
+
+    # Optional: if you specifically care about eval reward, guard it
+    if "eval/episode_reward" in metrics:
+        wandb.run.summary["final_eval_return"] = float(metrics["eval/episode_reward"])
+
 
 def _rollout_and_log_video_from_make_policy(
     *,
@@ -350,8 +359,8 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             ppo.train,
             **ppo_training_params,
             network_factory=network_factory,
-            progress_fn=_make_progress_wandb(),
-            policy_params_fn=policy_params_fn,
+            progress_fn=progress_fn,
+            # policy_params_fn=policy_params_fn,
             seed=seed,
         )
 
