@@ -111,6 +111,8 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "algo",
         "notes",
         "init_keyframe",
+        "num_eval_envs"
+
     }
     overrides: Dict[str, Any] = {}
     for k, v in cfg.items():
