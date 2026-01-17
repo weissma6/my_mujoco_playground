@@ -277,6 +277,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         # Apply overrides from cfg to ppo_params
         # ====================================================================
         overrides = _extract_ppo_overrides(cfg)
+        overrides.pop("seed", None)  # seed is passed explicitly
         ppo_params = apply_validated_overrides(ppo_params, overrides, strict=False)
         # cast the original types of base on ppo_params
         schema = dict(base_dict)
@@ -289,12 +290,14 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         video_tag = str(cfg.get("video_tag", "eval"))
 
         episode_length = int(env_cfg.episode_length)
-        video_state = {"eval_idx": 0}
+        print(f"Environment episode_length: {episode_length}", flush=True)
+        video_state = {"eval_idx": 0} 
 
         def policy_params_fn(num_steps, make_policy, params):
             video_state["eval_idx"] += 1
             eval_idx = video_state["eval_idx"]
             total_timesteps = ppo_params.get("num_timesteps", None)
+            
             is_last_eval = total_timesteps is not None and int(num_steps) >= int(
                 total_timesteps
             )
@@ -330,33 +333,6 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
                 nf_cfg["value_hidden_layer_sizes"] = tuple(nf_cfg["value_hidden_layer_sizes"])
             network_factory = functools.partial(ppo_networks.make_ppo_networks, **nf_cfg)
 
-        def _count_params(pytree) -> int:
-            return sum(x.size for x in tree_leaves(pytree))
-
-        # Try to instantiate & count params (best-effort; do not crash training if API differs)
-        try:
-            # Brax make_ppo_networks usually takes sizes as keyword args
-            networks = network_factory(
-                observation_size=env.observation_size,
-                action_size=env.action_size,
-            )
-
-            # Common Brax pattern: networks has policy_network and value_network
-            rng = jax.random.PRNGKey(seed)
-            rng_pi, rng_v = jax.random.split(rng)
-
-            # Dummy observation is required for init
-            dummy_obs = jnp.zeros((env.observation_size,), dtype=jnp.float32)
-
-            pi_params = networks.policy_network.init(rng_pi, dummy_obs)
-            v_params  = networks.value_network.init(rng_v, dummy_obs)
-
-            wandb.run.summary["net/policy_num_params"] = int(_count_params(pi_params))
-            wandb.run.summary["net/value_num_params"]  = int(_count_params(v_params))
-            wandb.run.summary["net/total_num_params"]  = int(_count_params(pi_params) + _count_params(v_params))
-        except Exception as e:
-            print(f"[WARN] Could not compute network param counts: {e}", flush=True)
-
         # Log FINAL training config + FINAL network spec to W&B (once)
         _wb_log_final_train_config(
             ppo_training_params=ppo_training_params,
@@ -364,6 +340,12 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_name=env_name,
             seed=seed,
         )
+        print("\n=== PPO TRAINING PARAMETERS ===", flush=True)
+        for k in sorted(ppo_training_params.keys()):
+            print(f"PPO_PARAM {k}: {ppo_training_params[k]}", flush=True)
+            print("seed:", seed, flush=True)
+        print("================================\n", flush=True)
+
         train_fn = functools.partial(
             ppo.train,
             **ppo_training_params,
