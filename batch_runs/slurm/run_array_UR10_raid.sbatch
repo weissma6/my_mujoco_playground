@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-10%1
+#SBATCH --array=1-10%2
 
 set -euo pipefail
 umask 0022
@@ -20,20 +20,34 @@ cd "$REPO_DIR"
 IMAGE_TAR="/raid/persistent_scratch/$USER/mujoco_env_EGL.tar"
 IMAGE_TAG="mujoco:env_EGL"
 [ -f "$IMAGE_TAR" ] || { echo "ERROR: tar not found on this node: $IMAGE_TAR"; exit 2; }
-
 command -v podman >/dev/null 2>&1 || { echo "ERROR: podman not found on PATH"; exit 2; }
 
 NODE="$(hostname)"
 NODE_PS="/raid/persistent_scratch/$USER"
 
-# IMPORTANT: runroot must be stable for the DB
-PODMAN_ROOT="$NODE_PS/podman_root"
+# IMPORTANT: root + runroot must be stable AND mutually consistent for the libpod DB
+# Use a versioned root to avoid collisions with old DBs created with a different runroot.
+PODMAN_ROOT="$NODE_PS/podman_root_v2"
 PODMAN_RUNROOT="$NODE_PS/podman_runroot"
 mkdir -p "$PODMAN_ROOT" "$PODMAN_RUNROOT"
 
 export XDG_RUNTIME_DIR="$PODMAN_RUNROOT/xdg"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR" || true
+
+# Safety net: if this node still has stale libpod state, wipe it once.
+# (Only deletes podman state under PODMAN_ROOT/PODMAN_RUNROOT, not your repo/results.)
+if ! podman --root "$PODMAN_ROOT" --runroot "$PODMAN_RUNROOT" info >/dev/null 2>&1; then
+  echo "Podman state mismatch on $NODE. Removing stale libpod state in $PODMAN_ROOT and $PODMAN_RUNROOT ..."
+  rm -rf \
+    "$PODMAN_ROOT/libpod" \
+    "$PODMAN_ROOT/overlay-containers" \
+    "$PODMAN_ROOT/overlay-images" \
+    "$PODMAN_ROOT/storage.lock" \
+    "$PODMAN_ROOT/tmp" \
+    "$PODMAN_RUNROOT/libpod" \
+    "$PODMAN_RUNROOT/tmp" || true
+fi
 
 # Task-local temp dirs mounted into container
 HOST_TMP="${SLURM_TMPDIR:-/tmp}/ctmp_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
