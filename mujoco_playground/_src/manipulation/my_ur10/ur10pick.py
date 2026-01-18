@@ -395,7 +395,7 @@ class UR10PickCube(ur10_base.UR10Base):
             "number_floor_collision": floor_collision,
         }
 
-        return rewards, raw, info
+        return rewards, raw
 
     def _get_obs(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
         gripper_pos = data.site_xpos[self._gripper_site]
