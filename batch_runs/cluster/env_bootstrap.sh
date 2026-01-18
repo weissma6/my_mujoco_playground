@@ -36,6 +36,8 @@ export PYTHONPATH="${PWD}:${PYTHONPATH:-}"
 uv pip install -r requirements.txt
 
 # JAX is needed by UR10_ppo.py; your requirements.txt does not include it
-uv pip install -U "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+uv pip uninstall -y jax jaxlib || true
+uv pip install -U "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+python -c "import jax; print(jax.__version__); print(jax.devices())"
 
 uv pip freeze > /tmp/pip_freeze_env_bootstrap.txt || true
