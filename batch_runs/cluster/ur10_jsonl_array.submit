@@ -32,6 +32,12 @@ fi
 echo "Launching torchrun with nproc_per_node=${NPROC}" >&2
 
 
+export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=egl
+export EGL_PLATFORM=surfaceless
+unset DISPLAY
+
+
 python batch_runs/scripts/run_one_ur10.py \
   --jsonl batch_runs/sweeps/UR10_sweep.jsonl \
   --index "${SLURM_ARRAY_TASK_ID}" \
