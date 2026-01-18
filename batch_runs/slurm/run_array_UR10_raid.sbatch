@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-10%2
+#SBATCH --array=1-10%1
 
 set -euo pipefail
 umask 0022
@@ -17,35 +17,33 @@ REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"
 mkdir -p "$REPO_DIR/logs" "$REPO_DIR/results"
 cd "$REPO_DIR"
 
-# ---- Tar is node-local persistent scratch (per node) ----
 IMAGE_TAR="/raid/persistent_scratch/$USER/mujoco_env_EGL.tar"
 IMAGE_TAG="mujoco:env_EGL"
 [ -f "$IMAGE_TAR" ] || { echo "ERROR: tar not found on this node: $IMAGE_TAR"; exit 2; }
 
 command -v podman >/dev/null 2>&1 || { echo "ERROR: podman not found on PATH"; exit 2; }
 
-# ---- Node-local Podman storage + runtime (avoid $HOME/NFS DB issues) ----
 NODE="$(hostname)"
 NODE_PS="/raid/persistent_scratch/$USER"
 
-PODMAN_ROOT="$NODE_PS/podman_root"                  # image store + DB (node-local)
-PODMAN_RUNROOT="${SLURM_TMPDIR:-/tmp}/podman_run_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"  # runtime (task-local)
+# IMPORTANT: runroot must be stable for the DB
+PODMAN_ROOT="$NODE_PS/podman_root"
+PODMAN_RUNROOT="$NODE_PS/podman_runroot"
 mkdir -p "$PODMAN_ROOT" "$PODMAN_RUNROOT"
 
 export XDG_RUNTIME_DIR="$PODMAN_RUNROOT/xdg"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR" || true
 
-# ---- Real temp dirs (task-local) ----
+# Task-local temp dirs mounted into container
 HOST_TMP="${SLURM_TMPDIR:-/tmp}/ctmp_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 JAX_CACHE="${SLURM_TMPDIR:-/tmp}/jaxcache_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 mkdir -p "$HOST_TMP" "$JAX_CACHE"
 
-# ---- Load once per node (node-local lock) ----
+# Load once per node (node-local lock)
 LOCKDIR="$NODE_PS/.locks"
 mkdir -p "$LOCKDIR"
 LOCKFILE="$LOCKDIR/podman_load_${NODE}.lock"
-
 (
   flock -x 200
   podman --root "$PODMAN_ROOT" --runroot "$PODMAN_RUNROOT" image exists "$IMAGE_TAG" 2>/dev/null \
@@ -54,12 +52,10 @@ LOCKFILE="$LOCKDIR/podman_load_${NODE}.lock"
 
 echo "node=$NODE task=$SLURM_ARRAY_TASK_ID gpu=${CUDA_VISIBLE_DEVICES:-unset} podman_root=$PODMAN_ROOT runroot=$PODMAN_RUNROOT"
 
-# Optional: W&B key
 if [ -f "$HOME/.secrets/wandb_key" ]; then
   export WANDB_API_KEY="$(< "$HOME/.secrets/wandb_key")"
 fi
 
-# ---- Run inside container with a mounted /tmp ----
 podman --root "$PODMAN_ROOT" --runroot "$PODMAN_RUNROOT" run --rm \
   --ipc=host \
   --network=host \

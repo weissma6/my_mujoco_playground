@@ -7,7 +7,7 @@ ssh weissma6@dallas.zhaw.ch
 # Step 2 – From the VSCode terminal, hop to a compute node
 # Login nodes are not for heavy work (builds, big training, etc.)
 givemeagpushell sanfrancisco
-givemeagpushell losangeles
+givemeagpushell sacramento
 
 # Step 3 – Go to your git repo and build with Podman on the compute node:
 cd ~/VT1_MBRL/my_mujoco_playground
@@ -15,12 +15,37 @@ cd ~/VT1_MBRL/my_mujoco_playground
 ## Make sure Dockerfile & requirements.txt are here
 ls Dockerfile requirements.txt
 
+podman load -i /raid/persistent_scratch/weissma6/mujoco_env_EGL.tar
+podman images
+
 ## Build the image
 podman build -t mujoco:env 
 podman build -t mujoco:env_EGL .
 
 # Check the image
 podman images
+
+cd ~/VT1_MBRL/my_mujoco_playground
+
+export WANDB_API_KEY="$(< ~/.secrets/wandb_key)"
+
+# Option B: run the file directly (no -m)
+podman run --rm -it \
+    -e WANDB_API_KEY="$WANDB_API_KEY" \
+    --ipc=host \
+    --network=host \
+    -e MUJOCO_GL=egl \
+    -e PYOPENGL_PLATFORM=egl \
+    -e EGL_PLATFORM=surfaceless \
+    -e PYTHONPATH=/workspace \
+    -v "$(pwd):/workspace:Z" \
+    -w /workspace \
+    mujoco:env_EGL \
+    python batch_runs/scripts/run_one_ur10.py \
+        --jsonl batch_runs/sweeps/UR10_sweep.jsonl \
+        --index 1 \
+        --out_root results
+
 
 
 
@@ -41,7 +66,10 @@ podman run --rm -it \
     -v "$(pwd):/workspace" \
     -w /workspace \
     mujoco:env \
-    python -m learning.notebooks.panda_test
+    python -m batch_runs/scripts/run_one_ur10.py \
+      --jsonl batch_runs/sweeps/UR10_sweep.jsonl \
+      --index 1 \
+      --out_root results
 
 # Step 5 – (Recommended) Save the image to a tar on shared storage
 cd ~/VT1_MBRL/my_mujoco_playground

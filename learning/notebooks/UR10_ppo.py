@@ -394,25 +394,6 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         if isinstance(nf_cfg, dict) and len(nf_cfg) > 0:
             network_factory = functools.partial(ppo_networks.make_ppo_networks, **nf_cfg)
 
-        # Best-effort param count (do not crash)
-        try:
-            networks = network_factory(observation_size=env.observation_size, action_size=env.action_size)
-            rng = jax.random.PRNGKey(seed)
-            dummy_obs = jnp.zeros((env.observation_size,), dtype=jnp.float32)
-
-            # Depending on brax version, init signatures differ. Keep guarded.
-            pi_params = networks.policy_network.init(rng, dummy_obs)  # may fail; ok
-            v_params = networks.value_network.init(rng, dummy_obs)
-
-            def _count_params(pytree) -> int:
-                return sum(x.size for x in tree_leaves(pytree))
-
-            wandb.run.summary["net/policy_num_params"] = int(_count_params(pi_params))
-            wandb.run.summary["net/value_num_params"]  = int(_count_params(v_params))
-            wandb.run.summary["net/total_num_params"]  = int(_count_params(pi_params) + _count_params(v_params))
-        except Exception as e:
-            print(f"[WARN] Could not compute network param counts: {e}", flush=True)
-
         # Log final config once
         _wb_log_final_train_config(
             ppo_training_params=ppo_train_kwargs,
