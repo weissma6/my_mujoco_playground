@@ -1,8 +1,8 @@
 {"run_id":"baseling","env_name":"UR10PickCube","num_timesteps":1000000,"num_envs": 2048,"unroll_length":10,"num_evals":2,"video_every_evals":2,"render_every":1, "init_keyframe":"task_home"}
 {"run_id":"baseling_closeup","env_name":"UR10PickCube","num_timesteps":1000000,"num_envs": 2048,"unroll_length":10,"num_evals":2,"video_every_evals":2,"render_every":1, "camera_kwargs":{"camera":"box_detail"}}
-{"run_id":"baseling_unroll","env_name":"UR10PickCube","num_timesteps":1000000,"num_envs": 2048,"unroll_length":5,"num_evals":10,"video_every_evals":2,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
-{"run_id":"baseling_ep100","env_name":"UR10PickCube","num_timesteps":1000000,"num_envs": 2048,"unroll_length":10,"episode_length": 100,"num_evals":2,"video_every_evals":2,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
-{"run_id":"baseling_ep75","env_name":"UR10PickCube","num_timesteps":1000000,"num_envs": 2048,"unroll_length":10,"episode_length": 75,"num_evals":4,"video_every_evals":4,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
+{"run_id":"baseling_unroll","env_name":"UR10PickCube","num_timesteps":1000000,"num_envs": 2048,"unroll_length":2,"num_evals":10,"video_every_evals":10,"render_every":1, "init_keyframe":"tucked","camera_kwargs":{"camera":"side_130"}}
+{"run_id":"baseling_eval env","env_name":"UR10PickCube","num_timesteps":1000000,"num_envs": 2048,"unroll_length":10,"num_eval_envs": 32, "num_evals":4,"video_every_evals":4,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
+{"run_id":"baseling_512","env_name":"UR10PickCube","num_timesteps":1000000,"num_envs": 512,"unroll_length":10,"num_evals":4,"video_every_evals":4,"render_every":1, "camera_kwargs":{"camera":"side_130"}}
 
 
 
