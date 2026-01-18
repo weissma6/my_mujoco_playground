@@ -1,8 +1,8 @@
-{"run_id":"baseline","env_name":"UR10PickCube","num_timesteps":100000,"num_envs": 2048,"num_evals":2,"video_every_evals":2,"render_every":1 }
-{"run_id":"baseline8192","env_name":"UR10PickCube","num_timesteps":100000,"num_envs": 8192,"num_evals":2,"video_every_evals":2,"render_every":1 }
-{"run_id":"baseline8192_moreeval","env_name":"UR10PickCube","num_timesteps":100000,"num_envs": 8192,"num_evals":4,"video_every_evals":4,"render_every":1 }
-{"run_id":"baseline100","env_name":"UR10PickCube","num_timesteps":1000,"num_envs": 2048,"num_evals":2,"video_every_evals":2,"render_every":1 }
-{"run_id":"baseline100","env_name":"UR10PickCube","num_timesteps":1000,"num_envs": 2048,"num_evals":10,"video_every_evals":10,"render_every":1 }
+{"run_id":"baseline_unroll2","env_name":"UR10PickCube","num_timesteps":100000, "unroll_length": 2,"num_envs": 2048,"num_evals":10,"video_every_evals":10,"render_every":1 }
+{"run_id":"baseline8192","env_name":"UR10PickCube","num_timesteps":100000,"unroll_length": 10,"num_envs": 8192,"num_evals":2,"video_every_evals":2,"render_every":1 }
+{"run_id":"baseline8192_moreeval","env_name":"UR10PickCube","num_timesteps":100000,"unroll_length": 10,"num_envs": 8192,"num_evals":4,"video_every_evals":4,"render_every":1 }
+{"run_id":"baseline100","env_name":"UR10PickCube","num_timesteps":1000,"unroll_length": 10,"num_envs": 2048,"num_evals":2,"video_every_evals":2,"render_every":1 }
+{"run_id":"baseline100","env_name":"UR10PickCube","num_timesteps":1000,"unroll_length": 10,"num_envs": 2048,"num_evals":10,"video_every_evals":10,"render_every":1 }
 
 
 
