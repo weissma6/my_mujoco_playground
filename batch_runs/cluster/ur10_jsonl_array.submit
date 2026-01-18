@@ -1,0 +1,40 @@
+#!/bin/bash
+#SBATCH --time=1440
+#SBATCH --job-name=UR10_sweep_uv
+#SBATCH --ntasks=1
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --account=cai_iai
+#SBATCH --output=logs/%x_%A_%a.out
+#SBATCH --error=logs/%x_%A_%a.err
+#SBATCH --array=1-20-2
+#SBATCH --nodelist=sacramento
+set -euo pipefail
+
+cd "$HOME/VT1_MBRL/my_mujoco_playground"
+mkdir -p logs
+
+export WANDB__SERVICE_WAIT=180
+export WANDB_API_KEY="$(< "$HOME/.secrets/wandb_key")"
+
+source cluster/env_bootstrap.sh
+# How many processes? Prefer SLURM hint; fall back to device count.
+NPROC="${SLURM_GPUS_ON_NODE:-}"
+if [[ -z "$NPROC" || "$NPROC" -le 0 ]]; then
+  NPROC=$(python - <<'PY'
+import torch
+print(torch.cuda.device_count() or 1)
+PY
+)
+fi
+echo "Launching torchrun with nproc_per_node=${NPROC}" >&2
+
+
+python batch_runs/scripts/run_one_ur10.py \
+  --jsonl batch_runs/sweeps/UR10_sweep.jsonl \
+  --index "${SLURM_ARRAY_TASK_ID}" \
+  --out_root results
+
+echo "=== sweep run completed ===" >&2

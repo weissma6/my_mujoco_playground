@@ -5,25 +5,27 @@ ssh weissma6@dallas.zhaw.ch
 cd ~/VT1_MBRL/my_mujoco_playground
 
 # ------------------------------------------------
-# Step 1 change / run the job:
+# Step 1 (Strongly recommended) Pre-warm the UV environment once
 # ------------------------------------------------
-# Edit sbatch to set the account (only when first setting up or when it changes)
-nano batch_runs/sweeps/panda_sweep.jsonl
-nano batch_runs/slurm/run_array_panda.sbatch
-# Ctrl + O - "O" as in "Output" to save
-# "Enter" to confirm filename
-# Ctrl + X to exit nano
-# exit without saving changes
-# Ctrl + X and the press "N"
-# ------------------------------------------------
-
-
-# Submit the SLURM array job
-sbatch --array=2 batch_runs/slurm/run_array_UR10_raid.sbatch
+# This avoids 20 array jobs racing to install packages.
+# Run this once on a login node (or submit a tiny job if required):
+export REQ_FILE=requirements.txt
+export JAX_MODE=none   # or cuda12 if you *know* CUDA+JAX works
+source cluster/env_bootstrap.sh
+python -c "import mujoco, wandb; print('env OK')"
 
 # ------------------------------------------------
-# Step 4 Monitoring the job:
+# Debug one run (no SLURM)
 # ------------------------------------------------
+
+# ------------------------------------------------
+# Step 2 testrun a single job interactively (optional but recommended)
+# ------------------------------------------------
+REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"
+cd "${REPO_DIR}"
+
+sbatch batch_runs/cluster/ur10_jsonl_array.submit
+
 # See the active jobs
 squeue -u weissma6
 squeue -u weissma6 -o "%.18i %.9P %.20j %.8T %.10M %.10l %.6D %R"
