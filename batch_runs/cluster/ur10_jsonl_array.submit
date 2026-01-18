@@ -20,7 +20,8 @@ mkdir -p logs
 export WANDB__SERVICE_WAIT=180
 export WANDB_API_KEY="$(< "$HOME/.secrets/wandb_key")"
 
-source cluster/env_bootstrap.sh
+source batch_runs/cluster/env_bootstrap_mujoco.sh
+
 # How many processes? Prefer SLURM hint; fall back to device count.
 NPROC="${SLURM_GPUS_ON_NODE:-}"
 if [[ -z "$NPROC" || "$NPROC" -le 0 ]]; then
