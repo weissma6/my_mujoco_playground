@@ -4,45 +4,29 @@ ssh weissma6@dallas.zhaw.ch
 # Step 1.3 – Go to your git repo and build with Podman on the compute node:
 cd ~/VT1_MBRL/my_mujoco_playground
 
-# Load the image tar
-givemeagpushell sanfrancisco
-podman load -i ~/VT1_MBRL/my_mujoco_playground/mujoco_env.tar
-podman images
-exit 
-
-
-# step 1.2 – Weights & Biases setup – once per session
-ls -l ~/.secrets/wandb_key
-export WANDB_API_KEY="$(cat ~/.secrets/wandb_key)"
-echo "WANDB_API_KEY is: ${WANDB_API_KEY:+SET}${WANDB_API_KEY:-MISSING}"
-
-
-# step 1.3 One-time or when account changes: find your Slurm account
-sacctmgr show assoc where user=weissma6 format=User,Account,Partition,QOS -P
-
-
-# step 2 Edit sbatch to set the account (only when first setting up or when it changes)
+# ------------------------------------------------
+# Step 1 change / run the job:
+# ------------------------------------------------
+# Edit sbatch to set the account (only when first setting up or when it changes)
+nano batch_runs/sweeps/panda_sweep.jsonl
 nano batch_runs/slurm/run_array_panda.sbatch
+# Ctrl + O - "O" as in "Output" to save
+# "Enter" to confirm filename
+# Ctrl + X to exit nano
+# exit without saving changes
+# Ctrl + X and the press "N"
+# ------------------------------------------------
 
 
-# Step 3 – Submit the SLURM array job:
-sbatch batch_runs/slurm/run_array_panda.sbatch
-sbatch batch_runs/slurm/run_array_version_test.sbatch
-sbatch batch_runs/slurm/run_array_ur10_EGLTest.sbatch
-
-sbatch --array=1-2 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
-sbatch --array=4-4 batch_runs/slurm/run_array_ur10_EGL_final.sbatch
+# Submit the SLURM array job
+sbatch --array=2-3 batch_runs/slurm/run_array_UR10_raid.sbatch
 
 # ------------------------------------------------
 # Step 4 Monitoring the job:
 # ------------------------------------------------
-
 # See the active jobs
 squeue -u weissma6
-# with remaining time
 squeue -u weissma6 -o "%.18i %.9P %.20j %.8T %.10M %.10l %.6D %R"
-
-# Track one specific job
 squeue -j <job_id>
 
 # Check job history with status
@@ -52,10 +36,10 @@ sacct -u weissma6 \
 
 # More detailed tracking
 # find the outoutfiles with the job ID from squeue
-find . -maxdepth 3 -type f -name "*82186*" -print
+find . -maxdepth 3 -type f -name "*82190*" -print
 
-tail -f logs/UR10_parallel_82186_2.err
-tail -f logs/UR10_sweep_EGL_82175_1.out
+tail -f logs/UR10_sweep_EGL_82308_2.err
+tail -f logs/UR10_sweep_EGL_82175_3.err
 
 # Watch resource usage (CPU)
 sstat -j 82108_1.batch --format=AveCPU,AveRSS,MaxRSS,MaxVMSize,AveDiskRead,AveDiskWrite
