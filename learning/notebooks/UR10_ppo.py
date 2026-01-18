@@ -251,6 +251,76 @@ def _wb_log_final_train_config(*, ppo_training_params: dict, nf_cfg: dict | None
             {f"net.{k}": _wb_jsonify(v) for k, v in nf_cfg.items()},
             allow_val_change=True,
         )
+def _dbg_print_ppo_and_eval_calcs(cfg: dict, env=None) -> None:
+    # ---- TRAINING CALCS ----
+    ne = int(cfg.get("num_envs"))
+    ul = int(cfg.get("unroll_length"))
+    nt = int(cfg.get("num_timesteps"))
+    num_evals = int(cfg.get("num_evals", 0))
+
+    # Your "batch_size_steps" (collector throughput per iteration)
+    batch_size_steps = ne * ul
+
+    # PPO mini-batch params (must exist in cfg if you want deterministic prints)
+    batch_size = cfg.get("batch_size", None)
+    num_minibatches = cfg.get("num_minibatches", None)
+
+    print(f"[DBG CALC] num_envs={ne}", flush=True)
+    print(f"[DBG CALC] unroll_length={ul}", flush=True)
+    print(f"[DBG CALC] num_timesteps={nt}", flush=True)
+    print(f"[DBG CALC] batch_size_steps = num_envs*unroll_length = {ne}*{ul} = {batch_size_steps}", flush=True)
+
+    expected_updates_floor = max(1, nt // batch_size_steps)
+    print(f"[DBG CALC] expected_updates_floor = max(1, num_timesteps//batch_size_steps) = max(1, {nt}//{batch_size_steps}) = {expected_updates_floor}", flush=True)
+
+    # Print the assertion-related values (this is the one that bit you)
+    if batch_size is not None and num_minibatches is not None:
+        batch_size = int(batch_size)
+        num_minibatches = int(num_minibatches)
+        prod = batch_size * num_minibatches
+        mod = prod % ne
+        print(f"[DBG CALC] batch_size={batch_size}", flush=True)
+        print(f"[DBG CALC] num_minibatches={num_minibatches}", flush=True)
+        print(f"[DBG CALC] assert check: (batch_size*num_minibatches) % num_envs = ({batch_size}*{num_minibatches}) % {ne} = {mod}", flush=True)
+        print(f"[DBG CALC] batch_size % num_minibatches = {batch_size} % {num_minibatches} = {batch_size % num_minibatches}", flush=True)
+    else:
+        print(f"[DBG CALC] batch_size/num_minibatches not provided in cfg; cannot print PPO assert check.", flush=True)
+
+    # ---- EVAL CALCS ----
+    num_eval_envs = int(cfg.get("num_eval_envs", 0))
+    eval_every_steps = None
+    if num_evals and num_evals > 0:
+        eval_every_steps = nt / float(num_evals)
+        # also show as int floor for log cadence intuition
+        print(f"[DBG EVAL] num_evals={num_evals}", flush=True)
+        print(f"[DBG EVAL] eval cadence (steps_between_evals) = num_timesteps/num_evals = {nt}/{num_evals} = {eval_every_steps:.3f}", flush=True)
+    else:
+        print(f"[DBG EVAL] num_evals not set (or 0); no eval cadence computed.", flush=True)
+
+    print(f"[DBG EVAL] num_eval_envs={num_eval_envs}", flush=True)
+
+    # If we can, use env.episode_length to estimate env-steps per eval.
+    # In Brax, episode_length is usually available on the env.
+    episode_length = None
+    if env is not None:
+        episode_length = getattr(env, "episode_length", None)
+
+    if episode_length is not None and num_eval_envs > 0:
+        episode_length = int(episode_length)
+        eval_env_steps_per_eval = num_eval_envs * episode_length
+        print(f"[DBG EVAL] env.episode_length={episode_length}", flush=True)
+        print(f"[DBG EVAL] approx eval env-steps per eval = num_eval_envs*episode_length = {num_eval_envs}*{episode_length} = {eval_env_steps_per_eval}", flush=True)
+        if eval_every_steps is not None:
+            # ratio: how much eval “cost” per training steps between evals
+            print(f"[DBG EVAL] approx eval-cost ratio = eval_env_steps_per_eval / steps_between_evals = {eval_env_steps_per_eval}/{eval_every_steps:.3f} = {eval_env_steps_per_eval / eval_every_steps:.6f}", flush=True)
+    else:
+        # Fallback: we can still print a lower-bound notion:
+        # “at least num_eval_envs steps occur on the first eval step”
+        if num_eval_envs > 0:
+            print(f"[DBG EVAL] env.episode_length unavailable; cannot estimate full eval env-steps.", flush=True)
+            print(f"[DBG EVAL] lower bound: eval will step at least once across num_eval_envs => >= {num_eval_envs} env-steps per eval step.", flush=True)
+        else:
+            print(f"[DBG EVAL] num_eval_envs not set (or 0); cannot estimate eval env-steps.", flush=True)
 
 
 def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
@@ -338,20 +408,9 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             if k in ppo_train_kwargs:
                 print(f"[FINAL->ppo.train] {k:>22} = {ppo_train_kwargs[k]!r}", flush=True)
 
-        # Derived
-        nt = int(ppo_train_kwargs.get("num_timesteps", -1))
-        ne = int(ppo_train_kwargs.get("num_envs", -1))
-        ul = int(ppo_train_kwargs.get("unroll_length", -1))
-        bs = ne * ul if ne > 0 and ul > 0 else -1
-        if bs > 0 and nt > 0:
-            print(f"[DBG DERIVED] batch_size_steps = {ne}*{ul} = {bs}", flush=True)
-            print(f"[DBG DERIVED] expected_updates_floor = max(1, {nt}//{bs}) = {max(1, nt // bs)}", flush=True)
+        print("\n ==================================================================", flush=True)
+        _dbg_print_ppo_and_eval_calcs(cfg, env=env)
 
-        # DEBUG SAFETY: if asking for fewer steps than one batch, make eval sane
-        # (This avoids training being driven by eval scheduling weirdness in some implementations)
-        if bs > 0 and nt > 0 and nt < bs:
-            print("[DBG] num_timesteps < one batch; forcing num_evals=1 for debug.", flush=True)
-            ppo_train_kwargs["num_evals"] = 1
 
         # -----------------------------
         # Video / policy_params_fn
@@ -393,25 +452,6 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         network_factory = ppo_networks.make_ppo_networks
         if isinstance(nf_cfg, dict) and len(nf_cfg) > 0:
             network_factory = functools.partial(ppo_networks.make_ppo_networks, **nf_cfg)
-
-        # Best-effort param count (do not crash)
-        try:
-            networks = network_factory(observation_size=env.observation_size, action_size=env.action_size)
-            rng = jax.random.PRNGKey(seed)
-            dummy_obs = jnp.zeros((env.observation_size,), dtype=jnp.float32)
-
-            # Depending on brax version, init signatures differ. Keep guarded.
-            pi_params = networks.policy_network.init(rng, dummy_obs)  # may fail; ok
-            v_params = networks.value_network.init(rng, dummy_obs)
-
-            def _count_params(pytree) -> int:
-                return sum(x.size for x in tree_leaves(pytree))
-
-            wandb.run.summary["net/policy_num_params"] = int(_count_params(pi_params))
-            wandb.run.summary["net/value_num_params"]  = int(_count_params(v_params))
-            wandb.run.summary["net/total_num_params"]  = int(_count_params(pi_params) + _count_params(v_params))
-        except Exception as e:
-            print(f"[WARN] Could not compute network param counts: {e}", flush=True)
 
         # Log final config once
         _wb_log_final_train_config(
