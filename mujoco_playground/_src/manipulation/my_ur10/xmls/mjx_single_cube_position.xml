@@ -21,17 +21,17 @@
   <keyframe>
     <!-- Task-specific home: includes cube position -->
     <key name="task_home"
-      qpos="0.75 -2.2 1.57 -1.57 -1.57 0 0 0
+      qpos="0.75 -2.2 1.57 -1.57 -1.57 0 0 0.025
       0.75 0 0.025
       1 0 0 0"
-      ctrl="0.75 -2.2 1.57 -1.57 -1.57 0 0"/>
+      ctrl="0.75 -2.2 1.57 -1.57 -1.57 0 0.05"/>
     
     <!-- Low home position from camera file -->
     <key name="low_home"
-      qpos="0 -1.26 1.57 -1.95 -1.5 -1.5 0 0 
+      qpos="0 -1.26 1.57 -1.95 -1.5 -1.5 0 0.025 
       0.75 0. 0.025 
       1 0 0 0"
-      ctrl="0 -1.26 1.57 -1.95 -1.5 -1.5 0"/>
+      ctrl="0 -1.26 1.57 -1.95 -1.5 -1.5 0.05"/>
     
     <!-- Picked position from camera file -->
     <key name="picked"
