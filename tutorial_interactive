@@ -7,6 +7,7 @@ ssh weissma6@dallas.zhaw.ch
 # Step 2 – From the VSCode terminal, hop to a compute node
 # Login nodes are not for heavy work (builds, big training, etc.)
 givemeagpushell sanfrancisco
+givemeagpushell losangeles
 
 # Step 3 – Go to your git repo and build with Podman on the compute node:
 cd ~/VT1_MBRL/my_mujoco_playground
@@ -95,4 +96,35 @@ echo 'YOUR_REAL_WANDB_KEY_HERE' > ~/.secrets/wandb_key
 chmod 600 ~/.secrets/wandb_key
 
 export WANDB_API_KEY=$(cat ~/.secrets/wandb_key)
+# ==============================================
+# Optional: Save the built image to persistent scratch for faster loading
+# ==============================================
+givemeagpushell sanfrancisco
+givemeagpushell losangeles
+givemeagpushell sandiego
+givemeagpushell sacramento
+# givemeagpushell sanjose
+# givemeagpushell fresko
+# givemeagpushell trinity
 
+
+cd ~/VT1_MBRL/my_mujoco_playground
+IMAGE_TAG="localhost/mujoco:env_EGL"
+NEW_IMAGE_TAG="mujoco_env_EGL"
+NODE_SCRATCH="/raid/persistent_scratch/weissma6"
+NODE_TAR="$NODE_SCRATCH/$NEW_IMAGE_TAG.tar"
+# 2) Ensure persistent scratch exists
+ls -ld "$NODE_SCRATCH"
+# if not, create it
+mkdir -p "$NODE_SCRATCH"
+
+# load directly from home
+
+podman load -i /mujoco_env_EGL.tar
+podman images
+
+# 3) Save the LOADED image into persistent scratch
+podman save "$IMAGE_TAG" -o "$NODE_TAR"
+
+# 4) Verify
+ls -lh "$NODE_TAR"

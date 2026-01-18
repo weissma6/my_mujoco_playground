@@ -8,37 +8,35 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-1%1
+#SBATCH --array=1-10%2
 
 set -euo pipefail
+umask 0022
 
 REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"
-IMAGE_TAR="$REPO_DIR/mujoco_env_EGL.tar"
+
+# ALWAYS load from node-local persistent scratch tar
+IMAGE_TAR="/raid/persistent_scratch/$USER/mujoco_env_EGL.tar"
+
 IMAGE_TAG="mujoco:env_EGL"
-LOCALHOST_TAG="localhost/mujoco:env_EGL"
+NODE="$(hostname)"
 
 mkdir -p "$REPO_DIR/logs" "$REPO_DIR/results"
 
-# Per-task tmp (helps rootless podman)
-export TMPDIR="$HOME/tmp_podman/${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-mkdir -p "$TMPDIR"
+# Ensure tar exists on THIS node
+[ -f "$IMAGE_TAR" ] || { echo "ERROR: tar not found on this node: $IMAGE_TAR"; exit 2; }
 
-# Ensure podman exists (no module needed on this cluster)
-command -v podman >/dev/null 2>&1 || { echo "ERROR: podman not found on PATH"; exit 2; }
+# Load once per node (lock is per-node + on node-local scratch)
+LOCKDIR="/raid/persistent_scratch/$USER/.locks"
+mkdir -p "$LOCKDIR"
+LOCKFILE="$LOCKDIR/podman_load_${NODE}.lock"
 
-# Load image tar once per node (protect with a lock for arrays)
-mkdir -p "$HOME/.locks"
-LOCKFILE="$HOME/.locks/podman_load.lock"
 (
   flock -x 200
-  if [ -z "$(podman images -q "$IMAGE_TAG" 2>/dev/null || true)" ]; then
-    podman load -i "$IMAGE_TAR"
-  fi
-  if [ -z "$(podman images -q "$IMAGE_TAG" 2>/dev/null || true)" ] && \
-     [ -n "$(podman images -q "$LOCALHOST_TAG" 2>/dev/null || true)" ]; then
-    podman tag "$LOCALHOST_TAG" "$IMAGE_TAG"
-  fi
+  podman image exists "$IMAGE_TAG" 2>/dev/null || podman load -i "$IMAGE_TAR"
 ) 200>"$LOCKFILE"
+
+echo "node=$(hostname) task=$SLURM_ARRAY_TASK_ID gpu=${CUDA_VISIBLE_DEVICES:-unset}"
 
 # Optional: W&B key
 if [ -f "$HOME/.secrets/wandb_key" ]; then
@@ -47,7 +45,6 @@ fi
 
 cd "$REPO_DIR"
 
-# Run inside container
 podman run --rm \
   -e WANDB_API_KEY="${WANDB_API_KEY:-}" \
   -e MUJOCO_GL=egl \
@@ -65,4 +62,5 @@ podman run --rm \
       --index $SLURM_ARRAY_TASK_ID \
       --out_root results
   "
+
 
