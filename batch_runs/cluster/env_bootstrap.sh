@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Pick a venv name; allow override from environment
-VENV="${VENV:-llm_compression_3_12_4}"
+VENV="${VENV:-mujoco_env_egl}"
 export VENV
 
 module purge || true

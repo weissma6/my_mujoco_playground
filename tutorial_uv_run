@@ -9,9 +9,10 @@ cd ~/VT1_MBRL/my_mujoco_playground
 # ------------------------------------------------
 # This avoids 20 array jobs racing to install packages.
 # Run this once on a login node (or submit a tiny job if required):
+givemeagpushell sanfrancisco
 export REQ_FILE=requirements.txt
-export JAX_MODE=none   # or cuda12 if you *know* CUDA+JAX works
-source cluster/env_bootstrap.sh
+export JAX_MODE=cuda12   # or cuda12 if you *know* CUDA+JAX works
+source batch_runs/cluster/env_bootstrap.sh
 python -c "import mujoco, wandb; print('env OK')"
 
 # ------------------------------------------------
@@ -21,9 +22,6 @@ python -c "import mujoco, wandb; print('env OK')"
 # ------------------------------------------------
 # Step 2 testrun a single job interactively (optional but recommended)
 # ------------------------------------------------
-REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"
-cd "${REPO_DIR}"
-
 sbatch batch_runs/cluster/ur10_jsonl_array.submit
 
 # See the active jobs
