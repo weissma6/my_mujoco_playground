@@ -1,8 +1,10 @@
-{"run_id":"baseline_unroll2","env_name":"UR10PickCube","num_timesteps":100000, "unroll_length": 2,"num_envs": 2048,"num_evals":10,"video_every_evals":10,"render_every":1 }
-{"run_id":"baseline8192","env_name":"UR10PickCube","num_timesteps":100000,"unroll_length": 10,"num_envs": 8192,"num_evals":2,"video_every_evals":2,"render_every":1 }
-{"run_id":"baseline8192_moreeval","env_name":"UR10PickCube","num_timesteps":100000,"unroll_length": 10,"num_envs": 8192,"num_evals":4,"video_every_evals":4,"render_every":1 }
-{"run_id":"baseline100","env_name":"UR10PickCube","num_timesteps":1000,"unroll_length": 10,"num_envs": 2048,"num_evals":2,"video_every_evals":2,"render_every":1 }
-{"run_id":"baseline100","env_name":"UR10PickCube","num_timesteps":1000,"unroll_length": 10,"num_envs": 2048,"num_evals":10,"video_every_evals":10,"render_every":1 }
+{"run_id":"baseline","env_name":"UR10PickCube","num_timesteps":100000, "unroll_length": 10,"num_envs": 2048,"num_evals":2,"video_every_evals":2,"render_every":1, "camera_kwargs": "side_130", "init_keyframe": "tucked"}
+{"run_id":"baseline","env_name":"UR10PickCube","num_timesteps":100000, "unroll_length": 8,"num_envs": 2048,"num_evals":4,"video_every_evals":4,"render_every":1, "camera_kwargs": "box_detail", "init_keyframe": "low_home"}
+{"run_id":"baseline_lr_high_more_expl","env_name":"UR10PickCube","num_timesteps":100000,"unroll_length":10,"num_envs":2048,"num_evals":2,"video_every_evals":2,"render_every":1,"camera_kwargs":"box_detail","init_keyframe":"low_home","learning_rate":0.0003,"entropy_cost":0.01}
+{"run_id":"baseline_lr_low_less_expl","env_name":"UR10PickCube","num_timesteps":100000,"unroll_length":10,"num_envs":2048,"num_evals":2,"video_every_evals":2,"render_every":1,"camera_kwargs":"box_detail","init_keyframe":"low_home","learning_rate":0.00003,"entropy_cost":0.001}
+{"run_id":"baseline_lr_mid_max_expl","env_name":"UR10PickCube","num_timesteps":100000,"unroll_length":10,"num_envs":2048,"num_evals":2,"video_every_evals":2,"render_every":1,"camera_kwargs":"side_130","init_keyframe":"tucked","learning_rate":0.0001,"entropy_cost":0.03}
+
+
 
 
 
