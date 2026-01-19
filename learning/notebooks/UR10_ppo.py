@@ -251,76 +251,80 @@ def _wb_log_final_train_config(*, ppo_training_params: dict, nf_cfg: dict | None
             {f"net.{k}": _wb_jsonify(v) for k, v in nf_cfg.items()},
             allow_val_change=True,
         )
-def _dbg_print_ppo_and_eval_calcs(cfg: dict, env=None) -> None:
-    # ---- TRAINING CALCS ----
-    ne = int(cfg.get("num_envs"))
-    ul = int(cfg.get("unroll_length"))
-    nt = int(cfg.get("num_timesteps"))
-    num_evals = int(cfg.get("num_evals", 0))
+# def _dbg_print_ppo_and_eval_calcs(cfg: dict, env=None) -> None:
+#     # ---- TRAINING CALCS ----
+#     ne = int(cfg.get("num_envs"))
+#     ul = int(cfg.get("unroll_length"))
+#     nt = int(cfg.get("num_timesteps"))
+#     num_evals = int(cfg.get("num_evals", 0))
 
-    # Your "batch_size_steps" (collector throughput per iteration)
-    batch_size_steps = ne * ul
+#     # Your "batch_size_steps" (collector throughput per iteration)
+#     batch_size_steps = ne * ul
 
-    # PPO mini-batch params (must exist in cfg if you want deterministic prints)
-    batch_size = cfg.get("batch_size", None)
-    num_minibatches = cfg.get("num_minibatches", None)
+#     # PPO mini-batch params (must exist in cfg if you want deterministic prints)
+#     batch_size = cfg.get("batch_size", None)
+#     num_minibatches = cfg.get("num_minibatches", None)
 
-    print(f"[DBG CALC] num_envs={ne}", flush=True)
-    print(f"[DBG CALC] unroll_length={ul}", flush=True)
-    print(f"[DBG CALC] num_timesteps={nt}", flush=True)
-    print(f"[DBG CALC] batch_size_steps = num_envs*unroll_length = {ne}*{ul} = {batch_size_steps}", flush=True)
+#     print(f"[DBG CALC] num_envs={ne}", flush=True)
+#     print(f"[DBG CALC] unroll_length={ul}", flush=True)
+#     print(f"[DBG CALC] num_timesteps={nt}", flush=True)
+#     print(f"[DBG CALC] batch_size_steps = num_envs*unroll_length = {ne}*{ul} = {batch_size_steps}", flush=True)
 
-    expected_updates_floor = max(1, nt // batch_size_steps)
-    print(f"[DBG CALC] expected_updates_floor = max(1, num_timesteps//batch_size_steps) = max(1, {nt}//{batch_size_steps}) = {expected_updates_floor}", flush=True)
+#     expected_updates_floor = max(1, nt // batch_size_steps)
+#     print(f"[DBG CALC] expected_updates_floor = max(1, num_timesteps//batch_size_steps) = max(1, {nt}//{batch_size_steps}) = {expected_updates_floor}", flush=True)
 
-    # Print the assertion-related values (this is the one that bit you)
-    if batch_size is not None and num_minibatches is not None:
-        batch_size = int(batch_size)
-        num_minibatches = int(num_minibatches)
-        prod = batch_size * num_minibatches
-        mod = prod % ne
-        print(f"[DBG CALC] batch_size={batch_size}", flush=True)
-        print(f"[DBG CALC] num_minibatches={num_minibatches}", flush=True)
-        print(f"[DBG CALC] assert check: (batch_size*num_minibatches) % num_envs = ({batch_size}*{num_minibatches}) % {ne} = {mod}", flush=True)
-        print(f"[DBG CALC] batch_size % num_minibatches = {batch_size} % {num_minibatches} = {batch_size % num_minibatches}", flush=True)
-    else:
-        print(f"[DBG CALC] batch_size/num_minibatches not provided in cfg; cannot print PPO assert check.", flush=True)
+#     # Print the assertion-related values (this is the one that bit you)
+#     if batch_size is not None and num_minibatches is not None:
+#         batch_size = int(batch_size)
+#         num_minibatches = int(num_minibatches)
+#         prod = batch_size * num_minibatches
+#         mod = prod % ne
+#         print(f"[DBG CALC] batch_size={batch_size}", flush=True)
+#         print(f"[DBG CALC] num_minibatches={num_minibatches}", flush=True)
+#         print(f"[DBG CALC] assert check: (batch_size*num_minibatches) % num_envs = ({batch_size}*{num_minibatches}) % {ne} = {mod}", flush=True)
+#         print(f"[DBG CALC] batch_size % num_minibatches = {batch_size} % {num_minibatches} = {batch_size % num_minibatches}", flush=True)
+#     else:
+#         print(f"[DBG CALC] batch_size/num_minibatches not provided in cfg; cannot print PPO assert check.", flush=True)
 
-    # ---- EVAL CALCS ----
-    num_eval_envs = int(cfg.get("num_eval_envs", 0))
-    eval_every_steps = None
-    if num_evals and num_evals > 0:
-        eval_every_steps = nt / float(num_evals)
-        # also show as int floor for log cadence intuition
-        print(f"[DBG EVAL] num_evals={num_evals}", flush=True)
-        print(f"[DBG EVAL] eval cadence (steps_between_evals) = num_timesteps/num_evals = {nt}/{num_evals} = {eval_every_steps:.3f}", flush=True)
-    else:
-        print(f"[DBG EVAL] num_evals not set (or 0); no eval cadence computed.", flush=True)
+#     # ---- EVAL CALCS ----
+#     num_eval_envs = int(cfg.get("num_eval_envs", 0))
+#     eval_every_steps = None
+#     if num_evals and num_evals > 0:
+#         eval_every_steps = nt / float(num_evals)
+#         # also show as int floor for log cadence intuition
+#         print(f"[DBG EVAL] num_evals={num_evals}", flush=True)
+#         print(f"[DBG EVAL] eval cadence (steps_between_evals) = num_timesteps/num_evals = {nt}/{num_evals} = {eval_every_steps:.3f}", flush=True)
+#     else:
+#         print(f"[DBG EVAL] num_evals not set (or 0); no eval cadence computed.", flush=True)
 
-    print(f"[DBG EVAL] num_eval_envs={num_eval_envs}", flush=True)
+#     print(f"[DBG EVAL] num_eval_envs={num_eval_envs}", flush=True)
 
-    # If we can, use env.episode_length to estimate env-steps per eval.
-    # In Brax, episode_length is usually available on the env.
-    episode_length = None
-    if env is not None:
-        episode_length = getattr(env, "episode_length", None)
+#     # If we can, use env.episode_length to estimate env-steps per eval.
+#     # In Brax, episode_length is usually available on the env.
+#     episode_length = None
+#     if env is not None:
+#         episode_length = getattr(env, "episode_length", None)
 
-    if episode_length is not None and num_eval_envs > 0:
-        episode_length = int(episode_length)
-        eval_env_steps_per_eval = num_eval_envs * episode_length
-        print(f"[DBG EVAL] env.episode_length={episode_length}", flush=True)
-        print(f"[DBG EVAL] approx eval env-steps per eval = num_eval_envs*episode_length = {num_eval_envs}*{episode_length} = {eval_env_steps_per_eval}", flush=True)
-        if eval_every_steps is not None:
-            # ratio: how much eval “cost” per training steps between evals
-            print(f"[DBG EVAL] approx eval-cost ratio = eval_env_steps_per_eval / steps_between_evals = {eval_env_steps_per_eval}/{eval_every_steps:.3f} = {eval_env_steps_per_eval / eval_every_steps:.6f}", flush=True)
-    else:
-        # Fallback: we can still print a lower-bound notion:
-        # “at least num_eval_envs steps occur on the first eval step”
-        if num_eval_envs > 0:
-            print(f"[DBG EVAL] env.episode_length unavailable; cannot estimate full eval env-steps.", flush=True)
-            print(f"[DBG EVAL] lower bound: eval will step at least once across num_eval_envs => >= {num_eval_envs} env-steps per eval step.", flush=True)
-        else:
-            print(f"[DBG EVAL] num_eval_envs not set (or 0); cannot estimate eval env-steps.", flush=True)
+#     if episode_length is not None and num_eval_envs > 0:
+#         episode_length = int(episode_length)
+#         eval_env_steps_per_eval = num_eval_envs * episode_length
+#         print(f"[DBG EVAL] env.episode_length={episode_length}", flush=True)
+#         print(f"[DBG EVAL] approx eval env-steps per eval = num_eval_envs*episode_length = {num_eval_envs}*{episode_length} = {eval_env_steps_per_eval}", flush=True)
+#         if eval_every_steps is not None:
+#             # ratio: how much eval “cost” per training steps between evals
+#             print(f"[DBG EVAL] approx eval-cost ratio = eval_env_steps_per_eval / steps_between_evals = {eval_env_steps_per_eval}/{eval_every_steps:.3f} = {eval_env_steps_per_eval / eval_every_steps:.6f}", flush=True)
+#     else:
+#         # Fallback: we can still print a lower-bound notion:
+#         # “at least num_eval_envs steps occur on the first eval step”
+#         if num_eval_envs > 0:
+#             print(f"[DBG EVAL] env.episode_length unavailable; cannot estimate full eval env-steps.", flush=True)
+#             print(f"[DBG EVAL] lower bound: eval will step at least once across num_eval_envs => >= {num_eval_envs} env-steps per eval step.", flush=True)
+#         else:
+#             print(f"[DBG EVAL] num_eval_envs not set (or 0); cannot estimate eval env-steps.", flush=True)
+
+def print_dict_pairs(d, prefix=""):
+    for k, v in d.items():
+        print(f"{prefix}{k}: {v}")
 
 
 def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
@@ -378,10 +382,8 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
 
         ppo_params = dict(base_dict)
 
-        print("\n[DBG PPO DEFAULTS] key training controls:", flush=True)
-        for k in ["num_timesteps", "num_envs", "unroll_length", "num_evals", "num_updates_per_batch"]:
-            if k in ppo_params:
-                print(f"[DBG PPO DEFAULTS] {k:>22} = {ppo_params[k]!r}", flush=True)
+        print("\n Original ppo_params:", flush=True)
+        print_dict_pairs(ppo_params)
 
         # -----------------------------
         # Apply cfg overrides ONCE
@@ -392,25 +394,20 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         # Cast types to schema (optional, but keep)
         schema = dict(base_dict)
         schema.pop("network_factory", None)
-        ppo_params = cast_to_schema(ppo_params, schema)
+        ppo_params_overwrite = cast_to_schema(ppo_params, schema)
+
+        print("\n Final ppo_params_overwrite after overrides:", flush=True)
+        print_dict_pairs(ppo_params_overwrite)
+        print("type of ppo_param_overwrite: ", type(ppo_params_overwrite))
 
         # -----------------------------
         # FINAL kwargs to ppo.train
         # -----------------------------
-        ppo_train_kwargs = dict(ppo_params)
+        # ppo_params_overwrite = dict(ppo_params_overwrite)
 
         # Remove keys not accepted by ppo.train or passed explicitly
         for k in ["network_factory", "seed", "init_keyframe"]:
-            ppo_train_kwargs.pop(k, None)
-
-        print("\n[FINAL->ppo.train] key training controls:", flush=True)
-
-        for k in ["num_timesteps", "num_envs", "unroll_length", "num_evals", "num_updates_per_batch"]:
-            if k in ppo_train_kwargs:
-                print(f"[FINAL->ppo.train] {k:>22} = {ppo_train_kwargs[k]!r}", flush=True)
-
-        print("\n ==================================================================", flush=True)
-        _dbg_print_ppo_and_eval_calcs(cfg, env=env)
+            ppo_params_overwrite.pop(k, None)
 
 
         # -----------------------------
@@ -419,7 +416,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         video_every_evals = int(cfg.get("video_every_evals", 10))
         render_every = int(cfg.get("render_every", 1))
         video_state = {"eval_idx": 0}
-        total_timesteps = ppo_train_kwargs.get("num_timesteps", None)
+        total_timesteps = ppo_params_overwrite.get("num_timesteps", None)
 
         def policy_params_fn(num_steps, make_policy, params):
             video_state["eval_idx"] += 1
@@ -453,20 +450,14 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         if isinstance(nf_params, dict) and len(nf_params) > 0:
             network_factory = functools.partial(ppo_networks.make_ppo_networks, **nf_params)
 
-        # Log final config once
-        _wb_log_final_train_config(
-            ppo_training_params=ppo_train_kwargs,
-            nf_cfg=nf_params if isinstance(nf_params, dict) else None,
-            env_name=env_name,
-            seed=seed,
-        )
-
+        print_dict_pairs(nf_params, prefix=" Network Factory param: ")
+        print_dict_pairs(ppo_params_overwrite, prefix=" PPO Train params: ")
         # -----------------------------
         # Train (PASS ONLY FINAL KWARGS)
         # -----------------------------
         train_fn = functools.partial(
             ppo.train,
-            **ppo_train_kwargs,
+            **ppo_params_overwrite,
             network_factory=network_factory,
             progress_fn=_make_progress_wandb(),
             policy_params_fn=policy_params_fn,
@@ -476,13 +467,8 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         make_inference_fn, params, final_metrics = train_fn(
             environment=env, wrap_env_fn=wrapper.wrap_for_brax_training
         )
-                # Log final config once
-        _wb_log_final_train_config(
-            ppo_training_params=ppo_train_kwargs,
-            nf_cfg=nf_cfg if isinstance(nf_cfg, dict) else None,
-            env_name=env_name,
-            seed=seed,
-        )
+        # Log final config once
+        print_dict_pairs(ppo_params_overwrite, prefix=" PPO Train params: ")
         # Prepare output paths once
         params_path = os.path.join(out_dir, "params.msgpack")
         metrics_path = os.path.join(out_dir, "final_metrics.json")
