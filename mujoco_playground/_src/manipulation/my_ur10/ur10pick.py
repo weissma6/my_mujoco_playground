@@ -47,6 +47,7 @@ def default_config() -> config_dict.ConfigDict:
                 no_floor_collision=0.25,
                 # Arm stays close to target pose.
                 robot_target_qpos=0.3,
+
             )
         ),
         impl="jax",
@@ -94,6 +95,8 @@ class UR10PickCube(ur10_base.UR10Base):
         self._post_init(obj_name="box", keyframe=init_keyframe)
         self._sample_orientation = sample_orientation
         self._gripper_site = (self._mj_model.site("tcp").id,)
+        self._left_finger_touch = (self._mj_model.site("left_finger_touch_site").id,)
+        self._right_finger_touch = (self._mj_model.site("right_finger_touch_site").id,)
 
         # --- No finger sensors on UR10 ---
         self._floor_hand_found_sensor = []
@@ -303,6 +306,14 @@ class UR10PickCube(ur10_base.UR10Base):
         gripper_pos = data.site_xpos[
             self._gripper_site
         ]
+        # World-frame Cartesian position of the left_finger_touch site - JAX array (3,) float64
+        left_finger_touch_pos = data.site_xpos[
+            self._left_finger_touch
+        ]
+        # World-frame Cartesian position of the right_finger_touch site - JAX array (3,) float64
+        right_finger_touch_pos = data.site_xpos[
+            self._right_finger_touch
+        ]
         # ==============================
         # Distance calcluation 
         # ==============================
@@ -313,6 +324,10 @@ class UR10PickCube(ur10_base.UR10Base):
         # Euclidean distance between gripper and box - scalar JAX float64
         gripper_box_dist = jp.linalg.norm(
             box_pos - gripper_pos
+        )
+        # Euclidean distance between the two finger touch sites - scalar JAX float64
+        finger_touch_dist = jp.linalg.norm(
+            right_finger_touch_pos - left_finger_touch_pos
         )
 
         # ==============================
@@ -348,7 +363,12 @@ class UR10PickCube(ur10_base.UR10Base):
                 data.qpos[self._robot_arm_qposadr]
                 - self._init_q[self._robot_arm_qposadr]
             )
-        )  
+        )
+        # rewartd for finger distans large, when distance to boy large
+        finger_touch_Reward = jp.tanh(
+            finger_touch_dist / (gripper_box_dist + 1e-6) 
+        )
+
         # Floor collision via touch sensors (same as Panda) - scalar JAX float64
         # List of booleans indicating if each sensor detects contact with the floor
         hand_floor_collision = [
@@ -362,7 +382,8 @@ class UR10PickCube(ur10_base.UR10Base):
         # Reward for no floor collision - scalar JAX float64  
         no_floor_collision_Reward = (1 - floor_collision).astype(
             float
-        )  
+        )
+        # ==============================
         # --- Same "reached_box" gate as Panda, but based on fingertip midpoint ---
         # Binary indicator if the gripper has reached the box - scalar JAX float64
         info["reached_box"] = 1.0 * jp.maximum(
@@ -384,11 +405,14 @@ class UR10PickCube(ur10_base.UR10Base):
             "target_pos": target_pos,
             "box_pos": box_pos,
             "gripper_pos": gripper_pos,
+            "left_finger_touch_pos": left_finger_touch_pos,
+            "right_finger_touch_pos": right_finger_touch_pos,
 
             # errors / distances
             "box_target_dist": box_target_dist,
             "rot_err": rot_err,
             "grip_box_dist": gripper_box_dist,
+            "finger_touch_dist": finger_touch_dist,
 
             # events
             "reached_box": info["reached_box"],

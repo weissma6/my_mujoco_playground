@@ -404,6 +404,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             ppo_train_kwargs.pop(k, None)
 
         print("\n[FINAL->ppo.train] key training controls:", flush=True)
+
         for k in ["num_timesteps", "num_envs", "unroll_length", "num_evals", "num_updates_per_batch"]:
             if k in ppo_train_kwargs:
                 print(f"[FINAL->ppo.train] {k:>22} = {ppo_train_kwargs[k]!r}", flush=True)
@@ -443,20 +444,19 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         # -----------------------------
         # Network factory resolution
         # -----------------------------
-        nf_cfg = dict(ppo_params.get("network_factory") or {})
-        if isinstance(nf_cfg.get("policy_hidden_layer_sizes"), list):
-            nf_cfg["policy_hidden_layer_sizes"] = tuple(nf_cfg["policy_hidden_layer_sizes"])
-        if isinstance(nf_cfg.get("value_hidden_layer_sizes"), list):
-            nf_cfg["value_hidden_layer_sizes"] = tuple(nf_cfg["value_hidden_layer_sizes"])
-
+        nf_params = dict(ppo_params.get("network_factory") or {})
+        if isinstance(nf_params.get("policy_hidden_layer_sizes"), list):
+            nf_params["policy_hidden_layer_sizes"] = tuple(nf_params["policy_hidden_layer_sizes"])
+        if isinstance(nf_params.get("value_hidden_layer_sizes"), list):
+            nf_params["value_hidden_layer_sizes"] = tuple(nf_params["value_hidden_layer_sizes"])
         network_factory = ppo_networks.make_ppo_networks
-        if isinstance(nf_cfg, dict) and len(nf_cfg) > 0:
-            network_factory = functools.partial(ppo_networks.make_ppo_networks, **nf_cfg)
+        if isinstance(nf_params, dict) and len(nf_params) > 0:
+            network_factory = functools.partial(ppo_networks.make_ppo_networks, **nf_params)
 
         # Log final config once
         _wb_log_final_train_config(
             ppo_training_params=ppo_train_kwargs,
-            nf_cfg=nf_cfg if isinstance(nf_cfg, dict) else None,
+            nf_cfg=nf_params if isinstance(nf_params, dict) else None,
             env_name=env_name,
             seed=seed,
         )
@@ -475,6 +475,13 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
 
         make_inference_fn, params, final_metrics = train_fn(
             environment=env, wrap_env_fn=wrapper.wrap_for_brax_training
+        )
+                # Log final config once
+        _wb_log_final_train_config(
+            ppo_training_params=ppo_train_kwargs,
+            nf_cfg=nf_cfg if isinstance(nf_cfg, dict) else None,
+            env_name=env_name,
+            seed=seed,
         )
         # Prepare output paths once
         params_path = os.path.join(out_dir, "params.msgpack")
