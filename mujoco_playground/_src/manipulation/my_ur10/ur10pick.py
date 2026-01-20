@@ -40,13 +40,15 @@ def default_config() -> config_dict.ConfigDict:
             scales=config_dict.create(
                 ## Reward scaling factors
                 # Gripper goes to the box.
-                gripper_box=4.0,
+                gripper_box=0.0,
                 # Box goes to the target mocap.
-                box_target=8.0,
+                box_target=0.0,
                 # Do not collide the gripper with the floor.
                 no_floor_collision=0.25,
                 # Arm stays close to target pose.
                 robot_target_qpos=0.3,
+                # gripper target reward
+                gripper_traget= 1
 
             )
         ),
@@ -201,6 +203,7 @@ class UR10PickCube(ur10_base.UR10Base):
             "rng": rng,
             "target_pos": target_pos,
             "reached_box": 0.0,
+            "reached_target": 0.0,
             "step": jp.array(0, dtype=jp.int32),        # step counter for debug printing
             "debug_every": jp.array(10, dtype=jp.int32) # print every N steps (set N here)
         }
@@ -254,6 +257,8 @@ class UR10PickCube(ur10_base.UR10Base):
         metrics = state.metrics
         metrics.update(**raw_rewards, out_of_bounds=out_of_bounds.astype(jp.float32))
 
+        # log success binary (0/1)
+        metrics.update(success=info["reached_target"])
         # # env index should be stored in info at reset, e.g. info["env_id"]
         # eid = state.info.get("env_id")  # default to -1 if not found    
         # dummy = jp.array(0, dtype=jp.int32)
@@ -329,7 +334,10 @@ class UR10PickCube(ur10_base.UR10Base):
         finger_touch_dist = jp.linalg.norm(
             right_finger_touch_pos - left_finger_touch_pos
         )
-
+        # Euclidean distance between the gripper and the target_pos
+        gripper_target_dist = jp.linalg.norm(
+                    target_pos - gripper_pos
+        )
         # ==============================
         # --- Rotation related computations ---
         # ==============================
@@ -383,6 +391,10 @@ class UR10PickCube(ur10_base.UR10Base):
         no_floor_collision_Reward = (1 - floor_collision).astype(
             float
         )
+        # rewartd for finger distans large, when distance to boy large
+        gripper_target_Reward= 1 - jp.tanh(
+            3 * gripper_target_dist)
+
         # ==============================
         # --- Same "reached_box" gate as Panda, but based on fingertip midpoint ---
         # Binary indicator if the gripper has reached the box - scalar JAX float64
@@ -391,11 +403,20 @@ class UR10PickCube(ur10_base.UR10Base):
             (gripper_box_dist < 0.01),  # Panda threshold was 0.012
         )  
 
+
+        # Binary indicator if the gripper has reached the target - scalar JAX float64
+        info["reached_target"] = 1.0 * jp.maximum(
+            info["reached_target"],
+            (gripper_box_dist < 0.01), 
+        ) 
+
+
         rewards = {
             "gripper_box": gripper_box_Reward,
             "box_target": box_target_Reward * info["reached_box"],
             "no_floor_collision": no_floor_collision_Reward,
             "robot_target_qpos": robot_target_qpos_penalty,
+            "gripper_traget": gripper_target_Reward,
         }
         # ==============================
         # Raw signals dict (for debug)
@@ -413,6 +434,7 @@ class UR10PickCube(ur10_base.UR10Base):
             "rot_err": rot_err,
             "grip_box_dist": gripper_box_dist,
             "finger_touch_dist": finger_touch_dist,
+            "gripper_target_dist": gripper_target_dist,
 
             # events
             "reached_box": info["reached_box"],
