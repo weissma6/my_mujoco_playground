@@ -397,8 +397,8 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         ppo_params_overwrite = cast_to_schema(ppo_params, schema)
 
         print("\nppo_params_overwrite after overrides:", flush=True)
-        print_dict_pairs(ppo_params_overwrite, prefix="\n ppo_params_overwrite after overrides: ")
-        print("type of ppo_param_overwrite: ", type(ppo_params_overwrite))
+        print_dict_pairs(ppo_params_overwrite)
+        print("type of ppo_param_overwrite: ", type(ppo_params_overwrite), flush=True)
 
         # Remove keys not accepted by ppo.train or passed explicitly
         for k in ["network_factory", "seed", "init_keyframe"]:
@@ -444,9 +444,10 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         network_factory = ppo_networks.make_ppo_networks
         if isinstance(nf_params, dict) and len(nf_params) > 0:
             network_factory = functools.partial(ppo_networks.make_ppo_networks, **nf_params)
-
-        print_dict_pairs(nf_params, prefix="\n Network Factory param: ")
-        print_dict_pairs(ppo_params_overwrite, prefix=" ppo_params_overwrite: before training")
+        
+        print("\n ppo_params_overwrite before training", flush=True)
+        print_dict_pairs(nf_params)
+        print_dict_pairs(ppo_params_overwrite)
         print("========== Training ppo.train ==============")
         # -----------------------------
         # Train (PASS ONLY FINAL KWARGS)
@@ -464,7 +465,8 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             environment=env, wrap_env_fn=wrapper.wrap_for_brax_training
         )
         # Log final config once
-        print_dict_pairs(ppo_params_overwrite, prefix=" \n ppo_params_overwrite after training: ")
+        print("\n ppo_params_overwrite before training", flush=True)
+        print_dict_pairs(ppo_params_overwrite)
 
         # Prepare output paths once
         params_path = os.path.join(out_dir, "params.msgpack")
