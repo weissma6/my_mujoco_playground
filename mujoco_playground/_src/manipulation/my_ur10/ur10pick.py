@@ -391,7 +391,7 @@ class UR10PickCube(ur10_base.UR10Base):
         no_floor_collision_Reward = (1 - floor_collision).astype(
             float
         )
-        # rewartd for finger distans large, when distance to boy large
+        # rewartd for finger distance large, when distance to target small
         gripper_target_Reward= 1 - jp.tanh(
             3 * gripper_target_dist)
 
