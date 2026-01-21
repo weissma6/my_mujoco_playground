@@ -215,12 +215,12 @@
 
   </equality>
 
-  <!--tendon>
+  <tendon>
     <fixed name="split">
       <joint joint="hande_left_finger_joint" coef="0.5"/>
       <joint joint="hande_right_finger_joint" coef="0.5"/>
     </fixed>
-  </tendon-->
+  </tendon>
 
   <actuator>
     <!-- Arm actuators -->
@@ -234,11 +234,11 @@
     <!-- Hand-E tendon actuator (as original) -->
     <position name="hande_fingers_actuator" 
         ctrlrange="0 0.05"
-        joint="hande_left_finger_joint"
+        tendon="split"
         kp="100"              
         kv="10"                
         forcerange="-200 200"
-        ctrllimited="true"     
+        ctrllimited="false"     
         />     
   </actuator>
   
