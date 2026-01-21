@@ -488,7 +488,9 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             wandb.run.summary["final_eval_return"] = float(final_metrics["eval/episode_reward"])
 
         # Log everything as a single artifact
-        artifact = wandb.Artifact(f"policy_checkpoint_{wandb.run.id}", type="model")
+        safe_id = wandb.run.id.replace(" ", "_")
+        artifact = wandb.Artifact(f"policy_parameters_{safe_id}", type="model")
+
         artifact.add_file(params_path)
         artifact.add_file(metrics_path)
         wandb.log_artifact(artifact)

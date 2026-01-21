@@ -26,7 +26,7 @@ git show <commit-hash>
 # If you only want the commit list (no code):
 git log --oneline --decorate --graph -n 20
 
-git switch origin/reach_task
+git switch origin/gripper_test
 
 git log -5 --oneline
 

@@ -235,8 +235,8 @@
     <position name="hande_fingers_actuator" 
         tendon="split"
         ctrlrange="0 0.05"    
-        kp="100"              
-        kv="10"                
+        kp="10"              
+        kv="1"                
         forcerange="-200 200"
         ctrllimited="true"     
         />     
