@@ -2,7 +2,7 @@
 git switch -c <new-branch-name>
 
 # If you only want to create it (stay on current branch):
-git branch <new-branch-name>
+git branch reach_task
 
 # Check you’re clean (optional but recommended)
 git status
@@ -26,3 +26,8 @@ git show <commit-hash>
 # If you only want the commit list (no code):
 git log --oneline --decorate --graph -n 20
 
+git switch origin/reach_task
+
+git log -5 --oneline
+
+# exit with "q"

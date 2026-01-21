@@ -39,16 +39,16 @@ def default_config() -> config_dict.ConfigDict:
         reward_config=config_dict.create(
             scales=config_dict.create(
                 ## Reward scaling factors
-                # Gripper goes to the box.
-                gripper_box=0.,
-                # Box goes to the target mocap.
-                box_target=0.,
-                # Do not collide the gripper with the floor.
-                no_floor_collision=0.25,
-                # Arm stays close to target pose.
-                robot_target_qpos=0.3,
+                # # Gripper goes to the box.
+                # gripper_box=4.0,
+                # # Box goes to the target mocap.
+                # box_target=8.0,
+                # # Do not collide the gripper with the floor.
+                # no_floor_collision=0.25,
+                # # Arm stays close to target pose.
+                # robot_target_qpos=0.3,
                 # gripper target reward
-                gripper_traget= 1
+                gripper_traget= 5.,
 
             )
         ),
@@ -227,14 +227,6 @@ class UR10PickCube(ur10_base.UR10Base):
             data.ctrl[:6] - data.qpos[self._robot_arm_qposadr]
         )
 
-        # debug.print(
-        #     "[RESET] robot_qpos={rq} | box_qpos={bq} | ctrl={c} | ctrl-qpos-err={e}",
-        #     rq=robot_qpos,
-        #     bq=box_qpos,
-        #     c=robot_ctrl,
-        #     e=ctrl_qpos_err,
-        # )
-
         return state
 
     def step(self, state: State, action: jax.Array) -> State:
@@ -259,38 +251,6 @@ class UR10PickCube(ur10_base.UR10Base):
 
         # log success binary (0/1)
         metrics.update(success=info["reached_target"])
-        # # env index should be stored in info at reset, e.g. info["env_id"]
-        # eid = state.info.get("env_id")  # default to -1 if not found    
-        # dummy = jp.array(0, dtype=jp.int32)
-        # def _do_print(_):
-        #     jax.debug.print(
-        #         "[EP END] env={eid} t={t}\n"
-        #         "POS tp={tp} bp={bp} gp={gp}\n"
-        #         "DIST btd={btd:.4f} re={re:.4f} gbd={gbd:.4f}\n"
-        #         "EVT rb={rb} fc={fc} oob={oob}\n"
-        #         "REWARDS gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} mp={mp:.3f} TOT={tot:.3f}\n\n",
-        #         eid=eid,
-        #         t=info["step"],
-        #         tp=raw_signals["target_pos"],
-        #         bp=raw_signals["box_pos"],
-        #         gp=raw_signals["gripper_pos"],
-        #         btd=raw_signals["box_target_dist"],
-        #         re=raw_signals["rot_err"],
-        #         gbd=raw_signals["grip_box_dist"],
-        #         rb=raw_signals["reached_box"],
-        #         fc=raw_signals["number_floor_collision"],
-        #         oob=out_of_bounds.astype(jp.int32),
-        #         gb=rewards["gripper_box"],
-        #         bt=rewards["box_target"],
-        #         nf=rewards["no_floor_collision"],
-        #         mp=rewards["robot_target_qpos"],
-        #         tot=reward,
-        #     )
-
-        #     return dummy
-
-        # print_this = (done > 0.0) & (eid == 0) # only print for env 0 at episode end
-        # _ = jax.lax.cond(print_this, _do_print, lambda _: dummy, operand=dummy)
 
         obs = self._get_obs(data, info)  # <-- use info
         return State(data, obs, reward, done, metrics, info)  # <-- return info
@@ -406,16 +366,16 @@ class UR10PickCube(ur10_base.UR10Base):
         # Binary indicator if the gripper has reached the target - scalar JAX float64
         info["reached_target"] = 1.0 * jp.maximum(
             info["reached_target"],
-            (gripper_box_dist < 0.01), 
+            (gripper_target_dist < 0.01), 
         ) 
 
 
         rewards = {
-            "gripper_box": gripper_box_Reward,
-            "box_target": box_target_Reward * info["reached_box"],
-            "no_floor_collision": no_floor_collision_Reward,
-            "robot_target_qpos": robot_target_qpos_penalty,
-            "gripper_traget": gripper_target_Reward,
+            # "gripper_box": gripper_box_Reward,
+            # "box_target": box_target_Reward * info["reached_box"],
+            # "no_floor_collision": no_floor_collision_Reward,
+            # "robot_target_qpos": robot_target_qpos_penalty,
+            "gripper_target": gripper_target_Reward,
         }
         # ==============================
         # Raw signals dict (for debug)
@@ -437,6 +397,7 @@ class UR10PickCube(ur10_base.UR10Base):
 
             # events
             "reached_box": info["reached_box"],
+            "reached_target": info["reached_target"],
             "number_floor_collision": floor_collision,
         }
 
