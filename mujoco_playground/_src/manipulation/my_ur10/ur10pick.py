@@ -182,7 +182,7 @@ class UR10PickCube(ur10_base.UR10Base):
             self._mj_model,
             qpos=init_q,
             qvel=jp.zeros(self._mjx_model.nv, dtype=float),
-            ctrl=init_ctrl,  # ✅ FIXED
+            ctrl=init_ctrl,  
             impl=self._mjx_model.impl.value,
             nconmax=self._config.nconmax,
             njmax=self._config.njmax,

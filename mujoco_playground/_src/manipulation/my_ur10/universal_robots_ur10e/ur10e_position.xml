@@ -167,7 +167,7 @@
                     <geom name="hande_base" mesh="hande" class="visual" rgba="0.1 0.1 0.1 1"/>
 
                     <!-- tcp is the distance position for the gripper to box -->
-                    <site name="tcp" pos="0 0 0.135" rgba="0 1 0 1" size="0.002" group="2"/>
+                    <site name="tcp" pos="0 0 0.14" rgba="0 1 0 1" size="0.002" group="2"/>
 
                     <!-- Left finger -->
                     <body name="hande_left_finger" pos="0 0 0.099">
@@ -235,8 +235,8 @@
     <position name="hande_fingers_actuator" 
         tendon="split"
         ctrlrange="0 0.05"    
-        kp="10000"              
-        kv="150"                
+        kp="100"              
+        kv="10"                
         forcerange="-200 200"
         ctrllimited="true"     
         />     
