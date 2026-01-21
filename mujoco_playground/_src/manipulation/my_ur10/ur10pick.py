@@ -48,7 +48,7 @@ def default_config() -> config_dict.ConfigDict:
                 # # Arm stays close to target pose.
                 # robot_target_qpos=0.3,
                 # gripper target reward
-                gripper_traget= 5.,
+                gripper_target= 5.,
 
             )
         ),
