@@ -392,8 +392,7 @@ class UR10PickCube(ur10_base.UR10Base):
             float
         )
         # rewartd for finger distance large, when distance to target small
-        gripper_target_Reward= 1 - jp.tanh(
-            3 * gripper_target_dist)
+        gripper_target_Reward= 1 - gripper_target_dist
 
         # ==============================
         # --- Same "reached_box" gate as Panda, but based on fingertip midpoint ---

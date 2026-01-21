@@ -20,7 +20,7 @@ python -c "import mujoco, wandb; print('env OK')"
 # ------------------------------------------------
 # Step 2 testrun a single job interactively (optional but recommended)
 # ------------------------------------------------
-sbatch --array=1-2 batch_runs/cluster/ur10_jsonl_array.submit
+sbatch --array=1-1 batch_runs/cluster/ur10_jsonl_array.submit
 sbatch --array=2-7 batch_runs/cluster/ur10_jsonl_array.submit
 
 
