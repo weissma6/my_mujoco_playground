@@ -122,13 +122,13 @@ class UR10Base(mjx_env.MjxEnv):
 
         self._gripper_site = self._mj_model.site("tcp").id
         self._left_finger_geom = (
-            self._mj_model.geom("finger_1_visual").id
-            if "finger_1_visual" in geom_names
+            self._mj_model.geom("right_finger").id
+            if "right_finger" in geom_names
             else None
         )
         self._right_finger_geom = (
-            self._mj_model.geom("finger_2_visual").id
-            if "finger_2_visual" in geom_names
+            self._mj_model.geom("left_finger").id
+            if "left_finger" in geom_names
             else None
         )
         self._hand_geom = (
