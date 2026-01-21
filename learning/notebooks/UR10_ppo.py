@@ -457,8 +457,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             **ppo_params_overwrite,
             network_factory=network_factory,
             progress_fn=_make_progress_wandb(),
-            policy_params_fn=policy_params_fn,
-            seed=seed,
+            policy_params_fn=policy_params_fn,            seed=seed,
         )
 
         make_inference_fn, params, final_metrics = train_fn(

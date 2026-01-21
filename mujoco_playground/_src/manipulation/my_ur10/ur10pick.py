@@ -40,9 +40,9 @@ def default_config() -> config_dict.ConfigDict:
             scales=config_dict.create(
                 ## Reward scaling factors
                 # Gripper goes to the box.
-                gripper_box=0.0,
+                gripper_box=0.,
                 # Box goes to the target mocap.
-                box_target=0.0,
+                box_target=0.,
                 # Do not collide the gripper with the floor.
                 no_floor_collision=0.25,
                 # Arm stays close to target pose.
