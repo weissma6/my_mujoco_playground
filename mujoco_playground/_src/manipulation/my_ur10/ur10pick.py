@@ -197,8 +197,10 @@ class UR10PickCube(ur10_base.UR10Base):
         # initialize env state and info
         metrics = {
             "out_of_bounds": jp.array(0.0, dtype=float),
-            **{k: 0.0 for k in self._config.reward_config.scales.keys()},
+            "success": jp.array(0.0, dtype=float),   # <-- add this
+            **{k: jp.array(0.0, dtype=float) for k in self._config.reward_config.scales.keys()},
         }
+
         info = {
             "rng": rng,
             "target_pos": target_pos,
