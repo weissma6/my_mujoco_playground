@@ -50,6 +50,14 @@
 
       <site size="0.001" rgba="0.5 0.5 0.5 0.3" group="4"/>
     </default>
+    <default class="hande">
+      <default class="hande_right_finger">
+        <joint type="slide" range="0 0.025" actuatorfrcrange="-100 100" />
+      </default>
+      <default class="hande_left_finger">
+        <joint type="slide" range="0 0.025" actuatorfrcrange="-100 100" />
+      </default>
+    </default>
   </default>
 
   <asset>
@@ -154,7 +162,7 @@
                     diaginertia="0.000204525 0.000144346 0.000144346"/>
                   <joint name="wrist_3_joint" class="size2"/>
                   <geom material="linkgray" mesh="wrist3" class="visual"/>
-                  <geom class="eef_collision" pos="0 0.097 0" quat="1 1 0 0" size="0.046 0.02"/>
+                  <geom name="attachment_site_collision" class="eef_collision" pos="0 0.1245 0" quat="1 1 0 0" size="0.046 0.0475"/>
                   <site name="attachment_site" pos="0 0.1 0" quat="-1 1 0 0"/>
 
                   <!-- ================= Hand-E Integration ================= -->
@@ -163,8 +171,8 @@
                     <!-- Main hand body -->
                     <!--contype="0" conaffinity="0" to make it non-colliding with other objects -->
                     <geom name="hande_coupler" mesh="coupler" class="visual" rgba="0.1 0.1 0.1 1"/>
-                    <geom mesh="hande_col" class="hande_collision" contype="3" conaffinity="1"/>
-                    <geom name="hande_base" mesh="hande" class="visual" rgba="0.1 0.1 0.1 1"/>
+                    <!--geom mesh="hande_col" class="hande_collision" contype="3" conaffinity="1"/-->
+                    <geom name="hand_base" mesh="hande" class="visual" rgba="0.1 0.1 0.1 1"/>
 
                     <!-- tcp is the distance position for the gripper to box -->
                     <site name="tcp" pos="0 0 0.14" rgba="0 1 0 1" size="0.002" group="2"/>
@@ -175,10 +183,10 @@
                                 quat="0.871952 0.0369732 -0.211073 0.440205"
                                 mass="0.03804"
                                 diaginertia="1.22763e-05 1.22763e-05 1.22763e-05"/>
-                      <joint name="hande_left_finger_joint" type="slide" axis="1 0 0" range="0 0.025" damping="2"/>
+                      <joint name="hande_left_finger_joint" class="hande_left_finger" axis="1 0 0" range="0 0.025"/>
                       <geom name="left_finger" mesh="left_finger" class="visual" rgba="0.4 0.4 0.4 1"/> 
                       <!--geom  class="hande_collision" mesh="hande_col_left" contype="2" conaffinity="1"/-->
-                      <geom type="box" size="0.0055 0.011 0.022" pos="-0.0305 0  0.025" rgba="0 1 0 0.3" contype="1" conaffinity="1"/>  
+                      <geom name="left_finger_collision" type="box" size="0.0055 0.011 0.022" pos="-0.0305 0  0.025" rgba="0 1 0 0.3" contype="1" conaffinity="1"/>  
                       <site name="left_finger_touch_site" pos="-0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
 
@@ -188,10 +196,10 @@
                                 quat="0.871952 -0.0369732 0.211073 0.440205"
                                 mass="0.03804"
                                 diaginertia="1.22763e-05 1.22763e-05 1.22763e-05"/>
-                      <joint name="hande_right_finger_joint" type="slide" axis="-1 0 0" range="0 0.025" damping="2"/>
+                      <joint name="hande_right_finger_joint" class="hande_right_finger" axis="-1 0 0"/>
                       <geom name="right_finger" mesh="right_finger" class="visual" rgba="0.4 0.4 0.4 1"/>
                       <!--geom class="hande_collision" mesh="hande_col_right" contype="4" conaffinity="1"/-->
-                      <geom type="box" size="0.0055 0.011 0.022"  pos="0.0305 0 0.025" rgba="0 1 0 0.3" contype="1" conaffinity="1"/>
+                      <geom name="right_finger_collision" type="box" size="0.0055 0.011 0.022"  pos="0.0305 0 0.025" rgba="0 1 0 0.3" contype="1" conaffinity="1"/>
                       <site name="right_finger_touch_site" pos="0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
                   </body>
@@ -208,6 +216,9 @@
   <contact>
     <exclude body1="robotiq_hande_mount" body2="hande_left_finger"/>
     <exclude body1="robotiq_hande_mount" body2="hande_right_finger"/>
+    <exclude body1="wrist_3_link" body2="hande_left_finger"/>
+    <exclude body1="wrist_3_link" body2="hande_right_finger"/>
+
   </contact>
 
   <equality>
@@ -232,14 +243,16 @@
     <general class="size2" name="wrist_3" joint="wrist_3_joint"/>
 
     <!-- Hand-E tendon actuator (as original) -->
-    <position name="hande_fingers_actuator" 
+    <!--position name="hande_fingers_actuator" 
         ctrlrange="0 0.05"
-        tendon="split"
-        kp="2000"              
-        kv="100"                
+        tendon="split"             
         forcerange="-200 200"
-        ctrllimited="true"     
-        />     
+        ctrllimited="true"
+        forcelimited="true"    
+        /-->
+    <general name="hande_fingers_actuator" class="hande" tendon="split" ctrlrange="0 255"
+      forcerange="-200 200" gaintype="affine" biastype="affine" gainprm="0.00980392"
+      biasprm="0 -100 -10" />     
   </actuator>
   
 <keyframe>
