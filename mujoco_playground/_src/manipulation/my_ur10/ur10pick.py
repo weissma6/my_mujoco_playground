@@ -136,7 +136,7 @@ class UR10PickCube(ur10_base.UR10Base):
                 rng_target,
                 (3,),
                 minval=jp.array([-0.2, -0.2, 0]),
-                maxval=jp.array([0.2, 0.2, 0]),
+                maxval=jp.array([0.2, 0, 0]),
             )
             + self._init_obj_pos # Box position from XML Keyframe
         )

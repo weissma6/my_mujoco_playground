@@ -243,16 +243,16 @@
     <general class="size2" name="wrist_3" joint="wrist_3_joint"/>
 
     <!-- Hand-E tendon actuator (as original) -->
-    <!--position name="hande_fingers_actuator" 
+    <position name="hande_fingers_actuator" 
         ctrlrange="0 0.05"
         tendon="split"             
         forcerange="-200 200"
         ctrllimited="true"
         forcelimited="true"    
-        /-->
-    <general name="hande_fingers_actuator" class="hande" tendon="split" ctrlrange="0 255"
+        />
+    <!-- <general name="hande_fingers_actuator" class="hande" tendon="split" ctrlrange="0 255"
       forcerange="-200 200" gaintype="affine" biastype="affine" gainprm="0.00980392"
-      biasprm="0 -100 -10" />     
+      biasprm="0 -100 -10" />      -->
   </actuator>
   
 <keyframe>
