@@ -7,7 +7,7 @@
     <!-- Box to pick -->
     <body name="box" pos="0.75 0 0.03">
       <freejoint/>
-      <geom type="box" name="box" size="0.015 0.015 0.025" condim="3"
+      <geom type="box" name="box" size="0.015 0.015 0.02" condim="3"
        friction="1 .03 .003" rgba="0 1 0 1" contype="1" conaffinity="3" solref="0.01 1"/>
     </body>
 
@@ -22,20 +22,20 @@
     <!-- Task-specific home: includes cube position -->
     <key name="task_home"
       qpos="0.75 -2.2 1.57 -1.57 -1.57 0 0.025 0.025
-      0.75 0.2 0.03
+      0.75 0.2 0.02
       1 0 0 0"
       ctrl="0.75 -2.2 1.57 -1.57 -1.57 0 0.05"/>
     
     <!-- Low home position from camera file -->
     <key name="low_home"
       qpos="0 -1.38 2.025 -2.5 -1.5 -1.5 0.024 0.024 
-      0.75 0.2 0.03
+      0.75 0.2 0.02
       1 0 0 0"
       ctrl="0 -1.38 2.0 -2.5 -1.5 -1.5 0.048"/>
 
     <key name="tucked"
       qpos="0 -2.36 2.36 -1.57 -1.57 0 0 0
-      0.75 0.2 0.03
+      0.75 0.2 0.02
       1 0 0 0"
       ctrl="0 -2.36 2.36 -1.57 -1.57 0 0"/>
   </keyframe>
