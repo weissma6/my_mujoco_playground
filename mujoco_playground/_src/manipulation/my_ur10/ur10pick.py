@@ -392,7 +392,7 @@ class UR10PickCube(ur10_base.UR10Base):
         # Binary indicator if the gripper has reached the box - scalar JAX float64
         info["reached_box"] = 1.0 * jp.maximum(
             info["reached_box"],
-            (gripper_box_dist < 0.01),  # Panda threshold was 0.012
+            (gripper_box_dist < 0.02),  # Panda threshold was 0.012
         )  
 
         rewards = {
