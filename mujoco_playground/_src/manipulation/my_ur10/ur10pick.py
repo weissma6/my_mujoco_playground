@@ -152,43 +152,30 @@ class UR10PickCube(ur10_base.UR10Base):
             perturb_theta = jax.random.uniform(rng_theta, maxval=np.deg2rad(45))
             target_quat = math.axis_angle_to_quat(perturb_axis, perturb_theta)
 
-        # -----------------------------
-        # Build initial qpos - qpos says: “robot is at home pose”
-        # -----------------------------
+        # =====================================================
+        # initialitze the qpos and overwrite box position with randomness
         init_q = (
             jp.array(self._init_q)
             .at[self._obj_qposadr : self._obj_qposadr + 3]
             .set(box_pos)
         )
 
-        # Use home pose for all arm joints at reset
-        init_q = init_q.at[self._robot_qposadr].set(self._init_q[self._robot_qposadr])
-
         # -----------------------------
-        # IMPORTANT FIX: make ctrl consistent with init_q - ctrl says: “robot should be somewhere else”
-        # -----------------------------
+        # Build initial ctrl - MUST MATCH qpos to avoid forces!
         init_ctrl = jp.array(self._init_ctrl)
 
-        # Arm joints: ctrl = joint positions
-        init_ctrl = init_ctrl.at[:6].set(init_q[self._robot_arm_qposadr])
-
-        # Gripper: open at reset
-        init_ctrl = init_ctrl.at[6].set(self._uppers[6])
-
-        # -----------------------------
-        # Create data with CONSISTENT qpos / ctrl
-        # -----------------------------
+        # =====================================================
+        # Create MuJoCo data structure with consistent state
+        # =====================================================
         data = mjx_env.make_data(
             self._mj_model,
-            qpos=init_q,
-            qvel=jp.zeros(self._mjx_model.nv, dtype=float),
-            ctrl=init_ctrl,  
+            qpos=init_q,                           # Position (from keyframe + box)
+            qvel=jp.zeros(self._mjx_model.nv, dtype=float),  # Zero velocity
+            ctrl=init_ctrl,                        # Control (matched to qpos)
             impl=self._mjx_model.impl.value,
             nconmax=self._config.nconmax,
             njmax=self._config.njmax,
         )
-
-
 
         # set target mocap position
         data = data.replace(
