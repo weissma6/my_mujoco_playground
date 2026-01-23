@@ -118,15 +118,15 @@ class UR10PickCube(ur10_base.UR10Base):
         rng, rng_box, rng_target = jax.random.split(rng, 3)
 
         # initialize box position
-        # box_pos = (
-        #     jax.random.uniform(
-        #         rng_box,
-        #         (3,),
-        #         minval=jp.array([-0.2, -0.2, 0.0]),
-        #         maxval=jp.array([0.2, 0.2, 0.0]),
-        #     )
-        #     + self._init_obj_pos # Box position from XML Keyframe
-        # )
+        box_pos = (
+            jax.random.uniform(
+                rng_box,
+                (3,),
+                minval=jp.array([-0.2, -0.2, 0.0]),
+                maxval=jp.array([0.2, 0.2, 0.0]),
+            )
+            + self._init_obj_pos # Box position from XML Keyframe
+        )
         # initialize box position without randomnes
         box_pos = self._init_obj_pos
 
@@ -135,8 +135,8 @@ class UR10PickCube(ur10_base.UR10Base):
             jax.random.uniform(
                 rng_target,
                 (3,),
-                minval=jp.array([-0.2, -0.6, 0]),
-                maxval=jp.array([0.2, -0.4, 0]),
+                minval=jp.array([-0.2, -0.6, 0.4]),
+                maxval=jp.array([0.2, -0.4, 0.6]),
             )
             + self._init_obj_pos # Box position from XML Keyframe
         )
