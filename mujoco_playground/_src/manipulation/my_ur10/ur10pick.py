@@ -105,9 +105,9 @@ class UR10PickCube(ur10_base.UR10Base):
         self._floor_hand_found_sensor = [
             self._mj_model.sensor(name).id
             for name in [
-                "floor_left_finger_pad_found",
-                "floor_right_finger_pad_found", 
-                "attachment_site_collision",
+                "left_finger_pad_floor_found",   # ✓ Matches your XML
+                "right_finger_pad_floor_found",  # ✓ Matches your XML
+                "hand_capsule_floor_found",      # ✓ Matches your XML
             ]
         ]
 
