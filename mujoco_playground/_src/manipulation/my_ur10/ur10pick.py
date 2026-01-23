@@ -94,7 +94,7 @@ class UR10PickCube(ur10_base.UR10Base):
 
         self._post_init(obj_name="box", keyframe=init_keyframe)
         self._sample_orientation = sample_orientation
-        self._gripper_site = (self._mj_model.site("tcp").id,)
+        self._gripper_site = self._mj_model.site("tcp").id
         self._left_finger_touch = (self._mj_model.site("left_finger_touch_site").id,)
         self._right_finger_touch = (self._mj_model.site("right_finger_touch_site").id,)
 
@@ -105,9 +105,9 @@ class UR10PickCube(ur10_base.UR10Base):
         self._floor_hand_found_sensor = [
             self._mj_model.sensor(name).id
             for name in [
-                "left_finger_touch",
-                "right_finger_touch",
-                "gripper_floor_contact",
+                "floor_left_finger_pad_found",
+                "floor_right_finger_pad_found", 
+                "attachment_site_collision",
             ]
         ]
 

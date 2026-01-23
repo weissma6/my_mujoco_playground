@@ -12,8 +12,7 @@
 
     <!--My floor definition-->
     <light pos="0 0 3" dir="0 0 -1" directional="true"/>
-    <geom name="floor" type="plane" size="0 0 0.05"
-          material="groundplane" contype="1" conaffinity="3"/>
+    <geom name="floor" type="plane" size="0 0 0.05" material="groundplane" contype="1" conaffinity="3" solref="0.001 1"/>
     <!-- Default diagonal top-down -->
     <camera name="front" fovy="42" pos="1.176 0.001 0.483" xyaxes="0.006 1.000 -0.000 -0.720 0.004 0.694"/>
 
@@ -22,7 +21,7 @@
       <geom type="sphere" size="0.005" rgba="1 0 0 0" contype="0" conaffinity="0"/>
     </body>
     <camera name="side_130" pos="0.8 -1.1 1.2" mode="targetbody" target="camera_target" fovy="70"/>
-    <camera name="box_detail" pos="0.8 -1.1 0.8" mode="targetbody" target="box" fovy="50"/>
+    <camera name="box_detail" pos="0.8 -1.1 0.8" mode="targetbody" target="box" fovy="45"/>
   </worldbody>
 
 
