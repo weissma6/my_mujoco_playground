@@ -31,3 +31,6 @@ git switch origin/gripper_test
 git log -5 --oneline
 
 # exit with "q"
+# ========================================================
+# start Branch from specific comit
+git switch -c lift_box a566bbd
