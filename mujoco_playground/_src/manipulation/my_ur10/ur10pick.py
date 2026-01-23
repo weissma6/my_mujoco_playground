@@ -90,6 +90,11 @@ class UR10PickCube(ur10_base.UR10Base):
 
         # Pull keyframe from config (supports external override)
         init_keyframe = getattr(self._config, "init_keyframe", "low_home")
+        print(f"[DEBUG] Config init_keyframe: {init_keyframe}", flush=True)
+        print(f"[DEBUG] Available keyframes in model:", flush=True)
+        for i in range(self._mj_model.nkey):
+            kf = self._mj_model.key(i)
+            print(f"  - {kf.name}", flush=True)
 
 
         self._post_init(obj_name="box", keyframe=init_keyframe)
@@ -111,7 +116,7 @@ class UR10PickCube(ur10_base.UR10Base):
             ]
         ]
 
-        print("Model has init_keyframe support:", hasattr(self._mj_model, "init_keyframe"), flush=True)
+        
 
 
     def reset(self, rng: jax.Array) -> State:
