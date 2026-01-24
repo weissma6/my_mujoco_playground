@@ -188,7 +188,8 @@
                       <!--geom  class="hande_collision" mesh="hande_col_left" contype="2" conaffinity="1"/-->
                       <geom name="left_finger_collision" 
                             type="box" size="0.0055 0.011 0.022" pos="-0.0305 0  0.025" rgba="0 1 0 0.3" 
-                            contype="1" conaffinity="1" solref="0.001 1" group="3"/>  
+                            contype="1" conaffinity="1" solref="0.001 1" group="3"
+                            friction="1 0.005 0.0001"/>  
                       <site name="left_finger_touch_site" pos="-0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
 
@@ -203,7 +204,8 @@
                       <!--geom class="hande_collision" mesh="hande_col_right" contype="4" conaffinity="1"/-->
                       <geom name="right_finger_collision" 
                             type="box" size="0.0055 0.011 0.022"  pos="0.0305 0 0.025" rgba="0 1 0 0.3" 
-                            contype="1" conaffinity="1" solref="0.001 1" group="3"/>
+                            contype="1" conaffinity="1" solref="0.001 1" group="3"
+                            friction="1 0.005 0.0001"/>
                       <site name="right_finger_touch_site" pos="0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
                   </body>
