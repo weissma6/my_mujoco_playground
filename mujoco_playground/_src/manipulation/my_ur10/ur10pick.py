@@ -136,8 +136,8 @@ class UR10PickCube(ur10_base.UR10Base):
             jax.random.uniform(
                 rng_target,
                 (3,),
-                minval=jp.array([-0.2, -0.6, 0]),
-                maxval=jp.array([0.2, -0.4, 0]),
+                minval=jp.array([-0.2, -0.2, 0.2]),
+                maxval=jp.array([0.2, 0, 0.4]),
             )
             + self._init_obj_pos # Box position from XML Keyframe
         )
@@ -162,19 +162,10 @@ class UR10PickCube(ur10_base.UR10Base):
             .set(box_pos)
         )
 
-        # Use home pose for all arm joints at reset
-        # init_q = init_q.at[self._robot_qposadr].set(self._init_q[self._robot_qposadr])
-
         # -----------------------------
         # IMPORTANT FIX: make ctrl consistent with init_q - ctrl says: “robot should be somewhere else”
         # -----------------------------
         init_ctrl = jp.array(self._init_ctrl)
-
-        # # Arm joints: ctrl = joint positions
-        # init_ctrl = init_ctrl.at[:6].set(init_q[self._robot_arm_qposadr])
-
-        # # Gripper: open at reset
-        # init_ctrl = init_ctrl.at[6].set(self._uppers[6])
 
         # -----------------------------
         # Create data with CONSISTENT qpos / ctrl
