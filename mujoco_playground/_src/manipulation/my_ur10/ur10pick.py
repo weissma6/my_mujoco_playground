@@ -163,18 +163,18 @@ class UR10PickCube(ur10_base.UR10Base):
         )
 
         # Use home pose for all arm joints at reset
-        init_q = init_q.at[self._robot_qposadr].set(self._init_q[self._robot_qposadr])
+        # init_q = init_q.at[self._robot_qposadr].set(self._init_q[self._robot_qposadr])
 
         # -----------------------------
         # IMPORTANT FIX: make ctrl consistent with init_q - ctrl says: “robot should be somewhere else”
         # -----------------------------
         init_ctrl = jp.array(self._init_ctrl)
 
-        # Arm joints: ctrl = joint positions
-        init_ctrl = init_ctrl.at[:6].set(init_q[self._robot_arm_qposadr])
+        # # Arm joints: ctrl = joint positions
+        # init_ctrl = init_ctrl.at[:6].set(init_q[self._robot_arm_qposadr])
 
-        # Gripper: open at reset
-        init_ctrl = init_ctrl.at[6].set(self._uppers[6])
+        # # Gripper: open at reset
+        # init_ctrl = init_ctrl.at[6].set(self._uppers[6])
 
         # -----------------------------
         # Create data with CONSISTENT qpos / ctrl
