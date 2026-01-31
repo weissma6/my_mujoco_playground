@@ -22,7 +22,7 @@ python -c "import mujoco, wandb; print('env OK')"
 # ------------------------------------------------
 sbatch --array=1-1 batch_runs/cluster/ur10_jsonl_array.submit
 sbatch --array=2-2 batch_runs/cluster/ur10_jsonl_array.submit
-sbatch --array=2-4 batch_runs/cluster/ur10_jsonl_array.submit
+sbatch --array=5-10 batch_runs/cluster/ur10_jsonl_array.submit
 
 
 # See the active jobs
