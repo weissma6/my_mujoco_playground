@@ -254,7 +254,7 @@
         tendon="split"
         kp="100" 
         kv="1"              
-        forcerange="-200 200"
+        forcerange="-300 300"
         ctrllimited="true"
         forcelimited="true"    
         />
