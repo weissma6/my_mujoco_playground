@@ -116,7 +116,7 @@ class UR10PickCube(ur10_base.UR10Base):
 
 
     def reset(self, rng: jax.Array) -> State:
-        rng, rng_box, rng_target = jax.random.split(rng, 3)
+        rng, rng_box, rng_target, rng_robot, rng_gripper = jax.random.split(rng, 5)
 
         # initialize box position
         box_pos = (
@@ -128,8 +128,6 @@ class UR10PickCube(ur10_base.UR10Base):
             )
             + self._init_obj_pos # Box position from XML Keyframe
         )
-        # initialize box position without randomnes
-        box_pos = self._init_obj_pos
 
         # initialize target position
         target_pos = (
@@ -142,7 +140,28 @@ class UR10PickCube(ur10_base.UR10Base):
             + self._init_obj_pos # Box position from XML Keyframe
         )
 
-      
+        # -----------------------------
+        # Randomize robot joint positions (arm only, not gripper)
+        # -----------------------------
+        robot_qpos_noise = jax.random.uniform(
+            rng_robot,
+            (len(self._robot_arm_qposadr),),  # 6 arm joints
+            minval=-0.05,  # ~3 degrees in radians
+            maxval=0.05,
+        )
+        # Get initial arm qpos and add noise
+        init_arm_qpos = jp.array(self._init_q[self._robot_arm_qposadr])
+        noisy_arm_qpos = init_arm_qpos + robot_qpos_noise
+
+        # Gripper noise (small range since gripper range is 0-0.025)
+        gripper_noise = jax.random.uniform(
+            rng_gripper,
+            (2,),  # left and right finger
+            minval=0.0,
+            maxval=0.01,
+        )
+        init_finger_qpos = jp.array(self._init_q[self._robot_qposadr[-2:]])
+        noisy_finger_qpos = init_finger_qpos + gripper_noise
 
         # Optional orientation sampling
         target_quat = jp.array([1.0, 0.0, 0.0, 0.0], dtype=float)
@@ -154,18 +173,25 @@ class UR10PickCube(ur10_base.UR10Base):
             target_quat = math.axis_angle_to_quat(perturb_axis, perturb_theta)
 
         # -----------------------------
-        # Build initial qpos - qpos says: “robot is at home pose”
+        # Build initial qpos with randomized arm joints
         # -----------------------------
-        init_q = (
-            jp.array(self._init_q)
-            .at[self._obj_qposadr : self._obj_qposadr + 3]
-            .set(box_pos)
-        )
+        init_q = jp.array(self._init_q)
+        
+        # Set box position
+        init_q = init_q.at[self._obj_qposadr : self._obj_qposadr + 3].set(box_pos)
+        
+        # Set noisy arm joint positions
+        init_q = init_q.at[self._robot_arm_qposadr].set(noisy_arm_qpos)
+        init_q = init_q.at[self._robot_qposadr[-2:]].set(noisy_finger_qpos)
 
         # -----------------------------
         # IMPORTANT FIX: make ctrl consistent with init_q - ctrl says: “robot should be somewhere else”
         # -----------------------------
         init_ctrl = jp.array(self._init_ctrl)
+        # Update arm control to match noisy arm positions
+        init_ctrl = init_ctrl.at[:len(self._robot_arm_qposadr)].set(noisy_arm_qpos)
+        # Update gripper control (last actuator)
+        init_ctrl = init_ctrl.at[-1].set(noisy_finger_qpos.sum() * 0.5)  # tendon actuator controls sum
 
         # -----------------------------
         # Create data with CONSISTENT qpos / ctrl
