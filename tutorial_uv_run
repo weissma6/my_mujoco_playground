@@ -67,3 +67,21 @@ ls -lh mujoco_env.tar
 ls -lh batch_runs/sweeps/panda_sweep.jsonl
 wc -l batch_runs/sweeps/panda_sweep.jsonl
 
+
+#### -----------------------
+# Panda Pipeline
+#### -----------------------
+# Copy files to correct locations
+cp panda_uv_array.submit batch_runs/slurm/
+cp run_one_panda.py batch_runs/scripts/
+cp panda_sweep.jsonl batch_runs/sweeps/
+
+# Run all 4 configs
+sbatch batch_runs/cluster/panda_uv_array.submit
+
+# Run specific configs (e.g., 2-4)
+sbatch --array=2-4 batch_runs/slurm/panda_uv_array.submit
+
+# Monitor logs
+tail -f logs/panda_sweep_uv_<JOB_ID>_*.err
+
