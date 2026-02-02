@@ -246,13 +246,13 @@ class UR10PickCube(ur10_base.UR10Base):
             data.ctrl[:6] - data.qpos[self._robot_arm_qposadr]
         )
 
-        debug.print(
-            "[RESET] robot_qpos={rq} | box_qpos={bq} | ctrl={c} | ctrl-qpos-err={e}",
-            rq=robot_qpos,
-            bq=box_qpos,
-            c=robot_ctrl,
-            e=ctrl_qpos_err,
-        )
+        # debug.print(
+        #     "[RESET] robot_qpos={rq} | box_qpos={bq} | ctrl={c} | ctrl-qpos-err={e}",
+        #     rq=robot_qpos,
+        #     bq=box_qpos,
+        #     c=robot_ctrl,
+        #     e=ctrl_qpos_err,
+        # )
 
         return state
 
