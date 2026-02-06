@@ -5,15 +5,21 @@
     <contact name="left_finger_pad_floor_found" geom1="left_finger_collision" geom2="floor" reduce="mindist" num="1" data="found"/>
     <contact name="right_finger_pad_floor_found" geom1="right_finger_collision" geom2="floor" reduce="mindist" num="1" data="found"/>
     <contact name="hand_capsule_floor_found" geom1="attachment_site_collision" geom2="floor" reduce="mindist" num="1" data="found"/>
-    <contact name="box_hand_found" geom1="box" geom2="attachment_site_collision" reduce="mindist" num="1" data="found"/>
+    <contact name="box_hand_found" geom1="obj_box" geom2="attachment_site_collision" reduce="mindist" num="1" data="found"/>
 
     <!-- Box contact (for grasp detection) -->
-    <contact name="left_finger_box_contact" geom1="left_finger_collision" geom2="box" reduce="mindist" num="1" data="found"/>
-    <contact name="right_finger_box_contact" geom1="right_finger_collision" geom2="box" reduce="mindist" num="1" data="found"/>
+    <contact name="left_finger_box_contact" geom1="left_finger_collision" geom2="obj_box" reduce="mindist" num="1" data="found"/>
+    <contact name="right_finger_box_contact" geom1="right_finger_collision" geom2="obj_box" reduce="mindist" num="1" data="found"/>
+    <contact name="left_finger_sphere_contact" geom1="left_finger_collision" geom2="obj_sphere" reduce="mindist" num="1" data="found"/>
+    <contact name="right_finger_sphere_contact" geom1="right_finger_collision" geom2="obj_sphere" reduce="mindist" num="1" data="found"/>
+    <contact name="left_finger_cylinder_contact" geom1="left_finger_collision" geom2="obj_cylinder" reduce="mindist" num="1" data="found"/>
+    <contact name="right_finger_cylinder_contact" geom1="right_finger_collision" geom2="obj_cylinder" reduce="mindist" num="1" data="found"/>
 
     <!-- Position tracking -->
     <framepos name="tcp_position" objtype="site" objname="tcp"/>
-    <framepos name="box_position" objtype="body" objname="box"/>
+    <framepos name="box_position" objtype="body" objname="obj_box"/>
+    <framepos name="sphere_position" objtype="body" objname="obj_sphere"/>
+    <framepos name="cylinder_position" objtype="body" objname="obj_cylinder"/>
 
   </sensor>
 </mujoco>
