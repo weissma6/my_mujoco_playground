@@ -1,0 +1,35 @@
+<mujoco model="ur10e single sphere">
+  <include file="mjx_scene_position.xml"/>
+
+  <worldbody>
+    <body name="box" pos="0.7 0 0.025">
+      <freejoint/>
+      <geom type="sphere" name="box" size="0.025" condim="4"
+       friction="1 .03 .003" rgba="0 0.5 1 1" contype="1" conaffinity="3" solref="0.01 1"/>
+    </body>
+
+    <body mocap="true" name="mocap_target">
+      <geom type="sphere" size="0.025" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+
+  <keyframe>
+    <key name="task_home"
+      qpos="0.75 -2.2 1.57 -1.57 -1.57 0 0.025 0.025
+      0.7 0.2 0.025
+      1 0 0 0"
+      ctrl="0.75 -2.2 1.57 -1.57 -1.57 0 0.05"/>
+    <key name="low_home"
+      qpos="0 -1.7 2.25 -2.15 -1.5 -1.5 0 0 
+      0.7 0.2 0.025
+      1 0 0 0"
+      ctrl="0 -1.7 2.25 -2.15 -1.5 -1.5 0"/>
+    <key name="tucked"
+      qpos="0 -2.36 2.36 -1.57 -1.57 0 0 0
+      0.7 0.2 0.025
+      1 0 0 0"
+      ctrl="0 -2.36 2.36 -1.57 -1.57 0 0"/>
+  </keyframe>
+
+  <include file="ur10_sensor.xml"/>
+</mujoco>

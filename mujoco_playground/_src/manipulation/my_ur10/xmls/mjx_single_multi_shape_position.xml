@@ -1,0 +1,42 @@
+<mujoco model="ur10e multi shape">
+  <include file="mjx_scene_position.xml"/>
+
+  <worldbody>
+    <!-- Shape 0: Box -->
+    <body name="obj_box" pos="0.7 0 0.03">
+      <freejoint/>
+      <geom type="box" name="obj_box" size="0.02 0.02 0.02" condim="4"
+       friction="1 .03 .003" rgba="0 1 0 1" contype="1" conaffinity="3" solref="0.01 1"/>
+    </body>
+
+    <!-- Shape 1: Sphere -->
+    <body name="obj_sphere" pos="0.7 0 -10">
+      <freejoint/>
+      <geom type="sphere" name="obj_sphere" size="0.02" condim="4"
+       friction="1 .03 .003" rgba="0 0.5 1 1" contype="1" conaffinity="3" solref="0.01 1"/>
+    </body>
+
+    <!-- Shape 2: Cylinder -->
+    <body name="obj_cylinder" pos="0.7 0 -10">
+      <freejoint/>
+      <geom type="cylinder" name="obj_cylinder" size="0.02 0.02" condim="4"
+       friction="1 .03 .003" rgba="1 0.5 0 1" contype="1" conaffinity="3" solref="0.01 1"/>
+    </body>
+
+    <body mocap="true" name="mocap_target">
+      <geom type="box" size="0.02 0.02 0.03" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  
+
+  <keyframe>
+    <key name="low_home"
+      qpos="0 -1.7 2.25 -2.15 -1.5 -1.5 0 0
+      0.7 0.2 0.02 1 0 0 0
+      0.7 0 -10 1 0 0 0
+      0.7 0 -10 1 0 0 0"
+      ctrl="0 -1.7 2.25 -2.15 -1.5 -1.5 0"/>
+  </keyframe>
+
+  <include file="ur10_sensor.xml"/>
+</mujoco>
