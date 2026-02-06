@@ -85,7 +85,7 @@ class UR10PickCube(ur10_base.UR10Base):
         init_keyframe = getattr(self._config, "init_keyframe", "low_home")
 
         # Multi-shape support — USE np.array NOT jp.array
-        self._obj_bodies = np.array([
+        self._obj_bodies = jp.array([
             self._mj_model.body("obj_box").id,
             self._mj_model.body("obj_sphere").id,
             self._mj_model.body("obj_cylinder").id,
