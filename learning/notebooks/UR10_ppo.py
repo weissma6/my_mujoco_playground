@@ -634,6 +634,8 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         # Prepare output paths once
         params_path = os.path.join(out_dir, "params.msgpack")
         metrics_path = os.path.join(out_dir, "final_metrics.json")
+        inference_cfg_path = os.path.join(out_dir, "inference_config.json")
+
 
         # Save params (JAX/Flax-safe)
         with open(params_path, "wb") as f:
@@ -646,7 +648,18 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
                 f,
                 indent=2,
             )
-
+        # Save inference config — everything needed to reconstruct the policy
+        wrapped_env = wrapper.wrap_for_brax_training(env)
+        inference_cfg = {
+            "env_name": env_name,
+            "episode_length": episode_length,
+            "observation_size": int(wrapped_env.observation_size),
+            "action_size": int(wrapped_env.action_size),
+            "network_factory": _wb_jsonify(nf_params),
+            "seed": seed,
+        }
+        with open(inference_cfg_path, "w", encoding="utf-8") as f:
+            json.dump(inference_cfg, f, indent=2)
         if "eval/episode_reward" in final_metrics:
             wandb.run.summary["final_eval_return"] = float(final_metrics["eval/episode_reward"])
 
