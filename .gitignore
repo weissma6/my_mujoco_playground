@@ -12,4 +12,5 @@ mujoco_env.tar
 wandb
 logs
 results
+run_graphs
 
