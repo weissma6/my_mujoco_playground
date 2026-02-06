@@ -137,48 +137,115 @@ def _make_progress_wandb():
     return progress_wandb
 
 def _extract_body_positions(state):
-    """Extract all body Cartesian positions from a Brax/MJX pipeline state."""
-    ps = state.pipeline_state
-    if hasattr(ps, "x"):          # Brax MJX style (x.pos is (n_bodies, 3))
-        return np.asarray(ps.x.pos)
-    elif hasattr(ps, "xpos"):     # Classic MuJoCo bindings
-        return np.asarray(ps.xpos)
+    """Extract all body Cartesian positions from a Brax/MJX state.
+    
+    Tries multiple access paths since State structure varies across
+    Brax versions and env wrappers.
+    """
+    # Possible locations of the physics pipeline state
+    candidates = [
+        getattr(state, "pipeline_state", None),
+        getattr(state, "data", None),
+        getattr(state, "qp", None),       # older Brax
+        getattr(state, "mjx_data", None),
+        state,                              # state itself might have x/xpos
+    ]
+    for ps in candidates:
+        if ps is None:
+            continue
+        # Brax MJX style: ps.x.pos → (n_bodies, 3)
+        x = getattr(ps, "x", None)
+        if x is not None:
+            pos = getattr(x, "pos", None)
+            if pos is not None:
+                return np.asarray(pos)
+        # Classic MuJoCo / dm_control style
+        xpos = getattr(ps, "xpos", None)
+        if xpos is not None:
+            return np.asarray(xpos)
     return None
 
 def _extract_torques(state):
     """
-    Extract actuator torques / joint-level forces from the pipeline state.
+    Extract actuator torques / joint-level forces from the state.
     Returns a 1-D numpy array of shape (n_actuators,) or None.
-
-    Brax MJX exposes several force fields on pipeline_state:
-        qfrc_actuator  – generalised force from actuators  (nv,)
-        actuator_force – raw actuator output               (nu,)
-        qfrc_applied   – externally applied generalised force
-    Classic MuJoCo bindings use the same names on mjData.
     """
-    ps = state.pipeline_state
-    # Prefer actuator_force (direct actuator output, shape = n_actuators)
-    for attr in ("actuator_force", "qfrc_actuator", "qfrc_applied"):
-        val = getattr(ps, attr, None)
-        if val is not None:
-            return np.asarray(val).flatten()
+    candidates = [
+        getattr(state, "pipeline_state", None),
+        getattr(state, "data", None),
+        getattr(state, "qp", None),
+        getattr(state, "mjx_data", None),
+        state,
+    ]
+    for ps in candidates:
+        if ps is None:
+            continue
+        for attr in ("actuator_force", "qfrc_actuator", "qfrc_applied"):
+            val = getattr(ps, attr, None)
+            if val is not None:
+                return np.asarray(val).flatten()
+    return None
+
+def _extract_velocities(state):
+    """
+    Extract joint/generalised velocities from the state.
+    Returns a 1-D numpy array of shape (nv,) or None.
+
+    Tries qvel (generalised velocities) first, then xd.vel (body velocities).
+    """
+    candidates = [
+        getattr(state, "pipeline_state", None),
+        getattr(state, "data", None),
+        getattr(state, "qp", None),
+        getattr(state, "mjx_data", None),
+        state,
+    ]
+    for ps in candidates:
+        if ps is None:
+            continue
+        # Generalised velocities (nv,) — most useful for joint-level analysis
+        qvel = getattr(ps, "qvel", None)
+        if qvel is not None:
+            return np.asarray(qvel).flatten()
+        # Brax MJX body velocities: ps.xd.vel → (n_bodies, 3)
+        xd = getattr(ps, "xd", None)
+        if xd is not None:
+            vel = getattr(xd, "vel", None)
+            if vel is not None:
+                return np.asarray(vel).flatten()
+        # Older Brax: qp.vel
+        vel = getattr(ps, "vel", None)
+        if vel is not None:
+            return np.asarray(vel).flatten()
     return None
 
 def _get_body_names(env):
     """Try to read body names from the MuJoCo model."""
     try:
-        mj_model = env.mj_model if hasattr(env, "mj_model") else env.sys.mj_model
-        return [mj_model.body(i).name for i in range(mj_model.nbody)]
+        for attr in ("mj_model", "model", "sys"):
+            obj = getattr(env, attr, None)
+            if obj is None:
+                continue
+            mj = getattr(obj, "mj_model", obj)
+            if hasattr(mj, "body") and hasattr(mj, "nbody"):
+                return [mj.body(i).name for i in range(mj.nbody)]
     except Exception:
-        return None
+        pass
+    return None
     
 def _get_actuator_names(env):
     """Try to read actuator names from the MuJoCo model."""
     try:
-        mj_model = env.mj_model if hasattr(env, "mj_model") else env.sys.mj_model
-        return [mj_model.actuator(i).name for i in range(mj_model.nu)]
+        for attr in ("mj_model", "model", "sys"):
+            obj = getattr(env, attr, None)
+            if obj is None:
+                continue
+            mj = getattr(obj, "mj_model", obj)
+            if hasattr(mj, "actuator") and hasattr(mj, "nu"):
+                return [mj.actuator(i).name for i in range(mj.nu)]
     except Exception:
-        return None
+        pass
+    return None
 
 def _rollout_and_log_video_from_make_policy(
     *,
@@ -205,6 +272,17 @@ def _rollout_and_log_video_from_make_policy(
     rollout = [state]
     ep_reward = 0.0
 
+    # ------------one time debug print------------
+    # One-time debug: show what the State object looks like
+    state_attrs = [a for a in dir(state) if not a.startswith("_")]
+    print(f"[INFO] State attributes: {state_attrs}", flush=True)
+    for attr in ("pipeline_state", "data", "qp", "mjx_data"):
+        sub = getattr(state, attr, None)
+        if sub is not None:
+            sub_attrs = [a for a in dir(sub) if not a.startswith("_")]
+            print(f"[INFO]   state.{attr} attrs: {sub_attrs[:20]}...", flush=True)
+    # -----------------------------------------
+
     # ── Per-step data collection ──
     step_data = {
         "obs":             [],   # (T, obs_dim)
@@ -212,19 +290,34 @@ def _rollout_and_log_video_from_make_policy(
         "reward":          [],   # (T,)
         "body_pos":        [],   # (T, n_bodies, 3)
         "torques":         [],   # (T, n_actuators) — may stay empty
+        "velocities":      [],   # (T, nv) — may stay empty
     }
+
 
     # Record initial state (before any action)
     pos0 = _extract_body_positions(state)
     if pos0 is not None:
         step_data["body_pos"].append(pos0.copy())
+        print(f"[INFO] Body positions found: shape={pos0.shape}", flush=True)
+    else:
+        print("[INFO] No body positions found in state — coords will be empty", flush=True)
     step_data["obs"].append(np.asarray(state.obs).flatten())
     step_data["ctrl"].append(np.zeros_like(np.asarray(state.obs).flatten()[:0]))  # placeholder
     step_data["reward"].append(0.0)
     torque0 = _extract_torques(state)
     if torque0 is not None:
         step_data["torques"].append(torque0.copy())
-
+        print(f"[INFO] Torques found: shape={torque0.shape}", flush=True)
+    else:
+        print("[INFO] No torques found in state — torque columns will be empty", flush=True)
+    vel0 = _extract_velocities(state)
+    if vel0 is not None:
+        step_data["velocities"].append(vel0.copy())
+        print(f"[INFO] Velocities found: shape={vel0.shape}", flush=True)
+    else:
+        print("[INFO] No velocities found in state — velocity columns will be empty", flush=True)
+    
+    # ────────────────start rollout───────────────
     for _ in range(int(episode_length)):
         rng, act_rng = jax.random.split(rng)
         out = policy(state.obs, act_rng)
@@ -254,6 +347,9 @@ def _rollout_and_log_video_from_make_policy(
         torque = _extract_torques(state)
         if torque is not None:
             step_data["torques"].append(torque.copy())
+        vel = _extract_velocities(state)
+        if vel is not None:
+            step_data["velocities"].append(vel.copy())
 
     # Convert lists → numpy arrays
     step_data["obs"]    = np.array(step_data["obs"])       # (T+1, obs_dim)
@@ -262,6 +358,9 @@ def _rollout_and_log_video_from_make_policy(
         step_data["body_pos"] = np.array(step_data["body_pos"])  # (T+1, n_bodies, 3)
     if step_data["torques"]:
         step_data["torques"] = np.array(step_data["torques"])    # (T+1, n_actuators)
+    if step_data["velocities"]:
+        step_data["velocities"] = np.array(step_data["velocities"])  # (T+1, nv)
+
     # ctrl: first entry was placeholder, replace with zeros matching action dim
     act_dim = step_data["ctrl"][1].shape[0] if len(step_data["ctrl"]) > 1 else 0
     step_data["ctrl"][0] = np.zeros(act_dim)
@@ -314,6 +413,7 @@ def _rollout_and_log_video_from_make_policy(
         act_dim    = step_data["ctrl"].shape[1] if step_data["ctrl"].ndim == 2 else 0
         has_pos    = isinstance(step_data["body_pos"], np.ndarray) and step_data["body_pos"].ndim == 3
         has_torque = isinstance(step_data["torques"], np.ndarray) and step_data["torques"].ndim == 2
+        has_vel    = isinstance(step_data["velocities"], np.ndarray) and step_data["velocities"].ndim == 2
 
         # ── Build column headers ──
         columns = ["timestep", "reward"]
@@ -336,6 +436,12 @@ def _rollout_and_log_video_from_make_policy(
                 act_names = [f"actuator_{i}" for i in range(n_act)]
             torque_cols = [f"torque_{a}" for a in act_names]
             columns += torque_cols
+        
+        vel_cols = []
+        if has_vel:
+            n_vel = step_data["velocities"].shape[1]
+            vel_cols = [f"vel_{i}" for i in range(n_vel)]
+            columns += vel_cols
 
         # ── Build rows ──
         rows = []
@@ -346,6 +452,8 @@ def _rollout_and_log_video_from_make_policy(
                 row += step_data["body_pos"][t].flatten().tolist()
             if has_torque:
                 row += step_data["torques"][t].flatten().tolist()
+            if has_vel:
+                row += step_data["velocities"][t].flatten().tolist()
             rows.append(row)
 
         # Save CSV
@@ -362,10 +470,10 @@ def _rollout_and_log_video_from_make_policy(
 
         n_bodies_str = f"{n_bodies} bodies" if has_pos else "no body pos"
         n_torque_str = f"{step_data['torques'].shape[1]} actuators" if has_torque else "no torques"
+        n_vel_str    = f"{step_data['velocities'].shape[1]} vel dims" if has_vel else "no velocities"
         print(
             f"[INFO] Rollout logged: {T} steps, {act_dim} ctrl dims, "
-            f"{n_bodies_str}, {n_torque_str}",
-            flush=True,
+            f"{n_bodies_str}, {n_torque_str}, {n_vel_str}",
         )
 
     except Exception as e:
