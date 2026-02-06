@@ -19,8 +19,8 @@
     <!-- Shape 2: Cylinder -->
     <body name="obj_cylinder" pos="0.7 0 -10">
       <freejoint/>
-      <geom type="cylinder" name="obj_cylinder" size="0.02 0.02" condim="4"
-       friction="1 .03 .003" rgba="1 0.5 0 1" contype="1" conaffinity="3" solref="0.01 1"/>
+      <geom type="capsule" name="obj_cylinder" size="0.02 0.02" condim="4"
+      friction="1 .03 .003" rgba="1 0.5 0 1" contype="1" conaffinity="3" solref="0.01 1"/>
     </body>
 
     <!-- mocap target -->
