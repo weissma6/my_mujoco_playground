@@ -136,6 +136,49 @@ def _make_progress_wandb():
 
     return progress_wandb
 
+def _extract_body_positions(state):
+    """Extract all body Cartesian positions from a Brax/MJX pipeline state."""
+    ps = state.pipeline_state
+    if hasattr(ps, "x"):          # Brax MJX style (x.pos is (n_bodies, 3))
+        return np.asarray(ps.x.pos)
+    elif hasattr(ps, "xpos"):     # Classic MuJoCo bindings
+        return np.asarray(ps.xpos)
+    return None
+
+def _extract_torques(state):
+    """
+    Extract actuator torques / joint-level forces from the pipeline state.
+    Returns a 1-D numpy array of shape (n_actuators,) or None.
+
+    Brax MJX exposes several force fields on pipeline_state:
+        qfrc_actuator  – generalised force from actuators  (nv,)
+        actuator_force – raw actuator output               (nu,)
+        qfrc_applied   – externally applied generalised force
+    Classic MuJoCo bindings use the same names on mjData.
+    """
+    ps = state.pipeline_state
+    # Prefer actuator_force (direct actuator output, shape = n_actuators)
+    for attr in ("actuator_force", "qfrc_actuator", "qfrc_applied"):
+        val = getattr(ps, attr, None)
+        if val is not None:
+            return np.asarray(val).flatten()
+    return None
+
+def _get_body_names(env):
+    """Try to read body names from the MuJoCo model."""
+    try:
+        mj_model = env.mj_model if hasattr(env, "mj_model") else env.sys.mj_model
+        return [mj_model.body(i).name for i in range(mj_model.nbody)]
+    except Exception:
+        return None
+    
+def _get_actuator_names(env):
+    """Try to read actuator names from the MuJoCo model."""
+    try:
+        mj_model = env.mj_model if hasattr(env, "mj_model") else env.sys.mj_model
+        return [mj_model.actuator(i).name for i in range(mj_model.nu)]
+    except Exception:
+        return None
 
 def _rollout_and_log_video_from_make_policy(
     *,
@@ -162,6 +205,26 @@ def _rollout_and_log_video_from_make_policy(
     rollout = [state]
     ep_reward = 0.0
 
+    # ── Per-step data collection ──
+    step_data = {
+        "obs":             [],   # (T, obs_dim)
+        "ctrl":            [],   # (T, act_dim)
+        "reward":          [],   # (T,)
+        "body_pos":        [],   # (T, n_bodies, 3)
+        "torques":         [],   # (T, n_actuators) — may stay empty
+    }
+
+    # Record initial state (before any action)
+    pos0 = _extract_body_positions(state)
+    if pos0 is not None:
+        step_data["body_pos"].append(pos0.copy())
+    step_data["obs"].append(np.asarray(state.obs).flatten())
+    step_data["ctrl"].append(np.zeros_like(np.asarray(state.obs).flatten()[:0]))  # placeholder
+    step_data["reward"].append(0.0)
+    torque0 = _extract_torques(state)
+    if torque0 is not None:
+        step_data["torques"].append(torque0.copy())
+
     for _ in range(int(episode_length)):
         rng, act_rng = jax.random.split(rng)
         out = policy(state.obs, act_rng)
@@ -176,7 +239,40 @@ def _rollout_and_log_video_from_make_policy(
         state = jit_step(state, ctrl)
         rollout.append(state)
 
-        ep_reward += float(jnp.asarray(state.reward))
+        r = float(jnp.asarray(state.reward))
+        ep_reward += r
+
+        # Collect everything
+        step_data["obs"].append(np.asarray(state.obs).flatten())
+        step_data["ctrl"].append(np.asarray(ctrl).flatten())
+        step_data["reward"].append(r)
+
+        pos = _extract_body_positions(state)
+        if pos is not None:
+            step_data["body_pos"].append(pos.copy())
+
+        torque = _extract_torques(state)
+        if torque is not None:
+            step_data["torques"].append(torque.copy())
+
+    # Convert lists → numpy arrays
+    step_data["obs"]    = np.array(step_data["obs"])       # (T+1, obs_dim)
+    step_data["reward"] = np.array(step_data["reward"])    # (T+1,)
+    if step_data["body_pos"]:
+        step_data["body_pos"] = np.array(step_data["body_pos"])  # (T+1, n_bodies, 3)
+    if step_data["torques"]:
+        step_data["torques"] = np.array(step_data["torques"])    # (T+1, n_actuators)
+    # ctrl: first entry was placeholder, replace with zeros matching action dim
+    act_dim = step_data["ctrl"][1].shape[0] if len(step_data["ctrl"]) > 1 else 0
+    step_data["ctrl"][0] = np.zeros(act_dim)
+    step_data["ctrl"] = np.array(step_data["ctrl"])        # (T+1, act_dim)
+
+    # Attach metadata
+    step_data["body_names"]     = _get_body_names(eval_env)
+    step_data["actuator_names"] = _get_actuator_names(eval_env)
+    step_data["ep_reward"]      = ep_reward
+    step_data["num_steps"]      = num_steps
+    step_data["seed"]           = seed
 
     # Build tag using episode reward + steps
     step_tag = f"{run_id}_rew{ep_reward:.1f}_steps{int(num_steps)}"
@@ -208,7 +304,74 @@ def _rollout_and_log_video_from_make_policy(
     except Exception as e:
         print(f"[WARN] Video skipped: {e}", flush=True)
 
-    return ep_reward
+    # ── Save rollout data as CSV + W&B artifact ──
+    try:
+        import csv as csv_mod
+
+        T = len(step_data["reward"])
+        body_names = step_data["body_names"] or []
+        act_names  = step_data["actuator_names"] or []
+        act_dim    = step_data["ctrl"].shape[1] if step_data["ctrl"].ndim == 2 else 0
+        has_pos    = isinstance(step_data["body_pos"], np.ndarray) and step_data["body_pos"].ndim == 3
+        has_torque = isinstance(step_data["torques"], np.ndarray) and step_data["torques"].ndim == 2
+
+        # ── Build column headers ──
+        columns = ["timestep", "reward"]
+        ctrl_cols = [f"ctrl_{i}" for i in range(act_dim)]
+        columns += ctrl_cols
+
+        body_pos_cols = []
+        if has_pos:
+            n_bodies = step_data["body_pos"].shape[1]
+            if not body_names or len(body_names) != n_bodies:
+                body_names = [f"body_{i}" for i in range(n_bodies)]
+            for b_name in body_names:
+                body_pos_cols += [f"{b_name}_x", f"{b_name}_y", f"{b_name}_z"]
+            columns += body_pos_cols
+
+        torque_cols = []
+        if has_torque:
+            n_act = step_data["torques"].shape[1]
+            if not act_names or len(act_names) != n_act:
+                act_names = [f"actuator_{i}" for i in range(n_act)]
+            torque_cols = [f"torque_{a}" for a in act_names]
+            columns += torque_cols
+
+        # ── Build rows ──
+        rows = []
+        for t in range(T):
+            row = [t, float(step_data["reward"][t])]
+            row += step_data["ctrl"][t].tolist() if t < step_data["ctrl"].shape[0] else [0.0] * act_dim
+            if has_pos:
+                row += step_data["body_pos"][t].flatten().tolist()
+            if has_torque:
+                row += step_data["torques"][t].flatten().tolist()
+            rows.append(row)
+
+        # Save CSV
+        csv_path = os.path.join(wandb.run.dir, f"{env_name}_{step_tag}.csv")
+        with open(csv_path, "w", newline="") as f:
+            writer = csv_mod.writer(f)
+            writer.writerow(columns)
+            writer.writerows(rows)
+        wandb.save(csv_path)
+
+        # Log as W&B Table (capped at reasonable size for the UI)
+        table = wandb.Table(columns=columns, data=rows)
+        wandb.log({"eval/rollout_data": table}, step=int(num_steps))
+
+        n_bodies_str = f"{n_bodies} bodies" if has_pos else "no body pos"
+        n_torque_str = f"{step_data['torques'].shape[1]} actuators" if has_torque else "no torques"
+        print(
+            f"[INFO] Rollout logged: {T} steps, {act_dim} ctrl dims, "
+            f"{n_bodies_str}, {n_torque_str}",
+            flush=True,
+        )
+
+    except Exception as e:
+        print(f"[WARN] Rollout data logging skipped: {e}", flush=True)
+
+    return ep_reward, step_data
 
 def _wb_jsonify(x):
     # Make values W&B-config friendly
