@@ -186,6 +186,15 @@ class UR10PickCube(ur10_base.UR10Base):
             pos_i = jp.where(i == active_shape, obj_pos, underground)
             init_q = init_q.at[adr : adr + 3].set(pos_i)
 
+        # DEBUG: verify all 3 shape positions in qpos
+        debug.print(
+            "active={a} | box_pos={b} | sphere_pos={s} | cyl_pos={c}",
+            a=active_shape,
+            b=init_q[int(self._obj_qposadrs[0]):int(self._obj_qposadrs[0])+3],
+            s=init_q[int(self._obj_qposadrs[1]):int(self._obj_qposadrs[1])+3],
+            c=init_q[int(self._obj_qposadrs[2]):int(self._obj_qposadrs[2])+3],
+        )
+
         # 6. Make ctrl consistent with init_q
         init_ctrl = jp.array(self._init_ctrl)
         init_ctrl = init_ctrl.at[:len(self._robot_arm_qposadr)].set(noisy_arm_qpos)
