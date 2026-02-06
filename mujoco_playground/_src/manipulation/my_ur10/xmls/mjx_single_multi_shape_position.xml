@@ -24,7 +24,7 @@
     </body>
 
     <body mocap="true" name="mocap_target">
-      <geom type="box" size="0.02 0.02 0.03" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
+      <geom type="obj_box" size="0.02 0.02 0.03" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
     </body>
   </worldbody>
   
