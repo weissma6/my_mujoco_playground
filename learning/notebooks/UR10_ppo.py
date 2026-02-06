@@ -23,6 +23,7 @@ import jax.numpy as jnp
 from datetime import datetime
 from flax import serialization
 import time
+import mujoco
 
 
 def is_nvidia_available() -> bool:
@@ -113,6 +114,7 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "init_keyframe",
         "num_eval_envs",
         "seed",
+        "domain_randomization",
     }
     overrides: Dict[str, Any] = {}
     for k, v in cfg.items():
@@ -662,6 +664,169 @@ def _wb_log_final_train_config(*, ppo_training_params: dict, nf_cfg: dict | None
 #             print(f"[DBG EVAL] lower bound: eval will step at least once across num_eval_envs => >= {num_eval_envs} env-steps per eval step.", flush=True)
 #         else:
 #             print(f"[DBG EVAL] num_eval_envs not set (or 0); cannot estimate eval env-steps.", flush=True)
+## ═══════════════════════════════════════════════════════════
+##  DOMAIN RANDOMIZATION
+## ═══════════════════════════════════════════════════════════
+#
+#  Progression plan (controlled via cfg["domain_randomization"]):
+#
+#    Phase 1  {"enabled": true}
+#             → mass ×[0.5, 2.0]  +  sliding friction ×[0.5, 2.0]
+#
+#    Phase 2  {"enabled": true, "size_range": [0.7, 1.3]}
+#             → adds geom size scaling
+#
+#    Phase 3  (future) different geom_type — needs separate compiled
+#             models per shape; not wired yet.
+#
+#  The function signature Brax PPO expects:
+#      domain_randomize(sys, rng)  →  (sys_batched, in_axes)
+#
+# ═══════════════════════════════════════════════════════════
+
+
+def _get_mj_model(env):
+    """Extract the raw mujoco.MjModel from a Playground env."""
+    for attr in ("mj_model", "_mj_model", "model"):
+        obj = getattr(env, attr, None)
+        if obj is not None and hasattr(obj, "ngeom"):
+            return obj
+    sys = getattr(env, "sys", None)
+    if sys is not None:
+        mj = getattr(sys, "mj_model", None)
+        if mj is not None:
+            return mj
+    raise RuntimeError(
+        "[DR] Cannot find mujoco.MjModel on env. "
+        f"Tried attrs: mj_model, _mj_model, model, sys.mj_model. "
+        f"Env type: {type(env)}"
+    )
+
+
+def _find_box_ids(mj_model, box_body_name="box", box_geom_name="box"):
+    """Look up body/geom IDs + nominal values. Called ONCE before training."""
+    box_body_id = mujoco.mj_name2id(
+        mj_model, mujoco.mjtObj.mjOBJ_BODY, box_body_name
+    )
+    box_geom_id = mujoco.mj_name2id(
+        mj_model, mujoco.mjtObj.mjOBJ_GEOM, box_geom_name
+    )
+
+    if box_body_id < 0:
+        for alt in ("cube", "object", "target_object", "pick_object"):
+            box_body_id = mujoco.mj_name2id(
+                mj_model, mujoco.mjtObj.mjOBJ_BODY, alt
+            )
+            if box_body_id >= 0:
+                box_body_name = alt
+                break
+    if box_geom_id < 0:
+        for alt in ("cube", "object", "target_object", "pick_object"):
+            box_geom_id = mujoco.mj_name2id(
+                mj_model, mujoco.mjtObj.mjOBJ_GEOM, alt
+            )
+            if box_geom_id >= 0:
+                box_geom_name = alt
+                break
+
+    if box_body_id < 0:
+        raise ValueError(
+            f"[DR] Body '{box_body_name}' not found in model. "
+            f"Available bodies: "
+            + str([mj_model.body(i).name for i in range(mj_model.nbody)])
+        )
+    if box_geom_id < 0:
+        raise ValueError(
+            f"[DR] Geom '{box_geom_name}' not found in model. "
+            f"Available geoms: "
+            + str([mj_model.geom(i).name for i in range(mj_model.ngeom)])
+        )
+
+    info = {
+        "box_body_id":      box_body_id,
+        "box_geom_id":      box_geom_id,
+        "box_body_name":    box_body_name,
+        "box_geom_name":    box_geom_name,
+        "nominal_mass":     float(mj_model.body_mass[box_body_id]),
+        "nominal_friction": mj_model.geom_friction[box_geom_id].copy(),
+        "nominal_size":     mj_model.geom_size[box_geom_id].copy(),
+    }
+    print(f"[DR] Found body '{box_body_name}' id={box_body_id}, "
+          f"geom '{box_geom_name}' id={box_geom_id}", flush=True)
+    print(f"[DR]   nominal mass     = {info['nominal_mass']:.4f} kg", flush=True)
+    print(f"[DR]   nominal friction = {info['nominal_friction']}", flush=True)
+    print(f"[DR]   nominal size     = {info['nominal_size']}", flush=True)
+    return info
+
+
+def make_domain_randomize_fn(
+    box_info: dict,
+    *,
+    mass_range=(0.5, 2.0),
+    friction_range=(0.5, 2.0),
+    size_range=None,
+):
+    """Build a domain_randomize(sys, rng) function for Brax PPO."""
+    box_body_id = box_info["box_body_id"]
+    box_geom_id = box_info["box_geom_id"]
+    nom_mass    = box_info["nominal_mass"]
+    nom_fric    = jnp.array(box_info["nominal_friction"])
+    nom_size    = jnp.array(box_info["nominal_size"])
+
+    do_size = size_range is not None
+
+    print(f"[DR] Building randomizer:", flush=True)
+    print(f"[DR]   mass_range     = {mass_range}", flush=True)
+    print(f"[DR]   friction_range = {friction_range}", flush=True)
+    print(f"[DR]   size_range     = {size_range}", flush=True)
+
+    def domain_randomize(sys, rng):
+        @jax.vmap
+        def rand(rng):
+            k1, k2, k3 = jax.random.split(rng, 3)
+
+            mass_scale = jax.random.uniform(
+                k1, minval=mass_range[0], maxval=mass_range[1]
+            )
+            new_mass = sys.body_mass.at[box_body_id].set(
+                nom_mass * mass_scale
+            )
+
+            fric_scale = jax.random.uniform(
+                k2, minval=friction_range[0], maxval=friction_range[1]
+            )
+            new_fric_row = nom_fric.at[0].set(nom_fric[0] * fric_scale)
+            new_friction = sys.geom_friction.at[box_geom_id].set(new_fric_row)
+
+            if do_size:
+                size_scale = jax.random.uniform(
+                    k3, minval=size_range[0], maxval=size_range[1]
+                )
+                new_size_row = nom_size * size_scale
+                new_geom_size = sys.geom_size.at[box_geom_id].set(new_size_row)
+            else:
+                new_geom_size = sys.geom_size
+
+            return new_mass, new_friction, new_geom_size
+
+        new_mass, new_friction, new_geom_size = rand(rng)
+
+        in_axes = jax.tree_util.tree_map(lambda x: None, sys)
+
+        replace_axes = {"body_mass": 0, "geom_friction": 0}
+        replace_vals = {"body_mass": new_mass, "geom_friction": new_friction}
+
+        if do_size:
+            replace_axes["geom_size"] = 0
+            replace_vals["geom_size"] = new_geom_size
+
+        in_axes = in_axes.tree_replace(replace_axes)
+        sys = sys.tree_replace(replace_vals)
+
+        return sys, in_axes
+
+    return domain_randomize
+
 
 def print_dict_pairs(d, prefix=""):
     for k, v in d.items():
@@ -711,6 +876,56 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         env = registry.load(env_name, config_overrides=env_overrides)
         env_cfg = registry.get_default_config(env_name)
         episode_length = int(getattr(env_cfg, "episode_length", 1000))
+        
+        
+        # ─────────────────────────────────────────────
+        # Domain Randomization (optional)
+        # ─────────────────────────────────────────────
+        dr_cfg = cfg.get("domain_randomization", {})
+        dr_enabled = dr_cfg.get("enabled", False)
+        domain_randomize_fn = None
+
+        if dr_enabled:
+            print("\n[DR] ═══ Domain Randomization ENABLED ═══", flush=True)
+            try:
+                mj_model = _get_mj_model(env)
+                box_info = _find_box_ids(
+                    mj_model,
+                    box_body_name=dr_cfg.get("box_body_name", "box"),
+                    box_geom_name=dr_cfg.get("box_geom_name", "box"),
+                )
+
+                dr_mass_range = tuple(dr_cfg.get("mass_range", [0.5, 2.0]))
+                dr_fric_range = tuple(dr_cfg.get("friction_range", [0.5, 2.0]))
+                dr_size_range = dr_cfg.get("size_range", None)
+                if dr_size_range is not None:
+                    dr_size_range = tuple(dr_size_range)
+
+                domain_randomize_fn = make_domain_randomize_fn(
+                    box_info,
+                    mass_range=dr_mass_range,
+                    friction_range=dr_fric_range,
+                    size_range=dr_size_range,
+                )
+
+                wandb.config.update(
+                    {"dr": {
+                        "enabled": True,
+                        "box_body": box_info["box_body_name"],
+                        "box_geom": box_info["box_geom_name"],
+                        "nominal_mass": box_info["nominal_mass"],
+                        "mass_range": list(dr_mass_range),
+                        "friction_range": list(dr_fric_range),
+                        "size_range": list(dr_size_range) if dr_size_range else None,
+                    }},
+                    allow_val_change=True,
+                )
+            except Exception as e:
+                print(f"[DR] ⚠ Setup failed, training WITHOUT randomization: {e}",
+                      flush=True)
+                domain_randomize_fn = None
+        else:
+            print("\n[DR] Domain Randomization DISABLED", flush=True)
 
         # -----------------------------
         # PPO defaults -> dict
@@ -793,14 +1008,21 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         # -----------------------------
         # Train (PASS ONLY FINAL KWARGS)
         # -----------------------------
+        dr_kwargs = {}
+        if domain_randomize_fn is not None:
+            dr_kwargs["randomization_fn"] = domain_randomize_fn
+            print("[DR] randomization_fn passed to ppo.train ✓", flush=True)
+
         train_fn = functools.partial(
             ppo.train,
             **ppo_params_overwrite,
+            **dr_kwargs,
             network_factory=network_factory,
             progress_fn=_make_progress_wandb(),
             policy_params_fn=policy_params_fn,
             seed=seed,
         )
+
 
         make_inference_fn, params, final_metrics = train_fn(
             environment=env, wrap_env_fn=wrapper.wrap_for_brax_training
@@ -808,6 +1030,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         # Log final config once
         print("\n ppo_params_overwrite before training", flush=True)
         print_dict_pairs(ppo_params_overwrite)
+        print_dict_pairs(dr_kwargs, prefix="[DR] ")
 
         # Prepare output paths once
         params_path = os.path.join(out_dir, "params.msgpack")
