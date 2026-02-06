@@ -21,7 +21,7 @@ python -c "import mujoco, wandb; print('env OK')"
 # Step 2 testrun a single job interactively (optional but recommended)
 # ------------------------------------------------
 sbatch --array=2-2 batch_runs/cluster/ur10_jsonl_array.submit
-sbatch --array=2-6 batch_runs/cluster/ur10_jsonl_array.submit
+sbatch --array=2-7 batch_runs/cluster/ur10_jsonl_array.submit
 sbatch --array=2-9 batch_runs/cluster/ur10_jsonl_array.submit
 
 
@@ -39,7 +39,7 @@ sacct -u weissma6 \
 # find the outoutfiles with the job ID from squeue
 find . -maxdepth 3 -type f -name "*82353*" -print
 
-tail -f logs/UR10_sweep_uv_86235_2.err
+tail -f logs/UR10_sweep_uv_86305_6.err
 tail -f logs/UR10_sweep_uv_85326_1.out
 # Watch resource usage (CPU)
 sstat -j 82108_1.batch --format=AveCPU,AveRSS,MaxRSS,MaxVMSize,AveDiskRead,AveDiskWrite

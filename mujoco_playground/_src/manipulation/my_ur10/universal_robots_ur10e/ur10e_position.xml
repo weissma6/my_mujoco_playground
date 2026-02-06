@@ -259,7 +259,7 @@
     <position name="hande_fingers_actuator" 
         ctrlrange="0 0.05"
         tendon="split"
-        kp="4000" 
+        kp="1000" 
         kv="30"              
         forcerange="-200 200"
         ctrllimited="true"
