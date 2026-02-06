@@ -246,6 +246,44 @@ def _get_actuator_names(env):
     except Exception:
         pass
     return None
+def _extract_qpos(state):
+    """
+    Extract generalised joint positions (qpos) from the state.
+    Returns a 1-D numpy array of shape (nq,) or None.
+    """
+    candidates = [
+        getattr(state, "pipeline_state", None),
+        getattr(state, "data", None),
+        getattr(state, "qp", None),
+        getattr(state, "mjx_data", None),
+        state,
+    ]
+    for ps in candidates:
+        if ps is None:
+            continue
+        qpos = getattr(ps, "qpos", None)
+        if qpos is not None:
+            return np.asarray(qpos).flatten()
+        # Older Brax: qp.pos
+        pos = getattr(ps, "pos", None)
+        if pos is not None and not hasattr(ps, "x"):
+            return np.asarray(pos).flatten()
+    return None
+
+
+def _get_joint_names(env):
+    """Try to read joint names from the MuJoCo model."""
+    try:
+        for attr in ("mj_model", "model", "sys"):
+            obj = getattr(env, attr, None)
+            if obj is None:
+                continue
+            mj = getattr(obj, "mj_model", obj)
+            if hasattr(mj, "joint") and hasattr(mj, "njnt"):
+                return [mj.joint(i).name for i in range(mj.njnt)]
+    except Exception:
+        pass
+    return None
 
 def _rollout_and_log_video_from_make_policy(
     *,
@@ -291,6 +329,7 @@ def _rollout_and_log_video_from_make_policy(
         "body_pos":        [],   # (T, n_bodies, 3)
         "torques":         [],   # (T, n_actuators) — may stay empty
         "velocities":      [],   # (T, nv) — may stay empty
+        "qpos":            [],   # (T, nq) — joint positions
     }
 
 
@@ -301,15 +340,25 @@ def _rollout_and_log_video_from_make_policy(
         print(f"[INFO] Body positions found: shape={pos0.shape}", flush=True)
     else:
         print("[INFO] No body positions found in state — coords will be empty", flush=True)
+
+    qpos0 = _extract_qpos(state)
+    if qpos0 is not None:
+        step_data["qpos"].append(qpos0.copy())
+        print(f"[INFO] Qpos found: shape={qpos0.shape}", flush=True)
+    else:
+        print("[INFO] No qpos found in state — joint angle columns will be empty", flush=True)
+
     step_data["obs"].append(np.asarray(state.obs).flatten())
     step_data["ctrl"].append(np.zeros_like(np.asarray(state.obs).flatten()[:0]))  # placeholder
     step_data["reward"].append(0.0)
+
     torque0 = _extract_torques(state)
     if torque0 is not None:
         step_data["torques"].append(torque0.copy())
         print(f"[INFO] Torques found: shape={torque0.shape}", flush=True)
     else:
         print("[INFO] No torques found in state — torque columns will be empty", flush=True)
+
     vel0 = _extract_velocities(state)
     if vel0 is not None:
         step_data["velocities"].append(vel0.copy())
@@ -350,6 +399,9 @@ def _rollout_and_log_video_from_make_policy(
         vel = _extract_velocities(state)
         if vel is not None:
             step_data["velocities"].append(vel.copy())
+        qp = _extract_qpos(state)
+        if qp is not None:
+            step_data["qpos"].append(qp.copy())
 
     # Convert lists → numpy arrays
     step_data["obs"]    = np.array(step_data["obs"])       # (T+1, obs_dim)
@@ -360,6 +412,8 @@ def _rollout_and_log_video_from_make_policy(
         step_data["torques"] = np.array(step_data["torques"])    # (T+1, n_actuators)
     if step_data["velocities"]:
         step_data["velocities"] = np.array(step_data["velocities"])  # (T+1, nv)
+    if step_data["qpos"]:
+        step_data["qpos"] = np.array(step_data["qpos"])  # (T+1, nq)
 
     # ctrl: first entry was placeholder, replace with zeros matching action dim
     act_dim = step_data["ctrl"][1].shape[0] if len(step_data["ctrl"]) > 1 else 0
@@ -369,6 +423,7 @@ def _rollout_and_log_video_from_make_policy(
     # Attach metadata
     step_data["body_names"]     = _get_body_names(eval_env)
     step_data["actuator_names"] = _get_actuator_names(eval_env)
+    step_data["joint_names"]    = _get_joint_names(eval_env)
     step_data["ep_reward"]      = ep_reward
     step_data["num_steps"]      = num_steps
     step_data["seed"]           = seed
@@ -414,6 +469,8 @@ def _rollout_and_log_video_from_make_policy(
         has_pos    = isinstance(step_data["body_pos"], np.ndarray) and step_data["body_pos"].ndim == 3
         has_torque = isinstance(step_data["torques"], np.ndarray) and step_data["torques"].ndim == 2
         has_vel    = isinstance(step_data["velocities"], np.ndarray) and step_data["velocities"].ndim == 2
+        has_qpos   = isinstance(step_data["qpos"], np.ndarray) and step_data["qpos"].ndim == 2
+
 
         # ── Build column headers ──
         columns = ["timestep", "reward"]
@@ -443,6 +500,15 @@ def _rollout_and_log_video_from_make_policy(
             vel_cols = [f"vel_{i}" for i in range(n_vel)]
             columns += vel_cols
 
+        qpos_cols = []
+        if has_qpos:
+            jnt_names = step_data.get("joint_names") or []
+            n_qpos = step_data["qpos"].shape[1]
+            if not jnt_names or len(jnt_names) != n_qpos:
+                jnt_names = [f"joint_{i}" for i in range(n_qpos)]
+            qpos_cols = [f"qpos_{j}" for j in jnt_names]
+            columns += qpos_cols
+
         # ── Build rows ──
         rows = []
         for t in range(T):
@@ -454,6 +520,9 @@ def _rollout_and_log_video_from_make_policy(
                 row += step_data["torques"][t].flatten().tolist()
             if has_vel:
                 row += step_data["velocities"][t].flatten().tolist()
+            if has_qpos:
+                row += step_data["qpos"][t].flatten().tolist()
+
             rows.append(row)
 
         # Save CSV
@@ -469,11 +538,12 @@ def _rollout_and_log_video_from_make_policy(
         wandb.log({"eval/rollout_data": table}, step=int(num_steps))
 
         n_bodies_str = f"{n_bodies} bodies" if has_pos else "no body pos"
+        n_qpos_str   = f"{step_data['qpos'].shape[1]} qpos dims" if has_qpos else "no qpos"
         n_torque_str = f"{step_data['torques'].shape[1]} actuators" if has_torque else "no torques"
         n_vel_str    = f"{step_data['velocities'].shape[1]} vel dims" if has_vel else "no velocities"
         print(
             f"[INFO] Rollout logged: {T} steps, {act_dim} ctrl dims, "
-            f"{n_bodies_str}, {n_torque_str}, {n_vel_str}",
+            f"{n_bodies_str}, {n_torque_str}, {n_vel_str}, {n_qpos_str}",
         )
 
     except Exception as e:
