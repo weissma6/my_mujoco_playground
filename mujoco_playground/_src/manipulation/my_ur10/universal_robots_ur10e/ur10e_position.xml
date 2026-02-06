@@ -232,7 +232,10 @@
   </contact>
 
   <equality>
-    <joint joint1="hande_left_finger_joint" joint2="hande_right_finger_joint" polycoef="0 1 0 0 0"/>
+    <joint joint1="hande_left_finger_joint" joint2="hande_right_finger_joint" 
+       polycoef="0 1 0 0 0"
+       solref="0.008 1"
+       solimp="0.95 0.99 0.001"/>
 
   </equality>
 

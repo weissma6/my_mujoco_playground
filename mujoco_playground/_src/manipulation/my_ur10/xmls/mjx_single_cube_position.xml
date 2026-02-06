@@ -7,7 +7,7 @@
     <!-- Box to pick -->
     <body name="box" pos="0.7 0 0.03">
       <freejoint/>
-      <geom type="box" name="box" size="0.02 0.02 0.03" condim="3"
+      <geom type="box" name="box" size="0.02 0.02 0.03" condim="4"
        friction="1 .03 .003" rgba="0 1 0 1" contype="1" conaffinity="3" solref="0.01 1"/>
     </body>
 
