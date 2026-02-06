@@ -23,8 +23,9 @@
        friction="1 .03 .003" rgba="1 0.5 0 1" contype="1" conaffinity="3" solref="0.01 1"/>
     </body>
 
+    <!-- mocap target -->
     <body mocap="true" name="mocap_target">
-      <geom type="obj_box" size="0.02 0.02 0.03" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
+      <geom type="box" size="0.02 0.02 0.03" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
     </body>
   </worldbody>
   
