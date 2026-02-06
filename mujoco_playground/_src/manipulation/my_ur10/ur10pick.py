@@ -104,7 +104,7 @@ class UR10PickCube(ur10_base.UR10Base):
         ])
         # -------------------------------------------------------------------------------------
 
-        self._post_init(obj_name="box", keyframe=init_keyframe)
+        self._post_init(obj_name="obj_box", keyframe=init_keyframe)
         self._sample_orientation = sample_orientation
         self._gripper_site = self._mj_model.site("tcp").id
         self._left_finger_touch = (self._mj_model.site("left_finger_touch_site").id,)

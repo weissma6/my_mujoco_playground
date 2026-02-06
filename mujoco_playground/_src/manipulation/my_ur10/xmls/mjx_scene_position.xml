@@ -21,7 +21,7 @@
       <geom type="sphere" size="0.005" rgba="1 0 0 0" contype="0" conaffinity="0"/>
     </body>
     <camera name="side_130" pos="0.8 -1.1 1.2" mode="targetbody" target="camera_target" fovy="70"/>
-    <camera name="box_detail" pos="0.8 -1.1 0.8" mode="targetbody" target="box" fovy="35"/>
+    <camera name="box_detail" pos="0.8 -1.1 0.8" mode="targetbody" target="obj_box" fovy="35"/>
   </worldbody>
 
 
