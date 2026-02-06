@@ -68,8 +68,6 @@ class UR10PickCube(ur10_base.UR10Base):
         sample_orientation: bool = False,
     ):
 
-        # ------------------------------------------------------------------------------------
-
         xml_path = (
             mjx_env.ROOT_PATH
             / "manipulation"
@@ -77,10 +75,6 @@ class UR10PickCube(ur10_base.UR10Base):
             / "xmls"
             / "mjx_single_multi_shape_position.xml"
         )
-        # print("XML PATH:", xml_path, flush=True)
-
-
-        # ------------------------------------------------------------------------------------
 
         super().__init__(
             xml_path,
@@ -88,21 +82,18 @@ class UR10PickCube(ur10_base.UR10Base):
             config_overrides,
         )
 
-        # Pull keyframe from config (supports external override)
         init_keyframe = getattr(self._config, "init_keyframe", "low_home")
 
-        # ----------Multi shape support: store body and qposadr for box, sphere, cylinder ----------
-        # Multi-shape support
-        self._obj_bodies = jp.array([
+        # Multi-shape support — USE np.array NOT jp.array
+        self._obj_bodies = np.array([
             self._mj_model.body("obj_box").id,
             self._mj_model.body("obj_sphere").id,
             self._mj_model.body("obj_cylinder").id,
         ])
-        self._obj_qposadrs = jp.array([
+        self._obj_qposadrs = np.array([
             self._mj_model.jnt_qposadr[self._mj_model.body(n).jntadr[0]]
             for n in ["obj_box", "obj_sphere", "obj_cylinder"]
         ])
-        # -------------------------------------------------------------------------------------
 
         self._post_init(obj_name="obj_box", keyframe=init_keyframe)
         self._sample_orientation = sample_orientation
@@ -110,16 +101,12 @@ class UR10PickCube(ur10_base.UR10Base):
         self._left_finger_touch = (self._mj_model.site("left_finger_touch_site").id,)
         self._right_finger_touch = (self._mj_model.site("right_finger_touch_site").id,)
 
-        # --- No finger sensors on UR10 ---
-        self._floor_hand_found_sensor = []
-
-        # Contact sensor IDs (UR10 + Hand-E).
         self._floor_hand_found_sensor = [
             self._mj_model.sensor(name).id
             for name in [
-                "left_finger_pad_floor_found",   # ✓ Matches your XML
-                "right_finger_pad_floor_found",  # ✓ Matches your XML
-                "hand_capsule_floor_found",      # ✓ Matches your XML
+                "left_finger_pad_floor_found",
+                "right_finger_pad_floor_found",
+                "hand_capsule_floor_found",
             ]
         ]
         print("Available sensors:", flush=True)
@@ -130,11 +117,11 @@ class UR10PickCube(ur10_base.UR10Base):
     def reset(self, rng: jax.Array) -> State:
         rng, rng_obj, rng_target, rng_robot, rng_gripper, rng_shape = jax.random.split(rng, 6)
 
-        active_shape = jax.random.randint(rng_shape, (), 0, 3)  # 0=box, 1=sphere, 2=cyl
+        # 1. Randomly choose active shape: 0=box, 1=sphere, 2=capsule
+        active_shape = jax.random.randint(rng_shape, (), 0, 3)
         active_body_id = self._obj_bodies[active_shape]
 
-
-        # initialize box position
+        # 2. Randomize object spawn position
         obj_pos = (
             jax.random.uniform(
                 rng_obj,
@@ -145,7 +132,7 @@ class UR10PickCube(ur10_base.UR10Base):
             + self._init_obj_pos
         )
 
-        # initialize target position
+        # 3. Initialize target position
         target_pos = (
             jax.random.uniform(
                 rng_target,
@@ -153,26 +140,23 @@ class UR10PickCube(ur10_base.UR10Base):
                 minval=jp.array([-0.2, -0.3, 0.3]),
                 maxval=jp.array([0.2, 0.3, 0.5]),
             )
-            + self._init_obj_pos # Box position from XML Keyframe
+            + self._init_obj_pos
         )
 
-        # -----------------------------
-        # Randomize robot joint positions (arm only, not gripper)
-        # -----------------------------
+        # 4. Randomize robot joint positions (arm only)
         robot_qpos_noise = jax.random.uniform(
             rng_robot,
-            (len(self._robot_arm_qposadr),),  # 6 arm joints
-            minval=-0.1,  # ~3 degrees in radians
+            (len(self._robot_arm_qposadr),),
+            minval=-0.1,
             maxval=0.1,
         )
-        # Get initial arm qpos and add noise
         init_arm_qpos = jp.array(self._init_q[self._robot_arm_qposadr])
         noisy_arm_qpos = init_arm_qpos + robot_qpos_noise
 
-        # Gripper noise (small range since gripper range is 0-0.025)
+        # Gripper noise
         gripper_noise = jax.random.uniform(
             rng_gripper,
-            (2,),  # left and right finger
+            (2,),
             minval=0.0,
             maxval=0.01,
         )
@@ -188,56 +172,43 @@ class UR10PickCube(ur10_base.UR10Base):
             perturb_theta = jax.random.uniform(rng_theta, maxval=np.deg2rad(45))
             target_quat = math.axis_angle_to_quat(perturb_axis, perturb_theta)
 
-        # -----------------------------
-        # Build initial qpos with randomized arm joints
-        # -----------------------------
+        # 5. Build initial qpos
         init_q = jp.array(self._init_q)
-        
-        # Set body position
-        init_q = init_q.at[self._obj_qposadr : self._obj_qposadr + 3].set(obj_pos) 
-        
-        # Set noisy arm joint positions
+
+        # Set noisy arm + gripper joint positions
         init_q = init_q.at[self._robot_arm_qposadr].set(noisy_arm_qpos)
         init_q = init_q.at[self._robot_qposadr[-2:]].set(noisy_finger_qpos)
 
-                # Place each shape: active one at obj_pos, others underground
+        # Place each shape: active one at obj_pos, others underground
         underground = jp.array([0.0, 0.0, -10.0])
         for i in range(3):
-            adr = self._obj_qposadrs[i]
+            adr = int(self._obj_qposadrs[i])
             pos_i = jp.where(i == active_shape, obj_pos, underground)
             init_q = init_q.at[adr : adr + 3].set(pos_i)
 
-        # -----------------------------
-        # IMPORTANT FIX: make ctrl consistent with init_q - ctrl says: “robot should be somewhere else”
-        # -----------------------------
+        # 6. Make ctrl consistent with init_q
         init_ctrl = jp.array(self._init_ctrl)
-        # Update arm control to match noisy arm positions
         init_ctrl = init_ctrl.at[:len(self._robot_arm_qposadr)].set(noisy_arm_qpos)
-        # Update gripper control (last actuator)
-        init_ctrl = init_ctrl.at[-1].set(noisy_finger_qpos.sum() * 0.5)  # tendon actuator controls sum
+        init_ctrl = init_ctrl.at[-1].set(noisy_finger_qpos.sum() * 0.5)
 
-        # -----------------------------
-        # Create data with CONSISTENT qpos / ctrl
-        # -----------------------------
+        # 7. Create data
         data = mjx_env.make_data(
             self._mj_model,
             qpos=init_q,
             qvel=jp.zeros(self._mjx_model.nv, dtype=float),
-            ctrl=init_ctrl,  
+            ctrl=init_ctrl,
             impl=self._mjx_model.impl.value,
             nconmax=self._config.nconmax,
             njmax=self._config.njmax,
         )
 
-
-
-        # set target mocap position
+        # Set target mocap position
         data = data.replace(
             mocap_pos=data.mocap_pos.at[self._mocap_target, :].set(target_pos),
             mocap_quat=data.mocap_quat.at[self._mocap_target, :].set(target_quat),
         )
 
-        # initialize env state and info
+        # 8. Initialize env state and info
         metrics = {
             "out_of_bounds": jp.array(0.0, dtype=float),
             **{k: 0.0 for k in self._config.reward_config.scales.keys()},
@@ -251,11 +222,11 @@ class UR10PickCube(ur10_base.UR10Base):
             "step": jp.array(0, dtype=jp.int32),
             "debug_every": jp.array(10, dtype=jp.int32),
         }
+
         obs = self._get_obs(data, info)
         reward, done = jp.zeros(2)
-        state = State(data, obs, reward, done, metrics, info)
 
-        return state
+        return State(data, obs, reward, done, metrics, info)
 
     def step(self, state: State, action: jax.Array) -> State:
         delta = action * self._action_scale
