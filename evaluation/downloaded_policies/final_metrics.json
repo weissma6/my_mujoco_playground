@@ -1,7 +1,7 @@
 {
-  "eval/walltime": 152.25419449806213,
-  "training/sps": 412333.238292225,
-  "training/walltime": 1854.2298564910889,
-  "eval/epoch_eval_time": 1.2756555080413818,
-  "eval/sps": 15051.085405870532
+  "eval/walltime": 239.45453023910522,
+  "training/sps": 145273.57172234313,
+  "training/walltime": 1785.7117614746094,
+  "eval/epoch_eval_time": 3.500108242034912,
+  "eval/sps": 5485.54463813879
 }
