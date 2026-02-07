@@ -28,7 +28,7 @@
 
   <statistic center="0.4 0 0.4" extent="1"/>
 
-  <option timestep="0.005" iterations="5" ls_iterations="8" 
+  <option timestep="0.005" iterations="10" ls_iterations="10" 
   integrator="implicitfast">
     <!-- <flag eulerdamp="disable"/> -->
 
