@@ -32,7 +32,7 @@ def default_config() -> config_dict.ConfigDict:
     """Returns the default config for bring_to_target tasks."""
     config = config_dict.create(
         ctrl_dt=0.02,
-        sim_dt=0.005,
+        sim_dt=0.002,
         episode_length=150,
         action_repeat=1,
         action_scale=0.04,
