@@ -189,8 +189,8 @@
                       <geom name="left_finger_collision" 
                             type="box" size="0.0055 0.011 0.023" pos="-0.0305 0 0.025" rgba="0 1 0 0.3" 
                             contype="1" conaffinity="1" group="3"
-                            solref="0.005 1"
-                            solimp="0.99 0.995 0.01 0.5 2"
+                            solref="0.02 1"
+                            solimp="0.95 0.99 0.001"
                             friction="1 0.05 0.0001"/> 
                       <site name="left_finger_touch_site" pos="-0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
@@ -207,8 +207,8 @@
                       <geom name="right_finger_collision" 
                             type="box" size="0.0056 0.012 0.023" pos="0.0305 0 0.025" rgba="0 1 0 0.3" 
                             contype="1" conaffinity="1" group="3"
-                            solref="0.005 1"
-                            solimp="0.99 0.995 0.01 0.5 2"
+                            solref="0.02 1"
+                            solimp="0.95 0.99 0.001"
                             friction="1 0.05 0.0001"/>   
                       <site name="right_finger_touch_site" pos="0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
@@ -260,7 +260,7 @@
         ctrlrange="0 0.05"
         tendon="split"
         kp="400" 
-        kv="30"              
+        kv="10"              
         forcerange="-150 150"
         ctrllimited="true"
         forcelimited="true"    
