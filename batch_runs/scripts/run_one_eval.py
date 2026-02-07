@@ -75,9 +75,14 @@ def get_box_info(env):
 
 
 def load_env_with_shift(env_name, box_info, mass_scale=1.0, friction_scale=1.0):
-    """Load env and patch raw MuJoCo model with shifted mass/friction."""
+    """Load env, patch raw MuJoCo model, then recompile MJX model."""
+    from mujoco import mjx
+
     with contextlib.redirect_stdout(io.StringIO()):
         env = registry.load(env_name)
+
+    if mass_scale == 1.0 and friction_scale == 1.0:
+        return env
 
     mj_model = None
     for attr in ("mj_model", "_mj_model", "model"):
@@ -98,6 +103,9 @@ def load_env_with_shift(env_name, box_info, mass_scale=1.0, friction_scale=1.0):
         mj_model.body_mass[bid] = box_info["nominal_mass"] * mass_scale
     if friction_scale != 1.0:
         mj_model.geom_friction[gid][0] = box_info["nominal_friction"][0] * friction_scale
+
+    # Re-compile the MJX model so jit_reset/jit_step see the changes
+    env._mjx_model = mjx.put_model(mj_model)
 
     return env
 
