@@ -311,7 +311,7 @@ def main():
 
     elapsed = time.time() - t0
 
-    # ── Save results ──
+    # ── Save results locally ──
     result = {
         "eval_id": eval_id,
         "policy_run_id": policy_run_id,
@@ -336,11 +336,61 @@ def main():
     with open(results_path, "w") as f:
         json.dump(result, f, indent=2)
 
+    # ── Log to W&B ──
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    wandb_project = cfg.get("wandb_project", "UR10_pick_ppo")
+    run = wandb.init(
+        project=wandb_project,
+        name=eval_id,
+        group="eval",
+        tags=["eval", condition, policy_run_id.split("_20")[0]],
+        config=cfg,
+        job_type="eval",
+    )
+
+    # Log summary metrics
+    run.summary["mean_reward"] = float(rewards.mean())
+    run.summary["std_reward"] = float(rewards.std())
+    run.summary["min_reward"] = float(rewards.min())
+    run.summary["max_reward"] = float(rewards.max())
+    run.summary["elapsed_s"] = round(elapsed, 1)
+
+    # Log histogram plot
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.hist(rewards, bins=15, color="#2E86AB", edgecolor="white", alpha=0.8)
+    ax.axvline(rewards.mean(), color="red", linestyle="--", linewidth=2,
+               label=f"μ={rewards.mean():.1f}")
+    ax.axvline(rewards.mean() - rewards.std(), color="gray", linestyle=":", linewidth=1.2)
+    ax.axvline(rewards.mean() + rewards.std(), color="gray", linestyle=":", linewidth=1.2,
+               label=f"σ={rewards.std():.1f}")
+    ax.legend(fontsize=10)
+    ax.set_xlabel("Episode Reward", fontsize=12)
+    ax.set_ylabel("Count", fontsize=12)
+    ax.set_title(f"{eval_id}  (n={len(rewards)})", fontsize=14, fontweight="bold")
+    plt.tight_layout()
+    wandb.log({"reward_histogram": wandb.Image(fig)})
+    plt.close(fig)
+
+    # Log raw rewards as a table
+    table = wandb.Table(columns=["rollout", "reward"])
+    for i, r in enumerate(rewards.tolist()):
+        table.add_data(i, r)
+    wandb.log({"rewards_table": table})
+
+    # Log results JSON as artifact
+    artifact = wandb.Artifact(f"eval_{eval_id}", type="eval")
+    artifact.add_file(results_path)
+    wandb.log_artifact(artifact)
+
+    run.finish()
+
     print(f"\n✓ Done in {elapsed:.0f}s", flush=True)
     print(f"  mean={rewards.mean():.1f} ± {rewards.std():.1f}  "
           f"[{rewards.min():.1f}, {rewards.max():.1f}]", flush=True)
-    print(f"  Saved to {results_path}", flush=True)
-
+    print(f"  Logged to W&B: {eval_id}", flush=True)
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,8 @@
+{
+  "eval_id": "NoDR_default",
+  "policy_run_id": "DomainR_off_lr0.0006_KPKV200050_20260207_110534_8852",
+  "condition": "Default",
+  "num_rollouts": 50,
+  "episode_length": 100,
+  "seed_base": 10
+}
