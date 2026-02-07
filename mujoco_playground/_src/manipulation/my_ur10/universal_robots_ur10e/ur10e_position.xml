@@ -257,7 +257,7 @@
 
     <!-- Hand-E tendon actuator (as original) -->
     <position name="hande_fingers_actuator" 
-        ctrlrange="0 0.05"
+        ctrlrange="0 0.025"
         tendon="split"
         kp="2000" 
         kv="100"              
