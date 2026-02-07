@@ -24,6 +24,8 @@ from datetime import datetime
 from flax import serialization
 import time
 import mujoco
+import re
+
 
 
 def is_nvidia_available() -> bool:
@@ -1065,7 +1067,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             wandb.run.summary["final_eval_return"] = float(final_metrics["eval/episode_reward"])
 
         # Log everything as a single artifact
-        safe_id = wandb.run.id.replace(" ", "_")
+        safe_id = re.sub(r"[^a-zA-Z0-9_\-.]", "_", wandb.run.id)
         artifact = wandb.Artifact(f"policy_parameters_{safe_id}", type="model")
 
         artifact.add_file(params_path)
