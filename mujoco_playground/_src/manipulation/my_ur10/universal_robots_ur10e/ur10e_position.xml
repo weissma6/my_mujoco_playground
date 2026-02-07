@@ -260,7 +260,7 @@
         ctrlrange="0 0.05"
         tendon="split"
         kp="4000" 
-        kv="30"              
+        kv="300"              
         forcerange="-200 200"
         ctrllimited="true"
         forcelimited="true"    
