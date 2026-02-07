@@ -30,7 +30,7 @@
 
   <option timestep="0.005" iterations="10" ls_iterations="10" 
   integrator="implicitfast">
-    <!-- <flag eulerdamp="disable"/> -->
+    <flag eulerdamp="disable"/>
 
   </option>
 
