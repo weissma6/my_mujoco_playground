@@ -1,0 +1,11 @@
+{
+  "base_dir": "/Users/matthiasweiss/Desktop/ZHAW/MSE/3_VT1_Model Based RL/My_Mujoco/my_mujoco_playground/evaluation/downloaded_policies/DomainR_MFR_lr0.0008_KPKV400030_20260206_194813_1277",
+  "entity": "weissma6-zhaw-school-of-engineering",
+  "model_artifact_name": "policy_parameters_DomainR_MFR_lr0.0008_KPKV400030_20260206_194813_1277:v0",
+  "params_path": "/Users/matthiasweiss/Desktop/ZHAW/MSE/3_VT1_Model Based RL/My_Mujoco/my_mujoco_playground/evaluation/downloaded_policies/DomainR_MFR_lr0.0008_KPKV400030_20260206_194813_1277/params.msgpack",
+  "params_src": "/Users/matthiasweiss/Desktop/ZHAW/MSE/3_VT1_Model Based RL/My_Mujoco/my_mujoco_playground/evaluation/downloaded_policies/DomainR_MFR_lr0.0008_KPKV400030_20260206_194813_1277/_wb_tmp/params.msgpack",
+  "project": "UR10_pick_ppo",
+  "run_id": "DomainR_MFR_lr0.0008_KPKV400030_20260206_194813_1277",
+  "run_name": "DomainR_MFR_lr0.0008_KPKV400030_20260206_194813_1277",
+  "run_url": "https://wandb.ai/weissma6-zhaw-school-of-engineering/UR10_pick_ppo/runs/DomainR_MFR_lr0.0008_KPKV400030_20260206_194813_1277"
+}
