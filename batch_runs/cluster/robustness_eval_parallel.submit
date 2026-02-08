@@ -28,7 +28,7 @@ echo "Node: $(hostname)"
 echo "GPU:  $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'N/A')"
 echo "Start: $(date)"
 
-python "${SLURM_SUBMIT_DIR}/run_robustness_eval_parallel.py"
+python evaluation/run_robustness_eval_parallel.py
 
 echo "Done: $(date)"
 echo "=== robustness eval completed ===" >&2
