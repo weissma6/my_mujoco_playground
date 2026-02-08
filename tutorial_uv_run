@@ -41,7 +41,7 @@ sacct -u weissma6 \
 find . -maxdepth 3 -type f -name "*82353*" -print
 
 tail -f logs/UR10_sweep_uv_86756_2.err
-tail -f logs/ur10_robustness_86811.out
+tail -f logs/ur10_robustness_86816.err
 # Watch resource usage (CPU)
 sstat -j 82108_1.batch --format=AveCPU,AveRSS,MaxRSS,MaxVMSize,AveDiskRead,AveDiskWrite
 srun --jobid 82108_1 -n 1 nvidia-smi
