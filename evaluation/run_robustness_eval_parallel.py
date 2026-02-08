@@ -38,7 +38,7 @@ USER = "weissma6-zhaw-school-of-engineering"
 PROJECT = "UR10_pick_ppo"
 ENV_NAME = "UR10PickCube"
 
-policy_runs = {
+POLICY_RUNS = {
     "No DR":    "Damp=2_kp400kv1_DR_off_20260208_174610_5184",
     "DR Fric":  "Damp=2_kp400kv1_DR_FR_20260208_174619_4881",
     "DR Mass":  "Damp=2_kp400kv1_DR_M_20260208_174609_5582",
