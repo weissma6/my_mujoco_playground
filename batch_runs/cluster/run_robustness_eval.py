@@ -47,9 +47,9 @@ POLICY_RUNS = {
 
 TEST_CONDITIONS = {
     "Default":                               {"mass_range": None,       "friction_range": None},
-    "Mass [1.9, 2.0]":                       {"mass_range": (1.9, 2.0), "friction_range": None},
-    "Friction [0.5, 0.6]":                   {"mass_range": None,       "friction_range": (0.5, 0.6)},
-    "Mass [1.9, 2.0] / Friction [0.5, 0.6]": {"mass_range": (1.9, 2.0), "friction_range": (0.5, 0.6)},
+    "Mass [1.5, 2.0]":                       {"mass_range": (1.5, 2.0), "friction_range": None},
+    "Friction [0.5, 0.8]":                   {"mass_range": None,       "friction_range": (0.5, 0.8)},
+    "Mass [1.5, 2.0] / Friction [0.5, 0.6]": {"mass_range": (1.5, 2.0), "friction_range": (0.5, 0.8)},
 }
 
 NUM_ROLLOUTS = 100
