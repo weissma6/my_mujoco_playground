@@ -52,10 +52,10 @@
     </default>
     <default class="hande">
       <default class="hande_right_finger">
-        <joint type="slide" range="0 0.025" actuatorfrcrange="-20 20" damping="0.5" armature="0.02"/>
+        <joint type="slide" range="0 0.025" actuatorfrcrange="-30 30" damping="0.4" armature="0.01"/>
       </default>
       <default class="hande_left_finger">
-        <joint type="slide" range="0 0.025" actuatorfrcrange="-20 20" damping="0.5" armature="0.02"/>
+        <joint type="slide" range="0 0.025" actuatorfrcrange="-30 30" damping="0.4" armature="0.01"/>
       </default>
     </default>
   </default>
@@ -191,7 +191,7 @@
                             contype="1" conaffinity="1" group="3"
                             solref="0.03 1"
                             solimp="0.95 0.99 0.001"
-                            friction="2.0 0.05 0.001"/> 
+                            friction="2.0 0.5 0.001"/> 
                       <site name="left_finger_touch_site" pos="-0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
 
@@ -209,7 +209,7 @@
                             contype="1" conaffinity="1" group="3"
                             solref="0.03 1"
                             solimp="0.95 0.99 0.001"
-                            friction="2.0 0.05 0.001"/>   
+                            friction="2.0 0.5 0.001"/>   
                       <site name="right_finger_touch_site" pos="0.025 0 0.04" size="0.002" rgba="1 0 0 1" group="2"/>
                     </body>
                   </body>
@@ -261,7 +261,7 @@
         tendon="split"
         kp="800" 
         kv="22"              
-        forcerange="-20 20"
+        forcerange="-30 30"
         ctrllimited="true"
         forcelimited="true"    
         />
