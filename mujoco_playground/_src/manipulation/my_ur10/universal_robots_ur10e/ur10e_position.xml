@@ -52,10 +52,10 @@
     </default>
     <default class="hande">
       <default class="hande_right_finger">
-        <joint type="slide" range="0 0.025" actuatorfrcrange="-100 100" />
+        <joint type="slide" range="0 0.025" actuatorfrcrange="-100 100" damping="0.1" armature="0.005"/>
       </default>
       <default class="hande_left_finger">
-        <joint type="slide" range="0 0.025" actuatorfrcrange="-100 100" />
+        <joint type="slide" range="0 0.025" actuatorfrcrange="-100 100" damping="0.1" armature="0.005"/>
       </default>
     </default>
   </default>
@@ -257,11 +257,11 @@
 
     <!-- Hand-E tendon actuator (as original) -->
     <position name="hande_fingers_actuator" 
-        ctrlrange="0 0.025"
+        ctrlrange="0 0.05"
         tendon="split"
-        kp="800" 
-        kv="50"              
-        forcerange="-130 130"
+        kp="300" 
+        kv="13"              
+        forcerange="-100 100"
         ctrllimited="true"
         forcelimited="true"    
         />
