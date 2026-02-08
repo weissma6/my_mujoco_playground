@@ -162,7 +162,7 @@
                     diaginertia="0.000204525 0.000144346 0.000144346"/>
                   <joint name="wrist_3_joint" class="size2"/>
                   <geom material="linkgray" mesh="wrist3" class="visual"/>
-                  <geom name="attachment_site_collision" class="eef_collision" pos="0 0.1245 0" quat="1 1 0 0" size="0.046 0.0475"/>
+                  <geom name="attachment_site_collision" class="eef_collision" pos="0 0.12 0" quat="1 1 0 0" size="0.046 0.04753"/>
                   <site name="attachment_site" pos="0 0.1 0" quat="-1 1 0 0"/>
 
                   <!-- ================= Hand-E Integration ================= -->
@@ -187,7 +187,7 @@
                       <geom name="left_finger" mesh="left_finger" class="visual" rgba="0.4 0.4 0.4 1"/> 
                       <!--geom  class="hande_collision" mesh="hande_col_left" contype="2" conaffinity="1"/-->
                       <geom name="left_finger_collision" 
-                            type="box" size="0.0055 0.011 0.023" pos="-0.0305 0 0.025" rgba="0 1 0 0.3" 
+                            type="box" size="0.0055 0.011 0.025" pos="-0.0305 0 0.023" rgba="0 1 0 0.3" 
                             contype="1" conaffinity="1" group="3"
                             solref="0.01 1"
                             solimp="0.99 0.995 0.001"
@@ -205,7 +205,7 @@
                       <geom name="right_finger" mesh="right_finger" class="visual" rgba="0.4 0.4 0.4 1"/>
                       <!--geom class="hande_collision" mesh="hande_col_right" contype="4" conaffinity="1"/-->
                       <geom name="right_finger_collision" 
-                            type="box" size="0.0056 0.012 0.023" pos="0.0305 0 0.025" rgba="0 1 0 0.3" 
+                            type="box" size="0.0056 0.012 0.025" pos="0.0305 0 0.023" rgba="0 1 0 0.3" 
                             contype="1" conaffinity="1" group="3"
                             solref="0.01 1"
                             solimp="0.99 0.995 0.001"
