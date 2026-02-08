@@ -38,11 +38,11 @@ USER = "weissma6-zhaw-school-of-engineering"
 PROJECT = "UR10_pick_ppo"
 ENV_NAME = "UR10PickCube"
 
-POLICY_RUNS = {
-    "No DR":   "4001_FR130_limp0.990.995_Damp=0.5_DR_off_20260208_170954_8864",
-    "DR Mass": "4001_FR130_limp0.990.995_Damp=0.5_DR_M_20260208_170954_8986",
-    "DR Fric": "4001_FR130_limp0.990.995_Damp=0.5_DR_FR_20260208_170958_525",
-    "DR M+F":  "4001_FR130_limp0.990.995_Damp=0.5_DR_MFR_20260208_170951_9961",
+policy_runs = {
+    "No DR":    "Damp=2_kp400kv1_DR_off_20260208_174610_5184",
+    "DR Fric":  "Damp=2_kp400kv1_DR_FR_20260208_174619_4881",
+    "DR Mass":  "Damp=2_kp400kv1_DR_M_20260208_174609_5582",
+    "DR M+F":   "Damp=2_kp400kv1_DR_MFR_20260208_174610_1425",
 }
 
 TEST_CONDITIONS = {
