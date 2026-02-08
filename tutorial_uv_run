@@ -49,7 +49,7 @@ srun --jobid 82108_1 -n 1 nvidia-smi
 # Press Ctrl + C
 
 # See detailed job info
-scontrol show job <job_id>  
+scontrol show job 86741 
 
 ## Cancel job if needed
 scancel <job_id>

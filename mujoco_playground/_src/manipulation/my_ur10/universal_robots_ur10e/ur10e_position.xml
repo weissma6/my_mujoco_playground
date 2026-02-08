@@ -52,10 +52,10 @@
     </default>
     <default class="hande">
       <default class="hande_right_finger">
-        <joint type="slide" range="0 0.025" actuatorfrcrange="-100 100" damping="0.5" armature="0.02"/>
+        <joint type="slide" range="0 0.025" actuatorfrcrange="-100 100" damping="0.75" armature="0.02"/>
       </default>
       <default class="hande_left_finger">
-        <joint type="slide" range="0 0.025" actuatorfrcrange="-100 100" damping="0.5" armature="0.02"/>
+        <joint type="slide" range="0 0.025" actuatorfrcrange="-100 100" damping="0.75" armature="0.02"/>
       </default>
     </default>
   </default>
