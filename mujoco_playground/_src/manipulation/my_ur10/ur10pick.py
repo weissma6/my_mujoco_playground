@@ -39,10 +39,8 @@ def default_config() -> config_dict.ConfigDict:
         reward_config=config_dict.create(
             scales=config_dict.create(
                 ## Reward scaling factors
-                # Gripper goes to the box.
-                gripper_box=4.0,
                 # Box goes to the target mocap.
-                box_target=8.0,
+                reach_target=8.0,
                 # Do not collide the gripper with the floor.
                 no_floor_collision=0.25,
                 # Arm stays close to target pose.
@@ -134,8 +132,8 @@ class UR10PickCube(ur10_base.UR10Base):
             jax.random.uniform(
                 rng_target,
                 (3,),
-                minval=jp.array([-0.2, -0.2, 0.2]),
-                maxval=jp.array([0.2, 0.2, 0.4]),
+                minval=jp.array([-0.4, -0.4, 0.4]),
+                maxval=jp.array([0.4, 0.4, 0.6]),
             )
             + self._init_obj_pos # Box position from XML Keyframe
         )
@@ -217,14 +215,16 @@ class UR10PickCube(ur10_base.UR10Base):
         # initialize env state and info
         metrics = {
             "out_of_bounds": jp.array(0.0, dtype=float),
-            **{k: 0.0 for k in self._config.reward_config.scales.keys()},
+            "success": jp.array(0.0, dtype=float),
+            "tcp_target_dist": jp.array(0.0, dtype=float),
+            **{k: jp.array(0.0, dtype=float) for k in self._config.reward_config.scales.keys()},
         }
         info = {
             "rng": rng,
             "target_pos": target_pos,
-            "reached_box": 0.0,
-            "step": jp.array(0, dtype=jp.int32),        # step counter for debug printing
-            "debug_every": jp.array(10, dtype=jp.int32) # print every N steps (set N here)
+            "step": jp.array(0, dtype=jp.int32),
+            "debug_every": jp.array(10, dtype=jp.int32),
+            "success_counter": jp.array(0, dtype=jp.int32),
         }
         obs = self._get_obs(data, info)
         reward, done = jp.zeros(2)
@@ -265,120 +265,120 @@ class UR10PickCube(ur10_base.UR10Base):
         info = dict(state.info)
         info["step"] = info["step"] + 1
 
-        raw_rewards, raw_signals = self._get_reward(data, info)  # <-- pass info
-        rewards = {k: v * self._config.reward_config.scales[k] for k, v in raw_rewards.items()}
-        reward = jp.clip(sum(rewards.values()), -1e4, 1e4) # Reward clipping to avoid NaNs
+        raw_rewards, raw_signals = self._get_reward(data, info)
+        rewards = {
+            k: v * self._config.reward_config.scales[k]
+            for k, v in raw_rewards.items()
+        }
+        reward = jp.clip(sum(rewards.values()), -1e4, 1e4)
 
-        box_pos = data.xpos[self._obj_body]
-        out_of_bounds = jp.any(jp.abs(box_pos) > 1.2) | (box_pos[2] < 0.0)
-        done = (out_of_bounds | jp.isnan(data.qpos).any() | jp.isnan(data.qvel).any()).astype(jp.float32)
+        tcp_pos = data.site_xpos[self._gripper_site]
+        tcp_target_dist = jp.linalg.norm(info["target_pos"] - tcp_pos)
+
+        success_now = tcp_target_dist < 0.03
+        info["success_counter"] = jp.where(
+            success_now,
+            info["success_counter"] + 1,
+            jp.array(0, dtype=jp.int32),
+        )
+        success = info["success_counter"] >= 3
+
+        out_of_bounds = (
+            jp.any(jp.abs(tcp_pos[:2]) > 1.2) |
+            (tcp_pos[2] < 0.0)
+        )
+
+        invalid_state = (
+            jp.isnan(data.qpos).any() |
+            jp.isnan(data.qvel).any()
+        )
+
+        done = (success | out_of_bounds | invalid_state).astype(jp.float32)
 
         metrics = state.metrics
-        metrics.update(**raw_rewards, out_of_bounds=out_of_bounds.astype(jp.float32))
+        metrics.update(
+            **raw_rewards,
+            out_of_bounds=out_of_bounds.astype(jp.float32),
+            success=success.astype(jp.float32),
+            tcp_target_dist=tcp_target_dist,
+        )
 
-        # # env index should be stored in info at reset, e.g. info["env_id"]
-        # eid = state.info.get("env_id")  # default to -1 if not found    
-        # dummy = jp.array(0, dtype=jp.int32)
-        # def _do_print(_):
-        #     jax.debug.print(
-        #         "[EP END] env={eid} t={t}\n"
-        #         "POS tp={tp} bp={bp} gp={gp}\n"
-        #         "DIST btd={btd:.4f} re={re:.4f} gbd={gbd:.4f}\n"
-        #         "EVT rb={rb} fc={fc} oob={oob}\n"
-        #         "REWARDS gb={gb:.3f} bt={bt:.3f} nf={nf:.3f} mp={mp:.3f} TOT={tot:.3f}\n\n",
-        #         eid=eid,
-        #         t=info["step"],
-        #         tp=raw_signals["target_pos"],
-        #         bp=raw_signals["box_pos"],
-        #         gp=raw_signals["gripper_pos"],
-        #         btd=raw_signals["box_target_dist"],
-        #         re=raw_signals["rot_err"],
-        #         gbd=raw_signals["grip_box_dist"],
-        #         rb=raw_signals["reached_box"],
-        #         fc=raw_signals["number_floor_collision"],
-        #         oob=out_of_bounds.astype(jp.int32),
-        #         gb=rewards["gripper_box"],
-        #         bt=rewards["box_target"],
-        #         nf=rewards["no_floor_collision"],
-        #         mp=rewards["robot_target_qpos"],
-        #         tot=reward,
-        #     )
-
-        #     return dummy
-
-        # print_this = (done > 0.0) & (eid == 0) # only print for env 0 at episode end
-        # _ = jax.lax.cond(print_this, _do_print, lambda _: dummy, operand=dummy)
-
-        obs = self._get_obs(data, info)  # <-- use info
-        return State(data, obs, reward, done, metrics, info)  # <-- return info
+        obs = self._get_obs(data, info)
+        return State(data, obs, reward, done, metrics, info)
 
     def _get_reward(self, data: mjx.Data, info: Dict[str, Any]) -> Dict[str, Any]:
         # ==============================
         # Postition world-frame 
         # ==============================
         # Endposition of the mocap target - JAX array (3,) float64
-        target_pos = info[
-            "target_pos"
-        ]
-        # Current position of the box - JAX array (3,) float64
-        box_pos = data.xpos[
-            self._obj_body
-        ]
-        # World-frame Cartesian position of the TCP site - JAX array (3,) float64
-        gripper_pos = data.site_xpos[
-            self._gripper_site
-        ]
-        # World-frame Cartesian position of the left_finger_touch site - JAX array (3,) float64
-        left_finger_touch_pos = data.site_xpos[
-            self._left_finger_touch
-        ]
-        # World-frame Cartesian position of the right_finger_touch site - JAX array (3,) float64
-        right_finger_touch_pos = data.site_xpos[
-            self._right_finger_touch
-        ]
+        # target_pos = info[
+        #     "target_pos"
+        # ]
+        # # Current position of the box - JAX array (3,) float64
+        # box_pos = data.xpos[
+        #     self._obj_body
+        # ]
+        # # World-frame Cartesian position of the TCP site - JAX array (3,) float64
+        # gripper_pos = data.site_xpos[
+        #     self._gripper_site
+        # ]
+        # # World-frame Cartesian position of the left_finger_touch site - JAX array (3,) float64
+        # left_finger_touch_pos = data.site_xpos[
+        #     self._left_finger_touch
+        # ]
+        # # World-frame Cartesian position of the right_finger_touch site - JAX array (3,) float64
+        # right_finger_touch_pos = data.site_xpos[
+        #     self._right_finger_touch
+        # ]
+
+        tcp_pos = data.site_xpos[self._gripper_site]
+        target_pos = info["target_pos"]
+        tcp_target_dist = jp.linalg.norm(target_pos - tcp_pos)
+
         # ==============================
         # Distance calcluation 
         # ==============================
         # Euclidean distance between box and target - scalar JAX float64
-        box_target_dist = jp.linalg.norm(
-            target_pos - box_pos
-        )
-        # Euclidean distance between gripper and box - scalar JAX float64
-        gripper_box_dist = jp.linalg.norm(
-            box_pos - gripper_pos
-        )
-        # Euclidean distance between the two finger touch sites - scalar JAX float64
-        finger_touch_dist = jp.linalg.norm(
-            right_finger_touch_pos - left_finger_touch_pos
-        )
+        # box_target_dist = jp.linalg.norm(
+        #     target_pos - box_pos
+        # )
+        # # Euclidean distance between gripper and box - scalar JAX float64
+        # gripper_box_dist = jp.linalg.norm(
+        #     box_pos - gripper_pos
+        # )
+        # # Euclidean distance between the two finger touch sites - scalar JAX float64
+        # finger_touch_dist = jp.linalg.norm(
+        #     right_finger_touch_pos - left_finger_touch_pos
+        # )
 
         # ==============================
         # --- Rotation related computations ---
-        # ==============================
-        # World-frame rotation matrix of the box - JAX array (3,3) float64
-        box_mat = data.xmat[
-            self._obj_body
-        ]
-        # World-frame rotation matrix of the mocap target - JAX array (3,3) float64
-        target_mat = math.quat_to_mat(
-            data.mocap_quat[self._mocap_target]
-        )
-        # Rotation error between box and target - scalar JAX float64
-        rot_err = jp.linalg.norm(
-            target_mat.ravel()[:6] - box_mat.ravel()[:6]
-        )  
+        # # ==============================
+        # # World-frame rotation matrix of the box - JAX array (3,3) float64
+        # box_mat = data.xmat[
+        #     self._obj_body
+        # ]
+        # # World-frame rotation matrix of the mocap target - JAX array (3,3) float64
+        # target_mat = math.quat_to_mat(
+        #     data.mocap_quat[self._mocap_target]
+        # )
+        # # Rotation error between box and target - scalar JAX float64
+        # rot_err = jp.linalg.norm(
+        #     target_mat.ravel()[:6] - box_mat.ravel()[:6]
+        # )  
 
         # ==============================
         # --- Reward terms ---
         # ==============================
+        reach_reward = 1 - jp.tanh(5.0 * tcp_target_dist)
         # Reward for box being at target - scalar JAX float64
-        box_target_Reward = 1 - jp.tanh(
-            5 * (0.9 * box_target_dist + 0.1 * rot_err)
-        )
-        # Reward for gripper being at box - scalar JAX float64
-        gripper_box_Reward = 1 - jp.tanh(
-            5 * gripper_box_dist
-        )
+        # box_target_Reward = 1 - jp.tanh(
+        #     5 * (0.9 * box_target_dist + 0.1 * rot_err)
+        # )
+        # # Reward for gripper being at box - scalar JAX float64
+        # gripper_box_Reward = 1 - jp.tanh(
+        #     5 * gripper_box_dist
+        # )
         # Penalty for deviating too far from the initial arm configuration - scalar JAX float64
         robot_target_qpos_penalty = 1 - jp.tanh(
             jp.linalg.norm(
@@ -386,10 +386,10 @@ class UR10PickCube(ur10_base.UR10Base):
                 - self._init_q[self._robot_arm_qposadr]
             )
         )
-        # rewartd for finger distans large, when distance to boy large
-        finger_touch_Reward = jp.tanh(
-            finger_touch_dist / (gripper_box_dist + 1e-6) 
-        )
+        # # rewartd for finger distans large, when distance to boy large
+        # finger_touch_Reward = jp.tanh(
+        #     finger_touch_dist / (gripper_box_dist + 1e-6) 
+        # )
 
         # Floor collision via touch sensors (same as Panda) - scalar JAX float64
         # List of booleans indicating if each sensor detects contact with the floor
@@ -408,16 +408,15 @@ class UR10PickCube(ur10_base.UR10Base):
         # ==============================
         # --- Same "reached_box" gate as Panda, but based on fingertip midpoint ---
         # Binary indicator if the gripper has reached the box - scalar JAX float64
-        info["reached_box"] = 1.0 * jp.maximum(
-            info["reached_box"],
-            (gripper_box_dist < 0.02),  # Panda threshold was 0.012
-        )  
+        # info["reached_box"] = 1.0 * jp.maximum(
+        #     info["reached_box"],
+        #     (gripper_box_dist < 0.02),  # Panda threshold was 0.012
+        # )  
 
         rewards = {
-            "gripper_box": gripper_box_Reward,
-            "box_target": box_target_Reward * info["reached_box"],
             "no_floor_collision": no_floor_collision_Reward,
             "robot_target_qpos": robot_target_qpos_penalty,
+            "reach_target": reach_reward,
         }
         # ==============================
         # Raw signals dict (for debug)
@@ -425,19 +424,19 @@ class UR10PickCube(ur10_base.UR10Base):
         raw = {
             # positions
             "target_pos": target_pos,
-            "box_pos": box_pos,
-            "gripper_pos": gripper_pos,
-            "left_finger_touch_pos": left_finger_touch_pos,
-            "right_finger_touch_pos": right_finger_touch_pos,
+            # "box_pos": box_pos,
+            # "gripper_pos": gripper_pos,
+            # "left_finger_touch_pos": left_finger_touch_pos,
+            # "right_finger_touch_pos": right_finger_touch_pos,
 
-            # errors / distances
-            "box_target_dist": box_target_dist,
-            "rot_err": rot_err,
-            "grip_box_dist": gripper_box_dist,
-            "finger_touch_dist": finger_touch_dist,
+            # # errors / distances
+            # "box_target_dist": box_target_dist,
+            # "rot_err": rot_err,
+            # "grip_box_dist": gripper_box_dist,
+            # "finger_touch_dist": finger_touch_dist,
 
-            # events
-            "reached_box": info["reached_box"],
+            # # events
+            # "reached_box": info["reached_box"],
             "number_floor_collision": floor_collision,
         }
 

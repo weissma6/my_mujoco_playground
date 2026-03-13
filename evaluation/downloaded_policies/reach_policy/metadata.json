@@ -1,0 +1,6 @@
+{
+  "policy_name": "reach_policy",
+  "env_name": "UR10PickCube",
+  "saved_from_branch": "current_branch_unknown",
+  "notes": "UR10 reach policy trained locally with Brax PPO."
+}
