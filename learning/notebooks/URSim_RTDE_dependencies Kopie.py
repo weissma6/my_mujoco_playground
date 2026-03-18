@@ -369,11 +369,10 @@ end
         gain=300,
         pre_movej_a=2.5,
         pre_movej_v=2.0,
-        pre_timeout_s=20.0,
+        pre_timeout_s=15.0,
         start_reach_tol=0.05,
         textmsg_start="go_start_fast",
         send_t=None,
-        debug_print=True,
     ):
         """
         Generic timed experiment loop without MuJoCo rendering.
@@ -392,15 +391,12 @@ end
                           {"dist": float_value, ...}
         """
 
-        dt_start = 1.0 / float(10)
         dt = 1.0 / float(control_hz)
         if send_t is None:
             send_t = dt
 
         q_start = np.asarray(q_start, dtype=float)
         q_goal = np.asarray(q_goal, dtype=float)
-        if debug_print:
-            print("\nStarting loop...")
 
         # ------------------------------------------
         # Fast pre-positioning to start pose
@@ -413,14 +409,13 @@ end
             err = np.linalg.norm(q_now - np.array(q_start, dtype=float))
             if err < start_reach_tol:
                 break
-            if (time.perf_counter() - pre_start_t) > pre_timeout_s:
-                print("Pre-position timeout")
+            if time.perf_counter() - pre_start_t > pre_timeout_s:
+                print("\nPre-position timeout")
                 break
-            time.sleep(dt_start)
+            time.sleep(dt)
 
-        if debug_print:
-            print(f"Reached start pose in {time.perf_counter() - pre_start_t:.2f} seconds")
-            print(np.round(q_now, 3))
+        # print("\nReached start pose. Beginning timed loop.")
+
         # ------------------------------------------
         # Timed loop
         # ------------------------------------------
@@ -463,20 +458,6 @@ end
                 policy_info = {}
 
             dist = float(policy_info.get("dist", np.linalg.norm(q_goal - q)))
-
-            if debug_print:
-                q_now = q  # already available from feedback
-
-                dist_start = float(np.linalg.norm(np.asarray(q_now) - np.asarray(q_start)))
-                dist_goal = float(np.linalg.norm(np.asarray(q_now) - np.asarray(q_goal)))
-
-                print(
-                    f"\r[q] {np.round(q_now, 3)} | "
-                    f"d_goal={dist_goal:.4f} | "
-                    f"d_start={dist_start:.4f}",
-                    end="",
-                    flush=True,
-                )
 
             # ---- send timing
             t0_send = time.perf_counter()
@@ -534,19 +515,17 @@ end
             loop_end = time.perf_counter()
             loop_dt_true = loop_end - loop_start
             loop_hz_true = 1.0 / loop_dt_true if loop_dt_true > 1e-12 else np.nan
-            elapsed_loop_end = loop_end - start_time
+            elapsed = loop_end - start_time
 
             # ---- stop conditions AFTER full loop
             if dist < tol:
                 reached_goal = True
-            elif elapsed_loop_end >= timeout_s:
+            elif elapsed >= timeout_s:
                 timed_out = True
 
             # ---- log timing
             t0_log = time.perf_counter()
-            row["time"] = elapsed_loop_end
-            row["loop_start_time"] = loop_start - start_time
-            row["loop_end_time"] = elapsed_loop_end
+            row["time"] = elapsed
             row["loop_dt_true_s"] = loop_dt_true
             row["loop_hz_true"] = loop_hz_true
             row["tcp_speed_mps"] = tcp_dist_loop / max(loop_dt_true, 1e-9)
@@ -583,9 +562,6 @@ end
             timeout_s,
             total_loop_wall_time_s=total_loop_wall_time_s,
         )
-        if debug_print:
-            print("\nLoop finished.")
-
         
         return df, stats
 
@@ -608,7 +584,8 @@ end
                 "total_loop_wall_time_s": total_loop_wall_time_s,
                 "true_inferred_frequency_hz": None,
             }
-        num_samples = (len(df) - 1)
+
+        num_samples = int(len(df))
 
         if total_loop_wall_time_s is None or total_loop_wall_time_s <= 0:
             true_inferred_frequency_hz = None
@@ -726,27 +703,27 @@ end
             else:
                 print(f"{k}: <missing>")
 
-    
-    def mujoco_replay_logged_loop_in_notebook(
+    def mujoco_render_loop_video_frames(
         self,
         mj,
         df,
         q_cols=None,
         qd_cols=None,
-        time_col="time",
-        loop_hz_col="loop_hz_true",
-        start_row=0,
-        end_row=None,
-        target_render_hz=50.0,
-        real_time_scale=1.0,
-        title_prefix="Replay",
-        show_qpos_in_title=True,
-        qpos_decimals=3,
-        stride=None,
-        original_total_time_s=None,
+        step_stride=1,
+        video_dir="render_video",
+        timestamp=None,
+        video_fps=50.0,
+        save_video=False,
     ):
         """
-        Replay logged robot states directly in the notebook at an approximate target render rate.
+        Replay logged robot states in MuJoCo and collect rendered frames.
+
+        Notes
+        -----
+        - This is posthoc replay from the logged dataframe.
+        - Actual video saving is intentionally commented out.
+        - Prepared output path format:
+            render_video/<datetimestamp>.video
         """
         if q_cols is None:
             q_cols = [f"q{i}" for i in range(6)]
@@ -754,99 +731,201 @@ end
             qd_cols = [f"qd{i}" for i in range(6)]
 
         if len(df) == 0:
-            raise ValueError("df is empty.")
-
-        if time_col not in df.columns:
-            raise ValueError(f"Missing time column '{time_col}'.")
+            raise ValueError("df is empty, nothing to render.")
 
         missing_q = [c for c in q_cols if c not in df.columns]
         if missing_q:
-            raise ValueError(f"Missing q columns: {missing_q}")
+            raise ValueError(f"Missing q columns in df: {missing_q}")
 
         has_qd = all(c in df.columns for c in qd_cols)
 
-        if end_row is None:
-            end_row = len(df)
+        if timestamp is None:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
 
-        start_row = max(0, int(start_row))
-        end_row = min(int(end_row), len(df))
+        os.makedirs(video_dir, exist_ok=True)
+        video_path = os.path.join(video_dir, f"{timestamp}.video")
 
-        if start_row >= end_row:
-            raise ValueError("No rows selected for replay.")
+        frames = []
+        frame_times = []
 
-        df_sel = df.iloc[start_row:end_row].reset_index(drop=True)
+        t0 = df["t_loop_start"].iloc[0]
 
-        effective_loop_hz = None
-        if loop_hz_col in df_sel.columns:
-            vals = pd.to_numeric(df_sel[loop_hz_col], errors="coerce").to_numpy(dtype=float)
-            vals = vals[np.isfinite(vals) & (vals > 1e-9)]
-            if len(vals) > 0:
-                effective_loop_hz = float(np.mean(vals))
-
-        if effective_loop_hz is None:
-            times = pd.to_numeric(df_sel[time_col], errors="coerce").to_numpy(dtype=float)
-            dts = np.diff(times)
-            dts = dts[np.isfinite(dts) & (dts > 1e-9)]
-            if len(dts) == 0:
-                raise ValueError("Could not estimate loop frequency from dataframe.")
-            effective_loop_hz = float(1.0 / np.mean(dts))
-
-        if stride is None:
-            stride = max(1, int(round(effective_loop_hz / float(target_render_hz))))
-        else:
-            stride = max(1, int(stride))
-
-        rows = list(range(0, len(df_sel), stride))
-        if rows[-1] != len(df_sel) - 1:
-            rows.append(len(df_sel) - 1)
-
-        selected = df_sel.iloc[rows].reset_index(drop=True)
-
-        t0_play = time.perf_counter()
-        render_dt = 1.0 / float(target_render_hz)
-        wall_t0 = time.perf_counter()
-
-        for k in range(len(selected)):
-            row = selected.iloc[k]
+        for i in range(0, len(df), step_stride):
+            row = df.iloc[i]
 
             q = row[q_cols].to_numpy(dtype=float)
             qd = row[qd_cols].to_numpy(dtype=float) if has_qd else None
 
-            if show_qpos_in_title:
-                q_str = ", ".join(f"{v:.{qpos_decimals}f}" for v in q)
-                title = f"{title_prefix} | q=[{q_str}]"
-            else:
-                title = title_prefix
+            self.mujoco_sync_from_robot(mj, q, qd)
+            mj["renderer"].update_scene(mj["data"], camera=mj["cam"])
+            img = mj["renderer"].render()
+
+            frames.append(img.copy())
+            frame_times.append(row["t_loop_start"] - t0)
+
+        # Intentionally commented out
+        # imageio.mimsave(video_path, frames, fps=float(video_fps))
+
+        return frames, video_path
+
+
+    def mujoco_render_loop_video_frames(
+        self,
+        mj,
+        df,
+        q_cols=None,
+        qd_cols=None,
+        step_stride=1,
+        video_dir="render_video",
+        timestamp=None,
+        video_fps=50.0,
+        save_video=False,
+    ):
+        """
+        Replay logged robot states in MuJoCo and collect rendered frames.
+
+        Notes
+        -----
+        - This is posthoc replay from the logged dataframe.
+        - Replay timing is based on df["time"].
+        - Frames are resampled to exactly `video_fps`.
+        - Actual video saving is intentionally commented out.
+        - Prepared output path format:
+            render_video/<datetimestamp>.video
+        """
+        if q_cols is None:
+            q_cols = [f"q{i}" for i in range(6)]
+        if qd_cols is None:
+            qd_cols = [f"qd{i}" for i in range(6)]
+
+        if len(df) == 0:
+            raise ValueError("df is empty, nothing to render.")
+
+        if "time" not in df.columns:
+            raise ValueError("df must contain a 'time' column for time-based replay.")
+
+        missing_q = [c for c in q_cols if c not in df.columns]
+        if missing_q:
+            raise ValueError(f"Missing q columns in df: {missing_q}")
+
+        has_qd = all(c in df.columns for c in qd_cols)
+
+        if timestamp is None:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+        os.makedirs(video_dir, exist_ok=True)
+        video_path = os.path.join(video_dir, f"{timestamp}.video")
+
+        raw_frames = []
+        raw_times = []
+
+        t0 = float(df["time"].iloc[0])
+
+        for i in range(0, len(df), step_stride):
+            row = df.iloc[i]
+
+            q = row[q_cols].to_numpy(dtype=float)
+            qd = row[qd_cols].to_numpy(dtype=float) if has_qd else None
 
             self.mujoco_sync_from_robot(mj, q, qd)
-            self.mujoco_render(mj, title=title)
+            mj["renderer"].update_scene(mj["data"], camera=mj["cam"])
+            img = mj["renderer"].render()
 
-            if k < len(selected) - 1:
-                target_wall = wall_t0 + ((k + 1) * render_dt) / max(real_time_scale, 1e-9)
-                sleep_s = target_wall - time.perf_counter()
-                if sleep_s > 0:
-                    time.sleep(sleep_s)
+            raw_frames.append(img.copy())
+            raw_times.append(float(row["time"]) - t0)
 
-        t1_play = time.perf_counter()
-        logged_playtime = t1_play - t0_play
+        if len(raw_frames) == 0:
+            raise ValueError("No frames were generated.")
 
-        print("\nReplay finished.")
-        print(f"Estimated loop Hz: {effective_loop_hz:.3f}")
-        print(f"Target render Hz: {target_render_hz:.3f}")
-        print(f"Chosen stride: {stride}")
-        print(f"Replay playtime: {logged_playtime:.3f} s")
+        if len(raw_frames) == 1:
+            frames = [raw_frames[0]]
+            return frames, video_path
 
-        if original_total_time_s is not None:
-            print(f"Original loop total_time_s: {float(original_total_time_s):.3f} s")
-            print(f"Replay vs original difference: {logged_playtime - float(original_total_time_s):.3f} s")
+        target_dt = 1.0 / float(video_fps)
+        t_max = raw_times[-1]
 
-        return {
-            "estimated_loop_hz": float(effective_loop_hz),
-            "target_render_hz": float(target_render_hz),
-            "chosen_stride": int(stride),
-            "replay_playtime_s": float(logged_playtime),
-            "original_total_time_s": None if original_total_time_s is None else float(original_total_time_s),
-            "rows_original": int(len(df_sel)),
-            "rows_rendered": int(len(selected)),
-            "real_time_scale": float(real_time_scale),
-        }
+        frames = []
+        t_target = 0.0
+        idx = 0
+
+        while t_target <= t_max:
+            while idx < len(raw_times) - 1 and raw_times[idx] < t_target:
+                idx += 1
+            frames.append(raw_frames[idx])
+            t_target += target_dt
+
+        # Intentionally commented out
+        # imageio.mimsave(video_path, frames, fps=float(video_fps))
+
+        return frames, video_path
+
+
+    def run_timed_control_loop_then_render(
+        self,
+        mj,
+        q_start,
+        q_goal,
+        policy_fn,
+        control_hz=200.0,
+        tol=0.02,
+        timeout_s=20.0,
+        lookahead_time=0.1,
+        gain=300,
+        pre_movej_a=2.5,
+        pre_movej_v=2.0,
+        pre_timeout_s=15.0,
+        start_reach_tol=0.05,
+        textmsg_start="go_start_fast",
+        send_t=None,
+        render_video_fps=50.0,
+        render_step_stride=1,
+        render_q_cols=None,
+        render_qd_cols=None,
+        video_dir="render_video",
+        timestamp=None,
+        save_video=False,
+    ):
+        """
+        Run the live control loop without rendering, then replay the logged states in MuJoCo.
+
+        Returns
+        -------
+        df : pandas.DataFrame
+            Logged live-loop data.
+        stats : dict
+            Summary statistics from the live loop.
+        frames : list[np.ndarray]
+            Rendered replay frames, resampled in time to `render_video_fps`.
+        video_path : str
+            Prepared output path. Saving is intentionally commented out.
+        """
+        df, stats = self.run_timed_control_loop_no_render(
+            q_start=q_start,
+            q_goal=q_goal,
+            policy_fn=policy_fn,
+            control_hz=control_hz,
+            tol=tol,
+            timeout_s=timeout_s,
+            lookahead_time=lookahead_time,
+            gain=gain,
+            pre_movej_a=pre_movej_a,
+            pre_movej_v=pre_movej_v,
+            pre_timeout_s=pre_timeout_s,
+            start_reach_tol=start_reach_tol,
+            textmsg_start=textmsg_start,
+            send_t=send_t,
+        )
+
+        frames, video_path = self.mujoco_render_loop_video_frames(
+            mj=mj,
+            df=df,
+            q_cols=render_q_cols,
+            qd_cols=render_qd_cols,
+            step_stride=render_step_stride,
+            video_dir=video_dir,
+            timestamp=timestamp,
+            video_fps=render_video_fps,
+            save_video=save_video,
+        )
+
+        return df, stats, frames, video_path
