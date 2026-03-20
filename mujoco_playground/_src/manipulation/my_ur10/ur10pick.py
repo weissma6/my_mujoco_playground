@@ -110,9 +110,9 @@ class UR10PickCube(ur10_base.UR10Base):
                 "hand_capsule_floor_found",      # ✓ Matches your XML
             ]
         ]
-        print("Available sensors:", flush=True)
-        for i in range(self._mj_model.nsensor):
-            print(f"  - {self._mj_model.sensor(i).name}", flush=True)
+        # print("Available sensors:", flush=True)
+        # for i in range(self._mj_model.nsensor):
+        #     print(f"  - {self._mj_model.sensor(i).name}", flush=True)
 
 
     def reset(self, rng: jax.Array) -> State:

@@ -14,6 +14,12 @@ import matplotlib.pyplot as plt
 from IPython.display import clear_output
 import imageio.v2 as imageio
 import os
+import pickle
+import jax
+import jax.numpy as jnp
+from mujoco_playground import registry
+from brax.training.agents.ppo import networks as ppo_networks
+from brax.training.acme import running_statistics
 
 
 
@@ -49,7 +55,7 @@ class URSimRTDEControlFeedback:
         """
         Returns:
             {
-                "q": [q1..q6],                # joint positions [rad]
+                "q": [q1..q6],               # joint positions [rad]
                 "qd": [qd1..qd6],            # joint velocities [rad/s]
                 "tau": [tau1..tau6],         # estimated joint torques [Nm]
                 "tcp_xyz": [x, y, z],        # TCP position in base/world frame [m]
@@ -684,6 +690,8 @@ end
             q_cmd, dist = self.step_toward_joint_target(q_goal_np, max_step=max_step)
             return q_cmd, {"dist": float(dist)}
 
+        # _policy_fn = self.load_policy_fn()
+
         return self.run_timed_control_loop_no_render(
             q_start=q_start,
             q_goal=q_goal,
@@ -850,3 +858,377 @@ end
             "rows_rendered": int(len(selected)),
             "real_time_scale": float(real_time_scale),
         }
+    
+
+    # ==============================================================================
+    # Function to build an ur10PickCube obversation from the RTDE feedback
+    # ==============================================================================
+    def _rotvec_to_mat(self, rotvec):
+        """
+        Convert axis-angle / rotation-vector [rx, ry, rz] to a 3x3 rotation matrix.
+        """
+        rotvec = np.asarray(rotvec, dtype=float).reshape(3)
+        theta = np.linalg.norm(rotvec)
+
+        if theta < 1e-12:
+            return np.eye(3, dtype=float)
+
+        axis = rotvec / theta
+        x, y, z = axis
+
+        K = np.array([
+            [0.0, -z,   y],
+            [z,    0.0, -x],
+            [-y,   x,   0.0],
+        ], dtype=float)
+
+        R = np.eye(3, dtype=float) + np.sin(theta) * K + (1.0 - np.cos(theta)) * (K @ K)
+        return R
+
+    def _quat_to_mat(self, quat):
+        """
+        Convert quaternion [w, x, y, z] to 3x3 rotation matrix.
+        """
+        quat = np.asarray(quat, dtype=float).reshape(4)
+        w, x, y, z = quat
+
+        n = np.linalg.norm(quat)
+        if n < 1e-12:
+            return np.eye(3, dtype=float)
+
+        w, x, y, z = quat / n
+
+        R = np.array([
+            [1 - 2*(y*y + z*z),     2*(x*y - z*w),     2*(x*z + y*w)],
+            [    2*(x*y + z*w), 1 - 2*(x*x + z*z),     2*(y*z - x*w)],
+            [    2*(x*z - y*w),     2*(y*z + x*w), 1 - 2*(x*x + y*y)],
+        ], dtype=float)
+
+        return R
+    # ------------------------------------------------------------------------------
+    def build_pick_obs_from_rtde(
+        self,
+        q_robot,
+        qd_robot,
+        tcp_xyz,
+        tcp_pose=None,
+        *,
+        qpos_extra=None,
+        qvel_extra=None,
+        target_pos=None,
+        target_mat_first6=None,
+        ctrl=None,
+        actuated_qpos_for_ctrl=None,
+        return_parts=False,
+        dtype=np.float32,
+    ):
+        """
+        Build a pick-style observation vector aligned as closely as possible with
+        the env's _get_obs(...), using RTDE robot feedback plus defaults / optional
+        externally supplied task state.
+
+        Env reference structure:
+            obs = concatenate([
+                data.qpos,
+                data.qvel,
+                gripper_pos,
+                gripper_mat[3:],
+                data.xmat[self._obj_body].ravel()[3:],
+                data.xpos[self._obj_body] - data.site_xpos[self._gripper_site],
+                info["target_pos"] - data.xpos[self._obj_body],
+                target_mat.ravel()[:6] - data.xmat[self._obj_body].ravel()[:6],
+                data.ctrl - data.qpos[self._robot_qposadr[:-1]],
+            ])
+
+        RTDE substitutions:
+        - gripper_pos := tcp_xyz
+        - gripper_mat := rotation matrix from tcp_pose[3:6] rotvec
+
+        qpos_extra default layout:
+        - [gripper_qpos(2), obj_pos(3), obj_quat(4)]
+
+        qvel_extra default layout:
+        - [gripper_qvel(2), obj_freejoint_qvel(6)]
+        """
+        # --------------------------------------------------
+        # Normalize core RTDE inputs
+        # --------------------------------------------------
+        q_robot = np.asarray(q_robot, dtype=float).reshape(-1)
+        qd_robot = np.asarray(qd_robot, dtype=float).reshape(-1)
+        tcp_xyz = np.asarray(tcp_xyz, dtype=float).reshape(3)
+
+        if tcp_pose is None:
+            tcp_pose = np.zeros(6, dtype=float)
+        else:
+            tcp_pose = np.asarray(tcp_pose, dtype=float).reshape(-1)
+
+        if tcp_pose.size < 6:
+            raise ValueError("tcp_pose must contain at least 6 values: [x, y, z, rx, ry, rz].")
+
+        if q_robot.shape[0] != 6:
+            raise ValueError(f"q_robot must have length 6, got {q_robot.shape[0]}")
+
+        if qd_robot.shape[0] != 6:
+            raise ValueError(f"qd_robot must have length 6, got {qd_robot.shape[0]}")
+
+        # --------------------------------------------------
+        # RTDE substitutes for gripper site pose
+        # --------------------------------------------------
+        gripper_pos = tcp_xyz.copy()
+        gripper_mat = self._rotvec_to_mat(tcp_pose[3:6])
+
+        # --------------------------------------------------
+        # qpos_extra = [gripper(2), obj_pos(3), obj_quat(4)]
+        # --------------------------------------------------
+        if qpos_extra is None:
+            print("No qpos_extra provided, using default of gripper (2) + cube pos (3) + cube quat (4).")
+            qpos_extra = np.array([
+                0.0, 0.0,          # gripper qpos
+                0.7, 0.2, 0.03,    # object position from XML keyframe
+                1.0, 0.0, 0.0, 0.0 # object quaternion from XML keyframe
+            ], dtype=float)
+        else:
+            qpos_extra = np.asarray(qpos_extra, dtype=float).reshape(-1)
+
+        if qpos_extra.shape[0] != 9:
+            raise ValueError(f"qpos_extra must have length 9, got {qpos_extra.shape[0]}")
+
+        # Derive object state directly from qpos_extra
+        obj_pos = qpos_extra[2:5].copy()
+        obj_quat = qpos_extra[5:9].copy()
+
+        # --------------------------------------------------
+        # qvel_extra = [gripper vel(2), object freejoint vel(6)]
+        # --------------------------------------------------
+        if qvel_extra is None:
+            print("No qvel_extra provided, using default of gripper vel (2) + cube vel (6).")
+            qvel_extra = np.zeros(8, dtype=float)
+        else:
+            qvel_extra = np.asarray(qvel_extra, dtype=float).reshape(-1)
+
+        if qvel_extra.shape[0] != 8:
+            raise ValueError(f"qvel_extra must have length 8, got {qvel_extra.shape[0]}")
+
+        # --------------------------------------------------
+        # Full qpos / qvel blocks to mirror env structure
+        # --------------------------------------------------
+        qpos = np.concatenate([q_robot, qpos_extra])   # 6 + 9 = 15
+        qvel = np.concatenate([qd_robot, qvel_extra])  # 6 + 8 = 14
+
+        # --------------------------------------------------
+        # Object rotation from object quaternion
+        # --------------------------------------------------
+        obj_mat = self._quat_to_mat(obj_quat)
+
+        # --------------------------------------------------
+        # Target position / orientation defaults
+        # In env, target is sampled relative to init object position, not current object position.
+        # Default fixed target here:
+        #   init_obj_pos + [0.1, 0.15, 0.4]
+        # --------------------------------------------------
+        if target_pos is None:
+            target_pos = np.array([0.1, 0.15, 0.4], dtype=float)
+        else:
+            target_pos = np.asarray(target_pos, dtype=float).reshape(3)
+
+        if target_mat_first6 is None:
+            target_mat_first6 = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=float)
+        else:
+            target_mat_first6 = np.asarray(target_mat_first6, dtype=float).reshape(6)
+
+        # --------------------------------------------------
+        # Relative geometry blocks with env-aligned naming
+        # --------------------------------------------------
+        obj_pos_minus_gripper_pos = obj_pos - gripper_pos
+        target_pos_minus_obj_pos = target_pos - obj_pos
+        target_mat_first6_minus_obj_mat_first6 = target_mat_first6 - obj_mat.ravel()[:6]
+
+        # --------------------------------------------------
+        # ctrl tracking term: env-style 7D actuator space
+        # data.ctrl - data.qpos[self._robot_qposadr[:-1]]
+        # Approximation here:
+        #   6 arm joints + 1 Hand-E actuator coordinate
+        # --------------------------------------------------
+        if actuated_qpos_for_ctrl is None:
+            actuated_qpos_for_ctrl = np.concatenate([
+                q_robot[:6],
+                np.array([0.0], dtype=float),  # Hand-E actuator default
+            ])
+        else:
+            actuated_qpos_for_ctrl = np.asarray(actuated_qpos_for_ctrl, dtype=float).reshape(-1)
+
+        if actuated_qpos_for_ctrl.shape[0] != 7:
+            raise ValueError(
+                f"actuated_qpos_for_ctrl must have length 7, got {actuated_qpos_for_ctrl.shape[0]}"
+            )
+
+        if ctrl is None:
+            ctrl = np.array([
+                0.0,
+                -1.7,
+                2.25,
+                -2.15,
+                -1.5,
+                -1.5,
+                0.0,   # Hand-E actuator default
+            ], dtype=float)
+        else:
+            ctrl = np.asarray(ctrl, dtype=float).reshape(-1)
+
+        if ctrl.shape[0] != 7:
+            raise ValueError(f"ctrl must have length 7, got {ctrl.shape[0]}")
+
+        ctrl_minus_robot_qposadr = ctrl - actuated_qpos_for_ctrl
+
+        # --------------------------------------------------
+        # Structured parts
+        # --------------------------------------------------
+        parts = {
+            "qpos": qpos.astype(dtype),
+            "qvel": qvel.astype(dtype),
+            "target_pos": target_pos.astype(dtype),
+            "box_pos": obj_pos.astype(dtype),
+            "gripper_pos": gripper_pos.astype(dtype),
+            "gripper_mat_last6": gripper_mat.ravel()[3:].astype(dtype),
+            "obj_mat_last6": obj_mat.ravel()[3:].astype(dtype),
+            "box_to_gripper": obj_pos_minus_gripper_pos.astype(dtype),
+            "obj_to_target": target_pos_minus_obj_pos.astype(dtype),
+            "target_mat_first6_minus_obj_mat_first6": target_mat_first6_minus_obj_mat_first6.astype(dtype),
+            "ctrl_minus_robot_qposadr": ctrl_minus_robot_qposadr.astype(dtype),
+        }
+
+        # --------------------------------------------------
+        # Final observation
+        # --------------------------------------------------
+        obs = np.concatenate([
+            parts["qpos"],
+            parts["qvel"],
+            parts["gripper_pos"],
+            parts["gripper_mat_last6"],
+            parts["obj_mat_last6"],
+            parts["box_to_gripper"],
+            parts["obj_to_target"],
+            parts["target_mat_first6_minus_obj_mat_first6"],
+            parts["ctrl_minus_robot_qposadr"],
+        ]).astype(dtype)
+
+        if return_parts:
+            return obs, parts
+        return obs
+
+
+    def get_obs_rtde(
+        self,
+        *,
+        qpos_extra=None,
+        qvel_extra=None,
+        target_pos=None,
+        target_mat_first6=None,
+        ctrl=None,
+        actuated_qpos_for_ctrl=None,
+        return_parts=False,
+        return_feedback=False,
+        dtype=np.float32,
+    ):
+        """
+        Read RTDE feedback and patch it into build_pick_obs_from_rtde(...).
+
+        Directly from RTDE:
+        - q
+        - qd
+        - tcp_xyz
+        - tcp_pose
+        """
+        fb = self.receive_feedback()
+
+        obs_out = self.build_pick_obs_from_rtde(
+            q_robot=fb["q"],
+            qd_robot=fb["qd"],
+            tcp_xyz=fb["tcp_xyz"],
+            tcp_pose=fb["tcp_pose"],
+            qpos_extra=qpos_extra,
+            qvel_extra=qvel_extra,
+            target_pos=target_pos,
+            target_mat_first6=target_mat_first6,
+            ctrl=ctrl,
+            actuated_qpos_for_ctrl=actuated_qpos_for_ctrl,
+            return_parts=return_parts,
+            dtype=dtype,
+        )
+
+        if return_parts and return_feedback:
+            obs, parts = obs_out
+            return obs, parts, fb
+
+        if return_parts:
+            return obs_out
+
+        if return_feedback:
+            return obs_out, fb
+
+        return obs_out
+    
+    # ====================================================================================
+    # load trained policy and run it in the loop
+    # ====================================================================================
+
+    def load_policy_fn(
+        self,
+        policy_path="../../evaluation/downloaded_policies/reach_policy",
+        env_name="UR10PickCube",
+        deterministic=True,
+    ):
+        """
+        Loads a Brax PPO policy and returns a callable:
+            action = policy_fn(obs_batch)
+
+        Defaults:
+        - policy_path: your local reach_policy folder
+        - env_name: UR10PickCube
+
+        Returns:
+            policy_fn(obs_batch: np.ndarray [B, obs_dim]) -> np.ndarray [B, act_dim]
+        """
+
+
+
+        # ---- 1) Load env ----
+        env = registry.load(env_name)
+
+        # ---- 2) Load params ----
+        params_file = os.path.join(policy_path, "params.pkl")
+        if not os.path.exists(params_file):
+            raise FileNotFoundError(f"params.pkl not found at: {params_file}")
+
+        with open(params_file, "rb") as f:
+            params = pickle.load(f)
+
+        # ---- 3) Rebuild PPO network (must match training exactly) ----
+        ppo_net = ppo_networks.make_ppo_networks(
+            observation_size=env.observation_size,
+            action_size=env.action_size,
+            preprocess_observations_fn=running_statistics.normalize,
+        )
+
+        make_policy = ppo_networks.make_inference_fn(ppo_net)
+
+        # params = (normalizer, policy, value)
+        raw_policy = make_policy((params[0], params[1]), deterministic=deterministic)
+
+        # ---- 4) Wrap into obs-only function (no RNG exposed) ----
+        @jax.jit
+        def policy_fn(obs_batch):
+            key = jax.random.PRNGKey(0)
+            action, _ = raw_policy(obs_batch, key)
+            return action
+
+        # ---- 5) Store internally (optional but useful) ----
+        self.policy_fn = policy_fn
+        self.policy_env_name = env_name
+        self.policy_path = policy_path
+
+        print(f"[INFO] Loaded policy from: {policy_path}")
+        print(f"[INFO] Env: {env_name}")
+        print(f"[INFO] Obs dim: {env.observation_size}, Act dim: {env.action_size}")
+
+        return policy_fn
