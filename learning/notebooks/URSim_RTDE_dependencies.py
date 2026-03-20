@@ -31,6 +31,7 @@ class URSimRTDEControlFeedback:
         self.port_urscript = port_urscript
         self.port_dashboard = port_dashboard
         self._receiver: Optional[rtde_receive.RTDEReceiveInterface] = None
+        self._policy_fn = self.load_policy_fn()
 
     # ==========================================
     # Connection / feedback
@@ -369,7 +370,7 @@ end
         q_goal,
         policy_fn,
         control_hz=200.0,
-        tol=0.02,
+        tol=0.01,
         timeout_s=20.0,
         lookahead_time=0.1,
         gain=300,
@@ -683,19 +684,14 @@ end
         start_reach_tol=0.05,
         send_t=None,
     ):
+
         dt = 1.0 / float(control_hz)
         max_step = max_speed * dt
-
-        def _policy_fn(q, qd, q_goal_np, dt_inner):
-            q_cmd, dist = self.step_toward_joint_target(q_goal_np, max_step=max_step)
-            return q_cmd, {"dist": float(dist)}
-
-        # _policy_fn = self.load_policy_fn()
 
         return self.run_timed_control_loop_no_render(
             q_start=q_start,
             q_goal=q_goal,
-            policy_fn=_policy_fn,
+            policy_fn=self._policy_fn,
             control_hz=control_hz,
             tol=tol,
             timeout_s=timeout_s,
@@ -981,7 +977,7 @@ end
         # qpos_extra = [gripper(2), obj_pos(3), obj_quat(4)]
         # --------------------------------------------------
         if qpos_extra is None:
-            print("No qpos_extra provided, using default of gripper (2) + cube pos (3) + cube quat (4).")
+            # print("No qpos_extra provided, using default of gripper (2) + cube pos (3) + cube quat (4).")
             qpos_extra = np.array([
                 0.0, 0.0,          # gripper qpos
                 0.7, 0.2, 0.03,    # object position from XML keyframe
@@ -1001,7 +997,7 @@ end
         # qvel_extra = [gripper vel(2), object freejoint vel(6)]
         # --------------------------------------------------
         if qvel_extra is None:
-            print("No qvel_extra provided, using default of gripper vel (2) + cube vel (6).")
+            # print("No qvel_extra provided, using default of gripper vel (2) + cube vel (6).")
             qvel_extra = np.zeros(8, dtype=float)
         else:
             qvel_extra = np.asarray(qvel_extra, dtype=float).reshape(-1)
@@ -1091,7 +1087,7 @@ end
             "gripper_pos": gripper_pos.astype(dtype),
             "gripper_mat_last6": gripper_mat.ravel()[3:].astype(dtype),
             "obj_mat_last6": obj_mat.ravel()[3:].astype(dtype),
-            "box_to_gripper": obj_pos_minus_gripper_pos.astype(dtype),
+            "obj_to_gripper": obj_pos_minus_gripper_pos.astype(dtype),
             "obj_to_target": target_pos_minus_obj_pos.astype(dtype),
             "target_mat_first6_minus_obj_mat_first6": target_mat_first6_minus_obj_mat_first6.astype(dtype),
             "ctrl_minus_robot_qposadr": ctrl_minus_robot_qposadr.astype(dtype),
@@ -1106,7 +1102,7 @@ end
             parts["gripper_pos"],
             parts["gripper_mat_last6"],
             parts["obj_mat_last6"],
-            parts["box_to_gripper"],
+            parts["obj_to_gripper"],
             parts["obj_to_target"],
             parts["target_mat_first6_minus_obj_mat_first6"],
             parts["ctrl_minus_robot_qposadr"],
@@ -1230,5 +1226,420 @@ end
         print(f"[INFO] Loaded policy from: {policy_path}")
         print(f"[INFO] Env: {env_name}")
         print(f"[INFO] Obs dim: {env.observation_size}, Act dim: {env.action_size}")
-
+        self._policy_fn = policy_fn
         return policy_fn
+    
+
+    # ====================================================================================
+    # Full loop with loaded policy and MuJoCo replay
+    # ====================================================================================
+    def move_to_start(
+        self,
+        q_start,
+        pre_movej_a=2.5,
+        pre_movej_v=2.0,
+        timeout_s=20.0,
+        start_reach_tol=0.01,
+        textmsg="go_start_fast",
+        check_hz=5.0,
+        debug_print=True,
+    ):
+
+        dt_start = 1.0 / float(check_hz)
+        q_start = np.asarray(q_start, dtype=float)
+
+        # ------------------------------------------
+        # Fast pre-positioning to start pose
+        # ------------------------------------------
+        if debug_print:
+            print(f"Moving to start pose with movej, a={pre_movej_a}, v={pre_movej_v}...")
+        
+        self.send_movej(q_start.tolist(), a=pre_movej_a, v=pre_movej_v, textmsg=textmsg)
+        pre_start_t = time.perf_counter()
+        while True:
+            q_now = np.array(self.receive_feedback()["q"], dtype=float)
+            err = np.linalg.norm(q_now - np.array(q_start, dtype=float))
+
+            if debug_print:
+                print(f"\rPre-positioning: qpos={np.round(q_now, 3)} err={err:.4f}", end="", flush=True)
+
+            if err < start_reach_tol:
+                break
+            if (time.perf_counter() - pre_start_t) > timeout_s:
+                print("Pre-position timeout")
+                break
+            time.sleep(dt_start)
+
+        if debug_print:
+            print(f"\nReached start pose in {time.perf_counter() - pre_start_t:.2f} seconds")
+            print(np.round(q_now, 3))
+
+    def policy_step_ctrl_update(
+        self,
+        action,
+        action_scale=0.04,
+        dtype=np.float32,
+        debug_print=False,
+    ):
+        """
+        One policy control update step:
+
+            ctrl_next = ctrl_prev + action_scale * action
+        No clipping.
+        """
+        if not hasattr(self, "_ctrl_state") or self._ctrl_state is None:
+            raise RuntimeError("ctrl_state not initialized. Call init_policy_ctrl_state() first.")
+
+        action = np.asarray(action, dtype=dtype)
+        if action.ndim == 2 and action.shape[0] == 1:
+            action = action[0]
+        action = action.reshape(-1)
+
+        if action.shape[0] != 7:
+            raise ValueError(f"action must have length 7, got {action.shape[0]}")
+
+        ctrl_prev = np.asarray(self._ctrl_state, dtype=dtype).reshape(-1)
+        ctrl_next = ctrl_prev + float(action_scale) * action
+
+        self._ctrl_state = ctrl_next.astype(dtype)
+
+        q_cmd_arm = self._ctrl_state[:6].copy()
+        gripper_ctrl = float(self._ctrl_state[6])
+
+        if debug_print:
+            print("[policy_step_ctrl_update]")
+            print("action     :", np.round(action, 5))
+            print("ctrl_prev  :", np.round(ctrl_prev, 5))
+            print("ctrl_next  :", np.round(self._ctrl_state, 5))
+            print("q_cmd_arm  :", np.round(q_cmd_arm, 5))
+            print("grip_ctrl  :", round(gripper_ctrl, 5))
+
+        return self._ctrl_state.copy(), q_cmd_arm, gripper_ctrl
+    
+    def run_policy_loop(
+        self,
+        q_goal,               # target joint position for the policy to reach (used only for logging distance to goal)
+        control_hz=50.0,
+        tol=0.02,
+        timeout_s=20.0,
+        action_scale=0.04,
+        gripper_ctrl_init=0.0,
+        lookahead_time=0.1,
+        gain=300,
+        qpos_extra=None,
+        qvel_extra=None,
+        target_pos=None,        # target position for the policy to reach (used for obs construction, not enforced as a goal in any way)
+        target_mat_first6=None,
+        dtype=np.float32,
+        debug_print=True,
+    ):
+
+
+        dt = 1.0 / float(control_hz)
+
+        q_goal = np.asarray(q_goal, dtype=float).reshape(-1)
+        if q_goal.shape[0] != 6:
+            raise ValueError(f"q_goal must have length 6, got {q_goal.shape[0]}")
+        
+        # initialize ctrl_state from CURRENT pose once
+        if not hasattr(self, "_ctrl_state") or self._ctrl_state is None:
+            obs0, parts0, fb0 = self.get_obs_rtde(
+                return_parts=True,
+                return_feedback=True,
+                dtype=dtype,
+            )
+            self._ctrl_state = np.concatenate([
+                np.asarray(fb0["q"], dtype=dtype),
+                np.array([gripper_ctrl_init], dtype=dtype),
+            ]).astype(dtype)
+
+
+        # Loop variables
+        log = []
+        step_count = 0
+        reached_goal = False
+        timed_out = False
+        overrun_count = 0
+
+        prev_tcp_xyz = None
+        prev_tcp_to_target_dist = None
+
+        start_time = time.perf_counter()
+        loop_wall_t0 = time.perf_counter()
+        next_tick = time.perf_counter()
+        # Start loop
+    
+        while True:
+            loop_start = time.perf_counter()
+
+            # ---- get obs (+ fb)
+            t0_obs = time.perf_counter()
+            obs, parts, fb = self.get_obs_rtde(
+                qpos_extra=qpos_extra,
+                qvel_extra=qvel_extra,
+                target_pos=target_pos,
+                target_mat_first6=target_mat_first6,
+                ctrl=self._ctrl_state,
+                return_parts=True,
+                return_feedback=True,
+                dtype=dtype,
+            )
+            t1_obs = time.perf_counter()
+
+            obs = np.asarray(obs, dtype=dtype)
+            obs_batch = obs[None, :]
+
+            q = np.asarray(fb["q"], dtype=float)
+            qd = np.asarray(fb["qd"], dtype=float)
+            tcp_xyz = np.asarray(fb["tcp_xyz"], dtype=float)
+
+            # ---- tcp motion
+            if prev_tcp_xyz is None:
+                tcp_delta = np.zeros(3, dtype=float)
+                tcp_dist_loop = 0.0
+            else:
+                tcp_delta = tcp_xyz - prev_tcp_xyz
+                tcp_dist_loop = float(np.linalg.norm(tcp_delta))
+            prev_tcp_xyz = tcp_xyz.copy()
+
+            # ---- reconstruct target world pos from parts
+            gripper_pos = np.asarray(parts["gripper_pos"], dtype=float)
+            obj_pos = np.asarray(parts["box_pos"], dtype=float)
+            target_pos_world = np.asarray(parts["target_pos"], dtype=float)
+
+            tcp_to_target_vec = target_pos_world - tcp_xyz
+            tcp_to_target_dist = float(np.linalg.norm(tcp_to_target_vec))
+
+            if prev_tcp_to_target_dist is None:
+                tcp_to_target_improvement = 0.0
+            else:
+                tcp_to_target_improvement = float(prev_tcp_to_target_dist - tcp_to_target_dist)
+            prev_tcp_to_target_dist = tcp_to_target_dist
+
+            # ---- policy
+            t0_policy = time.perf_counter()
+            action = self.policy_fn(obs_batch)
+            t1_policy = time.perf_counter()
+
+            # ---- ctrl update
+            ctrl_prev = self._ctrl_state.copy()
+            ctrl_next, q_cmd, gripper_ctrl = self.policy_step_ctrl_update(
+                action=action,
+                action_scale=action_scale,
+                dtype=dtype,
+                debug_print=False,
+            )
+
+            # ---- metrics
+            dist_goal = float(np.linalg.norm(q_goal - q))
+            qd_norm = float(np.linalg.norm(qd))
+            cmd_err_norm = float(np.linalg.norm(q_cmd - q))
+            ctrl_delta_norm = float(np.linalg.norm(ctrl_next - ctrl_prev))
+
+            action_np = np.asarray(action, dtype=dtype)
+            if action_np.ndim == 2 and action_np.shape[0] == 1:
+                action_np = action_np[0]
+            action_np = action_np.reshape(-1)
+
+            # ---- send
+            t0_send = time.perf_counter()
+            self.send_servoj(
+                q_cmd.tolist(),
+                t=dt,
+                lookahead_time=lookahead_time,
+                gain=gain,
+            )
+            t1_send = time.perf_counter()
+
+            # ---- timing control
+            next_tick += dt
+            now = time.perf_counter()
+            sleep_time = next_tick - now
+
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            else:
+                overrun_count += 1
+                next_tick = now
+
+            loop_end = time.perf_counter()
+            loop_dt_true = loop_end - loop_start
+            loop_hz_true = 1.0 / loop_dt_true if loop_dt_true > 1e-12 else np.nan
+            elapsed_loop_end = loop_end - start_time
+
+            # ---- log
+            t0_log = time.perf_counter()
+            if debug_print:
+                print(
+                    f"\rq: {np.round(q, 2)} | tcp: {np.round(tcp_xyz, 3)}",
+                    end="",
+                    flush=True,
+                )
+            
+
+
+            row = {
+                "step": step_count,
+                "time": elapsed_loop_end,
+
+                "q0": q[0], "q1": q[1], "q2": q[2], "q3": q[3], "q4": q[4], "q5": q[5],
+                "qd0": qd[0], "qd1": qd[1], "qd2": qd[2], "qd3": qd[3], "qd4": qd[4], "qd5": qd[5],
+
+                "cmd0": q_cmd[0], "cmd1": q_cmd[1], "cmd2": q_cmd[2], "cmd3": q_cmd[3], "cmd4": q_cmd[4], "cmd5": q_cmd[5],
+
+                "ctrl0": ctrl_next[0], "ctrl1": ctrl_next[1], "ctrl2": ctrl_next[2],
+                "ctrl3": ctrl_next[3], "ctrl4": ctrl_next[4], "ctrl5": ctrl_next[5], "ctrl6": ctrl_next[6],
+
+                "action0": action_np[0], "action1": action_np[1], "action2": action_np[2],
+                "action3": action_np[3], "action4": action_np[4], "action5": action_np[5], "action6": action_np[6],
+
+                "tcp_x": tcp_xyz[0], "tcp_y": tcp_xyz[1], "tcp_z": tcp_xyz[2],
+                "gripper_x": gripper_pos[0], "gripper_y": gripper_pos[1], "gripper_z": gripper_pos[2],
+                "obj_x": obj_pos[0], "obj_y": obj_pos[1], "obj_z": obj_pos[2],
+                "target_x": target_pos_world[0], "target_y": target_pos_world[1], "target_z": target_pos_world[2],
+
+                "tcp_to_target_dx": tcp_to_target_vec[0],
+                "tcp_to_target_dy": tcp_to_target_vec[1],
+                "tcp_to_target_dz": tcp_to_target_vec[2],
+                "tcp_to_target_dist": tcp_to_target_dist,
+                "tcp_to_target_improvement": tcp_to_target_improvement,
+
+                "tcp_dx": tcp_delta[0],
+                "tcp_dy": tcp_delta[1],
+                "tcp_dz": tcp_delta[2],
+                "tcp_dist_loop_m": tcp_dist_loop,
+
+                "dist_goal": dist_goal,
+                "qd_norm": qd_norm,
+                "cmd_err_norm": cmd_err_norm,
+                "ctrl_delta_norm": ctrl_delta_norm,
+                "gripper_ctrl": gripper_ctrl,
+
+                "obs_time_s": t1_obs - t0_obs,
+                "policy_time_s": t1_policy - t0_policy,
+                "send_time_s": t1_send - t0_send,
+
+                "loop_start_time": loop_start - start_time,
+                "loop_end_time": elapsed_loop_end,
+                "loop_dt_true_s": loop_dt_true,
+                "loop_hz_true": loop_hz_true,
+                "overrun_count": overrun_count,
+            }
+
+            t1_log = time.perf_counter()
+            row["log_time_s"] = t1_log - t0_log
+            row["tcp_speed_mps"] = tcp_dist_loop / max(loop_dt_true, 1e-9)
+
+            log.append(row)
+
+            if dist_goal < tol:
+                reached_goal = True
+                break
+
+            if elapsed_loop_end >= timeout_s:
+                timed_out = True
+                break
+
+            step_count += 1
+
+        loop_wall_t1 = time.perf_counter()
+        total_loop_wall_time_s = loop_wall_t1 - loop_wall_t0
+        df = pd.DataFrame(log)
+
+        stats = self.summarize_policy_loop_v2(
+            df=df,
+            requested_control_hz=control_hz,
+            reached_goal=reached_goal,
+            timed_out=timed_out,
+            timeout_s=timeout_s,
+            total_loop_wall_time_s=total_loop_wall_time_s,
+        )
+
+        if debug_print:
+            print("\nPolicy loop finished.")
+
+        return df, stats
+    
+    def summarize_policy_loop_v2(
+        self,
+        df,
+        requested_control_hz,
+        reached_goal,
+        timed_out,
+        timeout_s,
+        total_loop_wall_time_s=None,
+    ):
+        if len(df) == 0:
+            return {
+                "requested_control_hz": round(float(requested_control_hz), 1),
+                "reached_goal": bool(reached_goal),
+                "timed_out": bool(timed_out),
+                "timeout_s": float(timeout_s),
+                "num_samples": 0,
+                "total_loop_wall_time_s": total_loop_wall_time_s,
+                "true_inferred_frequency_hz": None,
+            }
+
+        num_samples = len(df) - 1
+
+        if total_loop_wall_time_s is None or total_loop_wall_time_s <= 0:
+            true_inferred_frequency_hz = None
+        else:
+            true_inferred_frequency_hz = num_samples / float(total_loop_wall_time_s)
+
+        return {
+            "---": "-------------------------",
+            "requested_control_hz": round(float(requested_control_hz), 1),
+            "reached_goal": bool(reached_goal),
+            "timed_out": bool(timed_out),
+            "timeout_s": float(timeout_s),
+
+            "num_samples": int(num_samples),
+            "total_time_s": float(df["time"].iloc[-1]),
+            "total_loop_wall_time_s": float(total_loop_wall_time_s),
+            "true_inferred_frequency_hz": (
+                float(true_inferred_frequency_hz)
+                if true_inferred_frequency_hz is not None else None
+            ),
+
+            "mean_loop_dt_true_s": float(df["loop_dt_true_s"].mean()),
+            "std_loop_dt_true_s": float(df["loop_dt_true_s"].std()),
+            "mean_loop_hz_true": float(df["loop_hz_true"].mean()),
+
+            "mean_obs_time_s": float(df["obs_time_s"].mean()),
+            "mean_policy_time_s": float(df["policy_time_s"].mean()),
+            "mean_send_time_s": float(df["send_time_s"].mean()),
+            "mean_log_time_s": float(df["log_time_s"].mean()),
+
+            "max_obs_time_s": float(df["obs_time_s"].max()),
+            "max_policy_time_s": float(df["policy_time_s"].max()),
+            "max_send_time_s": float(df["send_time_s"].max()),
+            "max_log_time_s": float(df["log_time_s"].max()),
+
+            "start_dist_goal": float(df["dist_goal"].iloc[0]),
+            "final_dist_goal": float(df["dist_goal"].iloc[-1]),
+
+            "start_tcp_to_target_dist": float(df["tcp_to_target_dist"].iloc[0]),
+            "final_tcp_to_target_dist": float(df["tcp_to_target_dist"].iloc[-1]),
+            "min_tcp_to_target_dist": float(df["tcp_to_target_dist"].min()),
+            "net_tcp_to_target_improvement": float(
+                df["tcp_to_target_dist"].iloc[0] - df["tcp_to_target_dist"].iloc[-1]
+            ),
+
+            "mean_tcp_speed_mps": float(df["tcp_speed_mps"].mean()),
+            "median_tcp_speed_mps": float(df["tcp_speed_mps"].median()),
+            "max_tcp_speed_mps": float(df["tcp_speed_mps"].max()),
+
+            "mean_qd_norm": float(df["qd_norm"].mean()),
+            "max_qd_norm": float(df["qd_norm"].max()),
+            "mean_cmd_err_norm": float(df["cmd_err_norm"].mean()),
+            "max_cmd_err_norm": float(df["cmd_err_norm"].max()),
+            "mean_ctrl_delta_norm": float(df["ctrl_delta_norm"].mean()),
+            "max_ctrl_delta_norm": float(df["ctrl_delta_norm"].max()),
+
+            "num_overruns": int(df["overrun_count"].iloc[-1]) if "overrun_count" in df.columns else 0,
+            "overrun_ratio": (
+                float(df["overrun_count"].iloc[-1]) / max(len(df), 1)
+                if "overrun_count" in df.columns else 0.0
+            ),
+        }
