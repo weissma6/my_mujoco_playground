@@ -30,6 +30,7 @@ from mujoco_playground._src.manipulation.franka_emika_panda import pick as panda
 # ------------------------------------------------------------------------------------
 # New version of UR10 pick environment
 from mujoco_playground._src.manipulation.my_ur10 import ur10pick as ur10_pick
+from mujoco_playground._src.manipulation.my_ur10 import ur10_reach as ur10_reach
 
 # ------------------------------------------------------------------------------------
 from mujoco_playground._src.manipulation.franka_emika_panda import (
@@ -48,6 +49,7 @@ _envs = {
     "PandaPickCube": panda_pick.PandaPickCube,
     # ------------------------------------------------------------------------------------
     "UR10PickCube": ur10_pick.UR10PickCube,
+    "UR10SimpleReach": ur10_reach.UR10SimpleReach,
     # ------------------------------------------------------------------------------------
     "PandaPickCubeOrientation": panda_pick.PandaPickCubeOrientation,
     "PandaPickCubeCartesian": panda_pick_cartesian.PandaPickCubeCartesian,
@@ -63,6 +65,7 @@ _cfgs = {
     "PandaPickCube": panda_pick.default_config,
     # ------------------------------------------------------------------------------------
     "UR10PickCube": ur10_pick.default_config,
+    "UR10SimpleReach": ur10_reach.default_config,
     # ------------------------------------------------------------------------------------
     "PandaPickCubeOrientation": panda_pick.default_config,
     "PandaPickCubeCartesian": panda_pick_cartesian.default_config,

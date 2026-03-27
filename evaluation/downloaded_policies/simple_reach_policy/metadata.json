@@ -1,0 +1,10 @@
+{
+  "env_name": "UR10SimpleReach",
+  "obs_dim": 18,
+  "action_dim": 6,
+  "obs_layout": "q[0:6], qd[6:12], tcp_pos[12:15], target_pos[15:18]",
+  "branch": "simple_reach",
+  "best_reward": 761.6173706054688,
+  "best_step": 6553600,
+  "notes": "6-DOF arm-only reach. No gripper, no box. 18D obs matching RDTE."
+}

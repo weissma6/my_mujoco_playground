@@ -1,0 +1,31 @@
+<mujoco model="ur10e reach">
+
+  <!-- Include reach scene (robot + floor, no box_detail camera) -->
+  <include file="mjx_reach_scene.xml"/>
+
+  <worldbody>
+    <!-- mocap target: where the TCP should reach (red sphere) -->
+    <body mocap="true" name="mocap_target">
+      <geom type="sphere" size="0.02" rgba="1 0 0 0.4" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+
+  <!-- Keyframes: 6-DOF arm only (no gripper joints, no box freejoint) -->
+  <keyframe>
+    <key name="low_home"
+      qpos="0 -1.7 2.25 -2.15 -1.5 -1.5"
+      ctrl="0 -1.7 2.25 -2.15 -1.5 -1.5"/>
+
+    <key name="task_home"
+      qpos="0.75 -2.2 1.57 -1.57 -1.57 0"
+      ctrl="0.75 -2.2 1.57 -1.57 -1.57 0"/>
+
+    <key name="tucked"
+      qpos="0 -2.36 2.36 -1.57 -1.57 0"
+      ctrl="0 -2.36 2.36 -1.57 -1.57 0"/>
+  </keyframe>
+
+  <!-- Sensors for reach task only -->
+  <include file="ur10_reach_sensor.xml"/>
+
+</mujoco>

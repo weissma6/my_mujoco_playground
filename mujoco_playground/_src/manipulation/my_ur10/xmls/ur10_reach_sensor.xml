@@ -1,0 +1,7 @@
+<mujoco>
+<!-- Sensors for reach task only (no gripper, no box) -->
+  <sensor>
+    <!-- TCP position tracking -->
+    <framepos name="tcp_position" objtype="site" objname="tcp"/>
+  </sensor>
+</mujoco>

@@ -103,9 +103,12 @@ class UR10Base(mjx_env.MjxEnv):
         self._action_scale = config.action_scale
 
     # Post-init setup (keyframes, IDs, and body references)
-    def _post_init(self, obj_name: str, keyframe: str = "low_home"):
-        # ------------------------------------------------------------------------------------
-        all_joints = _ARM_JOINTS + _FINGER_JOINTS
+    def _post_init(self, obj_name: str = None, keyframe: str = "low_home",
+                   finger_joints=None):
+        # finger_joints defaults to _FINGER_JOINTS for backward compat with ur10pick.py
+        if finger_joints is None:
+            finger_joints = _FINGER_JOINTS
+        all_joints = _ARM_JOINTS + finger_joints
         # ------------------------------------------------------------------------------------
         self._robot_arm_qposadr = np.array(
             [
@@ -115,6 +118,10 @@ class UR10Base(mjx_env.MjxEnv):
         )
         self._robot_qposadr = np.array(
             [self._mj_model.jnt_qposadr[self._mj_model.joint(j).id] for j in all_joints]
+        )
+        # Velocity addresses for arm joints (used in _get_obs for data.qvel indexing)
+        self._robot_arm_qveladr = np.array(
+            [self._mj_model.jnt_dofadr[self._mj_model.joint(j).id] for j in _ARM_JOINTS]
         )
         # ------------------------------------------------------------------------------------
         # The end-effector site (TCP)
@@ -135,11 +142,15 @@ class UR10Base(mjx_env.MjxEnv):
             self._mj_model.geom("hande_base").id if "hande_base" in geom_names else None
         )
 
-        # Environment object references (like cube)
-        self._obj_body = self._mj_model.body(obj_name).id
-        self._obj_qposadr = self._mj_model.jnt_qposadr[
-            self._mj_model.body(obj_name).jntadr[0]
-        ]
+        # Environment object references (like cube) — optional for reach-only tasks
+        if obj_name is not None:
+            self._obj_body = self._mj_model.body(obj_name).id
+            self._obj_qposadr = self._mj_model.jnt_qposadr[
+                self._mj_model.body(obj_name).jntadr[0]
+            ]
+        else:
+            self._obj_body = None
+            self._obj_qposadr = None
 
         # Mocap and floor
         self._mocap_target = self._mj_model.body("mocap_target").mocapid
@@ -160,11 +171,14 @@ class UR10Base(mjx_env.MjxEnv):
                 print(f"  - {self._mj_model.key(i).name}")
             raise ValueError(f"Keyframe '{keyframe}' does not exist in the model")
 
-        # Extract initial object position
-        self._init_obj_pos = jp.array(
-            self._init_q[self._obj_qposadr : self._obj_qposadr + 3],
-            dtype=jp.float32,
-        )
+        # Extract initial object position (None for reach-only tasks)
+        if self._obj_qposadr is not None:
+            self._init_obj_pos = jp.array(
+                self._init_q[self._obj_qposadr : self._obj_qposadr + 3],
+                dtype=jp.float32,
+            )
+        else:
+            self._init_obj_pos = None
 
         # Control limits
         self._lowers, self._uppers = self._mj_model.actuator_ctrlrange.T

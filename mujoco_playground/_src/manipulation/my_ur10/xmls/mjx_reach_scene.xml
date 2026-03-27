@@ -1,0 +1,53 @@
+<mujoco model="ur10e reach scene">
+<include file="../universal_robots_ur10e/ur10e_position.xml"/>
+
+  <worldbody>
+  <!-- World coordinate frame visualization -->
+    <geom name="world_x_axis" type="capsule" size="0.01 0.5" pos="0.5 0 0"
+          quat="0.7071 0 0.7071 0" rgba="1 0 0 1" contype="0" conaffinity="0"/>
+    <geom name="world_y_axis" type="capsule" size="0.01 0.5" pos="0 0.5 0"
+          quat="0.7071 -0.7071 0 0" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+    <geom name="world_z_axis" type="capsule" size="0.01 0.5" pos="0 0 0.5"
+          rgba="0 0 1 1" contype="0" conaffinity="0"/>
+
+    <!--My floor definition-->
+    <light pos="0 0 3" dir="0 0 -1" directional="true"/>
+    <geom name="floor" type="plane" size="0 0 0.05" material="groundplane" contype="1" conaffinity="3" solref="0.001 1"/>
+    <!-- Default diagonal top-down -->
+    <camera name="front" fovy="42" pos="1.176 0.001 0.483" xyaxes="0.006 1.000 -0.000 -0.720 0.004 0.694"/>
+
+    <!-- Side view from 120 degrees -->
+    <body name="camera_target" pos="0.4 0 0.4">
+      <geom type="sphere" size="0.005" rgba="1 0 0 0" contype="0" conaffinity="0"/>
+    </body>
+    <camera name="side_130" pos="0.8 -1.1 1.2" mode="targetbody" target="camera_target" fovy="70"/>
+    <!-- box_detail camera removed: no box body in reach task -->
+  </worldbody>
+
+  <statistic center="0.4 0 0.4" extent="1"/>
+
+  <option timestep="0.005" iterations="12" ls_iterations="12"
+  integrator="implicitfast">
+    <flag eulerdamp="disable"/>
+  </option>
+
+  <custom>
+    <numeric data="12" name="max_contact_points"/>
+  </custom>
+
+  <visual>
+    <headlight diffuse=".8 .8 .8" ambient=".2 .2 .2" specular="1 1 1"/>
+    <rgba force="1 0 0 1"/>
+    <global azimuth="-40" elevation="-30" offwidth="960" offheight="720"/>
+    <map force="0.01"/>
+    <quality shadowsize="8192"/>
+    <scale contactwidth="0.075" contactheight="0.025" forcewidth="0.05" com="0.05" framewidth="0.01" framelength="0.2"/>
+  </visual>
+
+  <asset>
+    <!-- Sky and floor materials -->
+    <texture type="skybox" builtin="gradient" rgb1="0.8 0.9 1" rgb2="0.4 0.5 0.6" width="800" height="800"/>
+    <texture type="2d" name="grid" builtin="checker" rgb1="0.8 0.9 1" rgb2="0.4 0.5 0.6" width="512" height="512" mark="edge" markrgb="0.2 0.2 0.2"/>
+    <material name="groundplane" texture="grid" texrepeat="5 5" texuniform="true" reflectance="0.2"/>
+  </asset>
+</mujoco>
