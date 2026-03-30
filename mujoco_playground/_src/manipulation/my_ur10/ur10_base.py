@@ -161,9 +161,8 @@ class UR10Base(mjx_env.MjxEnv):
             keyframe_id = self._mj_model.key(keyframe).id
             self._init_q = self._mj_model.keyframe(keyframe).qpos
             self._init_ctrl = self._mj_model.keyframe(keyframe).ctrl
-            print(f"✓ Using keyframe: '{keyframe}'")
-            print(f"  Initial qpos size: {len(self._init_q)}")
-            print(f"  Robot joints: {self._init_q[self._robot_qposadr]}")
+            # print(f"✓ Using keyframe: '{keyframe}'")
+            # print(f"  Initial qpos size: {len(self._init_q)}")
         except:
             print(f"✗ Keyframe '{keyframe}' not found!")
             print(f"Available keyframes:")

@@ -159,7 +159,7 @@ class UR10SimpleReach(ur10_base.UR10Base):
         tcp_pos = data.site_xpos[self._gripper_site]
         tcp_target_dist = jp.linalg.norm(info["target_pos"] - tcp_pos)
 
-        success = tcp_target_dist < 0.05
+        success = tcp_target_dist < 0.0005  # 0.5mm threshold for successs
 
         out_of_bounds = (
             jp.any(jp.abs(tcp_pos[:2]) > 1.2) | (tcp_pos[2] < 0.0)
