@@ -3,6 +3,22 @@
   "obs_dim": 18,
   "action_dim": 6,
   "obs_layout": "q[0:6], qd[6:12], tcp_pos[12:15], target_pos[15:18]",
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      64,
+      64,
+      64
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
   "branch": "simple_reach",
   "best_reward": 1060.338134765625,
   "best_step": 6553600,
