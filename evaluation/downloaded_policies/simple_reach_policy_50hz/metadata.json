@@ -1,0 +1,31 @@
+{
+  "env_name": "UR10SimpleReach",
+  "obs_dim": 18,
+  "action_dim": 6,
+  "obs_layout": "q[0:6], qd[6:12], tcp_pos[12:15], target_pos[15:18]",
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      64,
+      64,
+      64
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "ctrl_dt": 0.02,
+  "ctrl_hz": 50,
+  "sim_dt": 0.005,
+  "action_scale": 0.04,
+  "episode_length": 150,
+  "branch": "simple_reach",
+  "best_reward": 1060.338134765625,
+  "best_step": 6553600,
+  "notes": "6-DOF arm-only reach. No gripper, no box. 18D obs matching RDTE."
+}
