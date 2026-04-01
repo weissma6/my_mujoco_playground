@@ -297,7 +297,7 @@ class URSimRTDESimpleReach:
         """
         q = np.array(fb["q"], dtype=dtype)
         qd = np.array(fb["qd"], dtype=dtype)
-        tcp = self.compute_tcp_pos(q).astype(dtype)
+        tcp = self.compute_tcp_pos(q).astype(dtype) # Important
         tgt = np.array(target_pos, dtype=dtype)
         obs = np.concatenate([q, qd, tcp, tgt])
         return obs[None, :]  # (1, 18)
@@ -312,9 +312,11 @@ class URSimRTDESimpleReach:
         action_scale: float = 0.04,
         dtype=np.float32,
     ) -> np.ndarray:
-        """ctrl_next = clip(ctrl_prev + action_scale * action, lowers, uppers).
-
+        """
+        Delta-style control update:
+        ctrl_next = clip(ctrl_prev + action_scale * action, lowers, uppers).
         Returns ctrl_next (6,) — the joint command to send via servoj.
+        Upper and Lower Limits are the actuator ctrlrange
         """
         if self._ctrl_state is None:
             raise RuntimeError("ctrl_state not initialized (call run_policy_loop first)")
