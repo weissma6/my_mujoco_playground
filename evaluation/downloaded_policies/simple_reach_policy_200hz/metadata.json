@@ -25,7 +25,7 @@
   "action_scale": 0.04,
   "episode_length": 150,
   "branch": "simple_reach",
-  "best_reward": 922.4695434570312,
-  "best_step": 6553600,
+  "best_reward": 852.5884399414062,
+  "best_step": 3276800,
   "notes": "6-DOF arm-only reach. No gripper, no box. 18D obs matching RDTE."
 }

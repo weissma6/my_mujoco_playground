@@ -292,12 +292,14 @@ class URSimRTDESimpleReach:
     ) -> np.ndarray:
         """Build 18D observation: [q(6), qd(6), tcp_pos(3), target_pos(3)].
 
-        tcp_pos is computed via MuJoCo FK (not RTDE's TCP) to match training.
+        tcp_pos from RTDE getActualTCPPose()[:3]. This matches training because
+        the MuJoCo TCP site is now at the tool flange (pos="0 0 0"), same as
+        the UR default TCP.
         Returns shape (1, 18) for batched policy input.
         """
         q = np.array(fb["q"], dtype=dtype)
         qd = np.array(fb["qd"], dtype=dtype)
-        tcp = self.compute_tcp_pos(q).astype(dtype) # Important
+        tcp = np.array(fb["tcp_xyz"], dtype=dtype)
         tgt = np.array(target_pos, dtype=dtype)
         obs = np.concatenate([q, qd, tcp, tgt])
         return obs[None, :]  # (1, 18)
@@ -382,21 +384,19 @@ class URSimRTDESimpleReach:
 
             q = np.asarray(fb["q"], dtype=float)
             qd = np.asarray(fb["qd"], dtype=float)
+            tcp_xyz = np.asarray(fb["tcp_xyz"], dtype=float)
 
-            # Compute tcp_pos via MuJoCo FK (matches training, not RTDE's TCP)
-            tcp_fk = self.compute_tcp_pos(q)
-
-            # TCP motion tracking
+            # TCP motion tracking (using RTDE TCP directly)
             if prev_tcp_xyz is None:
                 tcp_delta = np.zeros(3, dtype=float)
                 tcp_dist_loop = 0.0
             else:
-                tcp_delta = tcp_fk - prev_tcp_xyz
+                tcp_delta = tcp_xyz - prev_tcp_xyz
                 tcp_dist_loop = float(np.linalg.norm(tcp_delta))
-            prev_tcp_xyz = tcp_fk.copy()
+            prev_tcp_xyz = tcp_xyz.copy()
 
-            # TCP to target distance (using FK tcp, same as what policy sees)
-            tcp_to_target_dist = float(np.linalg.norm(target_pos - tcp_fk))
+            # TCP to target distance
+            tcp_to_target_dist = float(np.linalg.norm(target_pos - tcp_xyz))
             if prev_tcp_to_target_dist is None:
                 tcp_to_target_improvement = 0.0
             else:
@@ -453,7 +453,7 @@ class URSimRTDESimpleReach:
                 **{f"qd{i}": qd[i] for i in range(6)},
                 **{f"ctrl{i}": ctrl_next[i] for i in range(6)},
                 **{f"action{i}": action[i] for i in range(6)},
-                "tcp_x": tcp_fk[0], "tcp_y": tcp_fk[1], "tcp_z": tcp_fk[2],
+                "tcp_x": tcp_xyz[0], "tcp_y": tcp_xyz[1], "tcp_z": tcp_xyz[2],
                 "target_x": target_pos[0], "target_y": target_pos[1], "target_z": target_pos[2],
                 "tcp_to_target_dist": tcp_to_target_dist,
                 "tcp_to_target_improvement": tcp_to_target_improvement,
@@ -476,7 +476,7 @@ class URSimRTDESimpleReach:
                 print(
                     f"\r[{step_count:4d}] tcp→tgt={tcp_to_target_dist:.4f}m "
                     f"| hz={loop_hz_true:.1f} "
-                    f"| tcp={np.round(tcp_fk, 3)}",
+                    f"| tcp={np.round(tcp_xyz, 3)}",
                     end="", flush=True,
                 )
 
