@@ -191,103 +191,97 @@ class URSimRTDESimpleReach:
     def load_policy_fn(
         self,
         policy_path: str = "../../evaluation/downloaded_policies/simple_reach_policy",
-        env_name: str = "UR10SimpleReach",
         deterministic: bool = True,
     ):
-        """Load a Brax PPO policy and extract ctrl limits from the env model.
+        """Load a Brax PPO policy from saved files (metadata.json + params.msgpack).
 
-        Reads params.msgpack + metadata.json (primary) with params.pkl as fallback.
-        Rebuilds the network from metadata.network_factory so no training
-        variables are needed.
-
-        Stores:
-            self._policy_fn      — JIT-compiled (1,18) -> (1,6)
-            self._ctrl_lowers/uppers — actuator limits from MuJoCo model
+        Everything is read from the saved artifacts — env_name, obs_dim, action_dim,
+        network architecture. Same pattern as UR10_SimpleReach.ipynb chunk 9.
         """
         import json as _json
         from flax import serialization
 
-        env = registry.load(env_name)
-
-        # ---- Load metadata for network architecture ----
+        # ---- Load metadata (env_name, dims, architecture) ----
         meta_file = os.path.join(policy_path, "metadata.json")
-        if os.path.exists(meta_file):
-            with open(meta_file) as f:
-                meta = _json.load(f)
-            nf_kwargs = {
-                k: (tuple(v) if isinstance(v, list) else v)
-                for k, v in meta.get("network_factory", {}).items()
-            }
-        else:
-            # Fallback: get architecture from manipulation_params
-            ppo_params = manipulation_params.brax_ppo_config(env_name)
-            nf_kwargs = dict(ppo_params.network_factory)
+        with open(meta_file) as f:
+            meta = _json.load(f)
 
-        # ---- Build PPO network with correct architecture ----
+        nf_kwargs = {
+            k: (tuple(v) if isinstance(v, list) else v)
+            for k, v in meta["network_factory"].items()
+        }
+
+        # ---- Build PPO network from metadata ----
         ppo_net = ppo_networks.make_ppo_networks(
-            observation_size=env.observation_size,
-            action_size=env.action_size,
+            observation_size=meta["obs_dim"],
+            action_size=meta["action_dim"],
             preprocess_observations_fn=running_statistics.normalize,
             **nf_kwargs,
         )
 
-        # ---- Load params: prefer msgpack, fallback to pickle ----
-        msgpack_file = os.path.join(policy_path, "params.msgpack")
-        pkl_file = os.path.join(policy_path, "params.pkl")
+        # ---- Build template and deserialize params.msgpack ----
+        rng_init = jax.random.PRNGKey(0)
+        template = {
+            "0": running_statistics.init_state(
+                jax.ShapeDtypeStruct((meta["obs_dim"],), jnp.float32)
+            ),
+            "1": ppo_net.policy_network.init(rng_init),
+            "2": ppo_net.value_network.init(rng_init),
+        }
 
-        if os.path.exists(msgpack_file):
-            # Msgpack path (same as evaluation script)
-            rng_init = jax.random.PRNGKey(0)
-            template = {
-                "0": running_statistics.init_state(
-                    jax.ShapeDtypeStruct((env.observation_size,), jnp.float32)
-                ),
-                "1": ppo_net.policy_network.init(rng_init),
-                "2": ppo_net.value_network.init(rng_init),
-            }
-            with open(msgpack_file, "rb") as f:
-                params_bytes = f.read()
-            params = serialization.from_bytes(template, params_bytes)
-            normalizer_params, policy_params = params["0"], params["1"]
-            print(f"[load_policy_fn] Loaded params.msgpack ({len(params_bytes):,} bytes)")
-        elif os.path.exists(pkl_file):
-            # Pickle fallback
-            with open(pkl_file, "rb") as f:
-                params = pickle.load(f)
-            normalizer_params, policy_params = params[0], params[1]
-            print(f"[load_policy_fn] Loaded params.pkl (fallback)")
-        else:
-            raise FileNotFoundError(
-                f"No params.msgpack or params.pkl found in: {policy_path}"
-            )
+        with open(os.path.join(policy_path, "params.msgpack"), "rb") as f:
+            loaded_params = serialization.from_bytes(template, f.read())
 
         # ---- Build JIT-compiled inference function ----
-        make_policy = ppo_networks.make_inference_fn(ppo_net)
-        raw_policy = make_policy(
-            (normalizer_params, policy_params), deterministic=deterministic
+        _raw_policy = ppo_networks.make_inference_fn(ppo_net)(
+            (loaded_params["0"], loaded_params["1"]), deterministic=deterministic
         )
 
         @jax.jit
-        def policy_fn(obs_batch):
-            key = jax.random.PRNGKey(0)
-            action, _ = raw_policy(obs_batch, key)
+        def policy_fn(obs):
+            action, _ = _raw_policy(obs, jax.random.PRNGKey(0))
             return action
 
+        # ---- Store on self ----
         self._policy_fn = policy_fn
-        self.policy_env_name = env_name
+        self._meta = meta
         self.policy_path = policy_path
 
-        # Extract actuator ctrl limits from the MuJoCo model
+        # Extract actuator ctrl limits (needs env model)
+        env = registry.load(meta["env_name"])
         lowers, uppers = env.mj_model.actuator_ctrlrange.T
         self._ctrl_lowers = np.array(lowers, dtype=np.float32)
         self._ctrl_uppers = np.array(uppers, dtype=np.float32)
 
-        print(f"  env={env_name}  obs={env.observation_size}  act={env.action_size}")
-        print(f"  network_factory={nf_kwargs}")
-        print(f"  ctrl limits: {self._ctrl_lowers} .. {self._ctrl_uppers}")
+        print(f"Loaded policy: obs={meta['obs_dim']}, act={meta['action_dim']}")
 
     # =========================================================================
-    # E — Observation Building (18D)
+    # E — MuJoCo FK model (computes tcp_pos from joint angles)
+    # =========================================================================
+
+    def init_fk_model(self, xml_path: str):
+        """Load a MuJoCo model for forward kinematics.
+
+        RTDE's getActualTCPPose() returns the UR controller's TCP which has a
+        different offset than the MuJoCo 'tcp' site the policy was trained with
+        (12 cm difference). Using MuJoCo FK from joint angles gives exactly
+        the tcp_pos the policy expects.
+        """
+        self._fk_model = mujoco.MjModel.from_xml_path(xml_path)
+        self._fk_data = mujoco.MjData(self._fk_model)
+        self._fk_tcp_id = mujoco.mj_name2id(
+            self._fk_model, mujoco.mjtObj.mjOBJ_SITE, "tcp"
+        )
+        print(f"FK model loaded: tcp site id={self._fk_tcp_id}")
+
+    def compute_tcp_pos(self, q: np.ndarray) -> np.ndarray:
+        """Compute MuJoCo tcp site position from joint angles via FK."""
+        self._fk_data.qpos[:6] = np.asarray(q, dtype=float)
+        mujoco.mj_forward(self._fk_model, self._fk_data)
+        return self._fk_data.site_xpos[self._fk_tcp_id].copy()
+
+    # =========================================================================
+    # F — Observation Building (18D)
     # =========================================================================
 
     def build_obs_from_feedback(
@@ -296,19 +290,20 @@ class URSimRTDESimpleReach:
         target_pos: np.ndarray,
         dtype=np.float32,
     ) -> np.ndarray:
-        """Build 18D observation: [q(6), qd(6), tcp_xyz(3), target_pos(3)].
+        """Build 18D observation: [q(6), qd(6), tcp_pos(3), target_pos(3)].
 
+        tcp_pos is computed via MuJoCo FK (not RTDE's TCP) to match training.
         Returns shape (1, 18) for batched policy input.
         """
         q = np.array(fb["q"], dtype=dtype)
         qd = np.array(fb["qd"], dtype=dtype)
-        tcp = np.array(fb["tcp_xyz"], dtype=dtype)
+        tcp = self.compute_tcp_pos(q).astype(dtype)
         tgt = np.array(target_pos, dtype=dtype)
         obs = np.concatenate([q, qd, tcp, tgt])
         return obs[None, :]  # (1, 18)
 
     # =========================================================================
-    # F — Control Update
+    # G — Control Update
     # =========================================================================
 
     def policy_step_ctrl_update(
@@ -338,7 +333,7 @@ class URSimRTDESimpleReach:
         return self._ctrl_state.copy()
 
     # =========================================================================
-    # G — Control Loop
+    # H — Control Loop
     # =========================================================================
 
     def run_policy_loop(
@@ -385,19 +380,21 @@ class URSimRTDESimpleReach:
 
             q = np.asarray(fb["q"], dtype=float)
             qd = np.asarray(fb["qd"], dtype=float)
-            tcp_xyz = np.asarray(fb["tcp_xyz"], dtype=float)
+
+            # Compute tcp_pos via MuJoCo FK (matches training, not RTDE's TCP)
+            tcp_fk = self.compute_tcp_pos(q)
 
             # TCP motion tracking
             if prev_tcp_xyz is None:
                 tcp_delta = np.zeros(3, dtype=float)
                 tcp_dist_loop = 0.0
             else:
-                tcp_delta = tcp_xyz - prev_tcp_xyz
+                tcp_delta = tcp_fk - prev_tcp_xyz
                 tcp_dist_loop = float(np.linalg.norm(tcp_delta))
-            prev_tcp_xyz = tcp_xyz.copy()
+            prev_tcp_xyz = tcp_fk.copy()
 
-            # TCP to target distance
-            tcp_to_target_dist = float(np.linalg.norm(target_pos - tcp_xyz))
+            # TCP to target distance (using FK tcp, same as what policy sees)
+            tcp_to_target_dist = float(np.linalg.norm(target_pos - tcp_fk))
             if prev_tcp_to_target_dist is None:
                 tcp_to_target_improvement = 0.0
             else:
@@ -454,7 +451,7 @@ class URSimRTDESimpleReach:
                 **{f"qd{i}": qd[i] for i in range(6)},
                 **{f"ctrl{i}": ctrl_next[i] for i in range(6)},
                 **{f"action{i}": action[i] for i in range(6)},
-                "tcp_x": tcp_xyz[0], "tcp_y": tcp_xyz[1], "tcp_z": tcp_xyz[2],
+                "tcp_x": tcp_fk[0], "tcp_y": tcp_fk[1], "tcp_z": tcp_fk[2],
                 "target_x": target_pos[0], "target_y": target_pos[1], "target_z": target_pos[2],
                 "tcp_to_target_dist": tcp_to_target_dist,
                 "tcp_to_target_improvement": tcp_to_target_improvement,
@@ -477,7 +474,7 @@ class URSimRTDESimpleReach:
                 print(
                     f"\r[{step_count:4d}] tcp→tgt={tcp_to_target_dist:.4f}m "
                     f"| hz={loop_hz_true:.1f} "
-                    f"| tcp={np.round(tcp_xyz, 3)}",
+                    f"| tcp={np.round(tcp_fk, 3)}",
                     end="", flush=True,
                 )
 
@@ -551,7 +548,7 @@ class URSimRTDESimpleReach:
                 print(f"  {k}: {v}")
 
     # =========================================================================
-    # H — MuJoCo Rendering
+    # I — MuJoCo Rendering
     # =========================================================================
 
     def mujoco_init_model(
