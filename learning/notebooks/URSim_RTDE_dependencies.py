@@ -73,6 +73,8 @@ class URSimRTDESimpleReach:
         q = r.getActualQ()
         qd = r.getActualQd()
         tcp_pose = r.getActualTCPPose()
+        tcp_pose[0] = -tcp_pose[0]
+        tcp_pose[1] = -tcp_pose[1]
         return {
             "q": list(q),
             "qd": list(qd),
