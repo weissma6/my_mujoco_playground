@@ -48,7 +48,7 @@ LOOKAHEAD_TIME = 0.02      # servoj smoothing horizon [s]. Range 0.03-0.2. Highe
 GAIN = 200               # servoj tracking stiffness. Range 100-2000. Lower=softer/smoother, higher=stiffer/jerkier
 SERVOJ_A = 0.5          # Max joint acceleration [rad/s^2] enforced by UR controller. UR10e max ~2.5. Conservative=0.5-1.0, Med=1.4, Fast=2.5
 SERVOJ_V = 2         # Max joint velocity [rad/s] enforced by UR controller. UR10e max ~2.1. Conservative=0.5, Med=1.05, Fast=2.1
-ALPHA = 0.5             # Blend factor: 1.0=full policy, <1.0=blend with measured q (smoother but slower)
+ALPHA = 1             # Blend factor: 1.0=full policy, <1.0=blend with measured q (smoother but slower)
 
 # Paths (relative to this script)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
