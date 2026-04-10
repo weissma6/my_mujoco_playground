@@ -44,7 +44,6 @@ class URSimRTDESimpleReach:
         self.port_dashboard = port_dashboard
         self._receiver: Optional[rtde_receive.RTDEReceiveInterface] = None
         self._policy_fn = None
-        self._ctrl_state: Optional[np.ndarray] = None
         self._ctrl_lowers: Optional[np.ndarray] = None
         self._ctrl_uppers: Optional[np.ndarray] = None
 
@@ -68,18 +67,24 @@ class URSimRTDESimpleReach:
         return self._receiver.isConnected()
 
     def receive_feedback(self) -> Dict[str, List[float]]:
-        """Returns dict: q(6), qd(6), tcp_xyz(3), tcp_pose(6)."""
+        """Returns dict with joint state, TCP, currents, control output, TCP force."""
         r = self.connect()
         q = r.getActualQ()
         qd = r.getActualQd()
         tcp_pose = r.getActualTCPPose()
         tcp_pose[0] = -tcp_pose[0]
         tcp_pose[1] = -tcp_pose[1]
+        current = r.getActualCurrent()
+        ctrl_output = r.getJointControlOutput()
+        tcp_force = r.getActualTCPForce()
         return {
             "q": list(q),
             "qd": list(qd),
             "tcp_xyz": list(tcp_pose[:3]),
             "tcp_pose": list(tcp_pose),
+            "current": list(current),
+            "ctrl_output": list(ctrl_output),
+            "tcp_force": list(tcp_force),
         }
 
     def print_feedback(self, digits: int = 4):
@@ -154,12 +159,12 @@ class URSimRTDESimpleReach:
     def move_to_start(
         self,
         q_start,
-        a=2.5,
-        v=2.0,
+        a=0.5,
+        v=0.1,
         timeout_s=20.0,
         tol=0.01,
         check_hz=5.0,
-        debug_print=True,
+        debug_print=True
     ):
         """Send movej to q_start and poll RTDE until converged."""
         dt = 1.0 / float(check_hz)
@@ -255,7 +260,13 @@ class URSimRTDESimpleReach:
         self._ctrl_lowers = np.array(lowers, dtype=np.float32)
         self._ctrl_uppers = np.array(uppers, dtype=np.float32)
 
-        print(f"Loaded policy: obs={meta['obs_dim']}, act={meta['action_dim']}")
+        # ---- JIT warmup (first call triggers XLA compilation) ----
+        t0 = time.perf_counter()
+        dummy = np.zeros((1, meta["obs_dim"]), dtype=np.float32)
+        _ = policy_fn(dummy)
+        _.block_until_ready()
+        print(f"Loaded policy: obs={meta['obs_dim']}, act={meta['action_dim']} "
+              f"(JIT warmup: {time.perf_counter() - t0:.2f}s)")
 
     # =========================================================================
     # E — MuJoCo FK model (computes tcp_pos from joint angles)
@@ -312,31 +323,42 @@ class URSimRTDESimpleReach:
 
     def policy_step_ctrl_update(
         self,
+        q: np.ndarray,
         action: np.ndarray,
         action_scale: float = 0.04,
+        dt: float = 0.02,
+        max_joint_speed: Optional[float] = None,
+        alpha: float = 1.0,
         dtype=np.float32,
     ) -> np.ndarray:
         """
-        Delta-style control update:
-        ctrl_next = clip(ctrl_prev + action_scale * action, lowers, uppers).
-        Returns ctrl_next (6,) — the joint command to send via servoj.
-        Upper and Lower Limits are the actuator ctrlrange
+        Compute servoj target from measured q and policy action.
+        Returns ctrl_next (6,) ready to send to servoj.
         """
-        if self._ctrl_state is None:
-            raise RuntimeError("ctrl_state not initialized (call run_policy_loop first)")
-
         action = np.asarray(action, dtype=dtype).reshape(-1)
-        if action.shape[0] != 6:
-            raise ValueError(f"action must have length 6, got {action.shape[0]}")
+        q = np.asarray(q, dtype=dtype)
 
-        ctrl_prev = self._ctrl_state.copy()
-        ctrl_next = ctrl_prev + float(action_scale) * action
+        # Policy delta applied to measured joint positions
+        ctrl_next = q + float(action_scale) * action
 
+        # Actuator range clipping
         if self._ctrl_lowers is not None and self._ctrl_uppers is not None:
             ctrl_next = np.clip(ctrl_next, self._ctrl_lowers, self._ctrl_uppers)
 
-        self._ctrl_state = ctrl_next.astype(dtype)
-        return self._ctrl_state.copy()
+        # Alpha blending: blend policy command with measured q
+        if alpha < 1.0:
+            ctrl_next = alpha * ctrl_next + (1.0 - alpha) * q
+
+        # Velocity clamp: limit max joint delta per step
+        #   UR10e max ~2.1 rad/s (base/shoulder/elbow), ~3.14 rad/s (wrists)
+        #   Slow: 0.1-0.3 | Medium: 0.5 | Fast: 1.0+ rad/s
+        if max_joint_speed is not None:
+            max_delta = max_joint_speed * dt
+            delta = ctrl_next - q
+            delta = np.clip(delta, -max_delta, max_delta)
+            ctrl_next = q + delta
+
+        return ctrl_next
 
     # =========================================================================
     # H — Control Loop
@@ -350,6 +372,8 @@ class URSimRTDESimpleReach:
         action_scale: float = 0.04,
         lookahead_time: float = 0.1,
         gain: int = 300,
+        max_joint_speed: Optional[float] = None,  # rad/s per joint. None=disabled
+        alpha: float = 1.0,
         dtype=np.float32,
         debug_print: bool = True,
     ) -> Tuple[pd.DataFrame, dict]:
@@ -362,10 +386,6 @@ class URSimRTDESimpleReach:
 
         dt = 1.0 / float(control_hz)
         target_pos = np.asarray(target_pos, dtype=np.float32).reshape(3)
-
-        # Initialize ctrl_state from current robot joint positions
-        fb0 = self.receive_feedback()
-        self._ctrl_state = np.array(fb0["q"], dtype=dtype)
 
         log = []
         step_count = 0
@@ -387,6 +407,9 @@ class URSimRTDESimpleReach:
             q = np.asarray(fb["q"], dtype=float)
             qd = np.asarray(fb["qd"], dtype=float)
             tcp_xyz = np.asarray(fb["tcp_xyz"], dtype=float)
+            current = np.asarray(fb["current"], dtype=float)
+            ctrl_output = np.asarray(fb["ctrl_output"], dtype=float)
+            tcp_force = np.asarray(fb["tcp_force"], dtype=float)
 
             # TCP motion tracking (using RTDE TCP directly)
             if prev_tcp_xyz is None:
@@ -414,9 +437,10 @@ class URSimRTDESimpleReach:
             action = np.asarray(action_raw, dtype=dtype).reshape(-1)
             t1_policy = time.perf_counter()
 
-            # 4. Control update (with clipping)
-            ctrl_prev = self._ctrl_state.copy() if self._ctrl_state is not None else np.zeros(6)
-            ctrl_next = self.policy_step_ctrl_update(action, action_scale, dtype)
+            # 4. Control update: q + action_scale * action, clipped, velocity-clamped
+            ctrl_next = self.policy_step_ctrl_update(
+                q, action, action_scale, dt, max_joint_speed, alpha=alpha, dtype=dtype,
+            )
 
             # 5. Send servoj
             t0_send = time.perf_counter()
@@ -446,7 +470,7 @@ class URSimRTDESimpleReach:
             # 7. Log
             qd_norm = float(np.linalg.norm(qd))
             cmd_err_norm = float(np.linalg.norm(ctrl_next - q))
-            ctrl_delta_norm = float(np.linalg.norm(ctrl_next - ctrl_prev))
+            ctrl_delta_norm = float(np.linalg.norm(ctrl_next - q))
 
             row = {
                 "step": step_count,
@@ -455,6 +479,9 @@ class URSimRTDESimpleReach:
                 **{f"qd{i}": qd[i] for i in range(6)},
                 **{f"ctrl{i}": ctrl_next[i] for i in range(6)},
                 **{f"action{i}": action[i] for i in range(6)},
+                **{f"current{i}": current[i] for i in range(6)},
+                **{f"ctrl_output{i}": ctrl_output[i] for i in range(6)},
+                **{f"tcp_force{i}": tcp_force[i] for i in range(6)},
                 "tcp_x": tcp_xyz[0], "tcp_y": tcp_xyz[1], "tcp_z": tcp_xyz[2],
                 "target_x": target_pos[0], "target_y": target_pos[1], "target_z": target_pos[2],
                 "tcp_to_target_dist": tcp_to_target_dist,
@@ -666,4 +693,101 @@ class URSimRTDESimpleReach:
         finally:
             writer.close()
         print(f"[save_video] Saved {len(frames)} frames to {out_path}")
+        return out_path
+
+    # =========================================================================
+    # J — Diagnostics: Plots & Metadata
+    # =========================================================================
+
+    JOINT_NAMES = ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"]
+
+    def save_plots(self, df: pd.DataFrame, out_path: str) -> str:
+        """Save a stacked diagnostic plot (6 panels, shared time axis) as PNG."""
+        import matplotlib.pyplot as plt
+
+        joint_names = self.JOINT_NAMES
+        t = df["time"]
+
+        fig, axes = plt.subplots(7, 1, figsize=(14, 24), sharex=True)
+
+        # 1 — TCP-to-target distance
+        ax = axes[0]
+        ax.plot(t, df["tcp_to_target_dist"] * 100)
+        ax.set_ylabel("distance (cm)")
+        ax.set_title("TCP to target distance")
+        ax.grid(True, alpha=0.3)
+
+        # 2 — Joint positions
+        ax = axes[1]
+        for i, name in enumerate(joint_names):
+            ax.plot(t, df[f"q{i}"], label=name)
+        ax.set_ylabel("position (rad)")
+        ax.set_title("Joint positions")
+        ax.legend(loc="upper right", ncol=3, fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+        # 3 — Joint velocities
+        ax = axes[2]
+        for i, name in enumerate(joint_names):
+            ax.plot(t, df[f"qd{i}"], label=name)
+        ax.set_ylabel("velocity (rad/s)")
+        ax.set_title("Joint velocities")
+        ax.legend(loc="upper right", ncol=3, fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+        # 4 — Joint currents
+        ax = axes[3]
+        for i, name in enumerate(joint_names):
+            ax.plot(t, df[f"current{i}"], label=name)
+        ax.set_ylabel("current (A)")
+        ax.set_title("Joint currents")
+        ax.legend(loc="upper right", ncol=3, fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+        # 5 — Joint control output
+        ax = axes[4]
+        for i, name in enumerate(joint_names):
+            ax.plot(t, df[f"ctrl_output{i}"], label=name)
+        ax.set_ylabel("control output")
+        ax.set_title("Joint control output")
+        ax.legend(loc="upper right", ncol=3, fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+        # 6 — Commanded step size (||ctrl_next - q|| per loop)
+        ax = axes[5]
+        ax.plot(t, df["cmd_err_norm"], alpha=0.7)
+        ax.set_ylabel("step size (rad)")
+        ax.set_title("Commanded step size (||ctrl - q||)")
+        ax.grid(True, alpha=0.3)
+
+        # 7 — Loop frequency
+        ax = axes[6]
+        ax.plot(t, df["loop_hz_true"], alpha=0.7)
+        ax.set_ylabel("Hz")
+        ax.set_title("Loop frequency")
+        ax.set_xlabel("time (s)")
+        ax.grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        print(f"[save_plots] Saved to {out_path}")
+        return out_path
+
+    @staticmethod
+    def save_run_metadata(out_path: str, **kwargs) -> str:
+        """Save run parameters and stats as JSON."""
+        import json as _json
+
+        def _convert(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, (np.floating, np.integer)):
+                return obj.item()
+            return obj
+
+        data = {k: _convert(v) for k, v in kwargs.items()}
+        with open(out_path, "w") as f:
+            _json.dump(data, f, indent=2, default=str)
+        print(f"[save_run_metadata] Saved to {out_path}")
         return out_path
