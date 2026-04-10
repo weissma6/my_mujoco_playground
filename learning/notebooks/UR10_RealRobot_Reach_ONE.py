@@ -31,22 +31,24 @@ ROBOT_IP = "192.168.1.2"
 
 # Target: high up, centred — safe direction for any starting pose
 # Training workspace: x=[0.3, 0.8], y=[-0.4, 0.4], z=[0.2, 0.8]
-TARGET_POS = [0.4, 0.1, 0.6]
+TARGET_POS = [0.7, 0.2, 0.7]
 
 # Start pose — "low_home" keyframe from mjx_reach.xml
 Q_START = [0, -1.7, 2.25, -2.15, -1.5, -1.5]
 
 # Convergence
-REACH_TOL = 0.005       # 5 mm
+REACH_TOL = 0.01       # 1cm
+DWELL_TIME_S = 3     # Must stay within REACH_TOL for this many seconds before declaring convergence
 TIMEOUT_S = 20.0
 
 # Control
 CONTROL_HZ = 200.0        # Loop frequency [Hz]. Must match policy training (50 Hz -> ctrl_dt=0.02)
 ACTION_SCALE = 0.04       # Joint delta per step [rad]. Training default=0.04. Lower=slower/safer, higher=faster/shakier
-LOOKAHEAD_TIME = 0.1      # servoj smoothing horizon [s]. Range 0.03-0.2. Higher=smoother but laggier
-GAIN = 300               # servoj tracking stiffness. Range 100-2000. Lower=softer/smoother, higher=stiffer/jerkier
-MAX_JOINT_SPEED = 0.5    # rad/s per joint. UR10e max ~2.1 rad/s. Slow=0.1-0.3, Med=0.5, Fast=1.0+. None=disabled
-ALPHA = 0.3              # Blend factor: 1.0=full policy, <1.0=blend with measured q (smoother but slower)
+LOOKAHEAD_TIME = 0.02      # servoj smoothing horizon [s]. Range 0.03-0.2. Higher=smoother but laggier
+GAIN = 200               # servoj tracking stiffness. Range 100-2000. Lower=softer/smoother, higher=stiffer/jerkier
+SERVOJ_A = 0.5          # Max joint acceleration [rad/s^2] enforced by UR controller. UR10e max ~2.5. Conservative=0.5-1.0, Med=1.4, Fast=2.5
+SERVOJ_V = 2         # Max joint velocity [rad/s] enforced by UR controller. UR10e max ~2.1. Conservative=0.5, Med=1.05, Fast=2.1
+ALPHA = 0.5             # Blend factor: 1.0=full policy, <1.0=blend with measured q (smoother but slower)
 
 # Paths (relative to this script)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -79,7 +81,7 @@ robot.print_feedback()
 
 # ── Move to start ─────────────────────────────────────────────────────
 print(f"\nMoving to start pose {Q_START}")
-robot.move_to_start(Q_START, a=1.5, v=0.1, timeout_s=15.0, tol=0.01)
+robot.move_to_start(Q_START, a=1.5, v=0.8, timeout_s=15.0, tol=0.01)
 
 # ── Load policy ────────────────────────────────────────────────────────
 robot.load_policy_fn(policy_path=POLICY_PATH, deterministic=True)
@@ -101,8 +103,11 @@ df, stats = robot.run_policy_loop(
     action_scale=ACTION_SCALE,
     lookahead_time=LOOKAHEAD_TIME,
     gain=GAIN,
-    max_joint_speed=MAX_JOINT_SPEED,
+    servoj_a=SERVOJ_A,
+    servoj_v=SERVOJ_V,
     alpha=ALPHA,
+    reach_tol=REACH_TOL,
+    dwell_time_s=DWELL_TIME_S,
 )
 
 # ── Results ───────────────────────────────────────────────────────────
@@ -148,7 +153,8 @@ robot.save_run_metadata(
     action_scale=ACTION_SCALE,
     lookahead_time=LOOKAHEAD_TIME,
     gain=GAIN,
-    max_joint_speed=MAX_JOINT_SPEED,
+    servoj_a=SERVOJ_A,
+    servoj_v=SERVOJ_V,
     alpha=ALPHA,
     policy_path=POLICY_PATH,
     model_path=MODEL_PATH,

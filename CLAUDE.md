@@ -20,9 +20,12 @@ uv pip install -e ".[all]"
 export MUJOCO_GL=glfw
 export JAX_PLATFORM_NAME=cpu
 
-# Pre-commit hooks (pyink formatting + isort)
+# Pre-commit hooks (pyink formatting + isort only; ruff is NOT a hook)
 pre-commit install
 pre-commit run --all-files
+
+# First import auto-clones MuJoCo Menagerie into external_deps/
+python -c "import mujoco_playground"
 ```
 
 ## Key Commands
@@ -31,8 +34,10 @@ pre-commit run --all-files
 # Training (from repo root)
 python learning/train_jax_ppo.py --env_name UR10SimpleReach
 # Common training flags:
-#   --num_timesteps 1000000  --num_envs 1024  --learning_rate 5e-4
+#   --num_timesteps 10000000  --num_envs 2048  --learning_rate 1e-3
 #   --policy_hidden_layer_sizes 64 64 64  --use_wandb  --play_only
+# Note: env-specific defaults in config/manipulation_params.py override script defaults.
+# UR10SimpleReach uses lr=1e-3, num_envs=2048, entropy_cost=2e-2, discounting=0.97.
 
 # Real robot deployment (from learning/notebooks/)
 python UR10_RealRobot_Reach_ONE.py
@@ -45,6 +50,10 @@ pyink --check mujoco_playground/    # 2-space indent, 80-char lines
 pytest mujoco_playground/_src/
 pytest mujoco_playground/_src/registry_test.py  # single test
 ```
+
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` across Python 3.10–3.12. Installs with `uv pip install -e ".[test]"`, auto-clones MuJoCo Menagerie, runs `pytest -n auto mujoco_playground/_src/`. Note: pre-commit hooks (pyink + isort) are not enforced in CI — run them locally before pushing.
 
 ## Architecture
 
@@ -105,4 +114,5 @@ Policy (JAX/Brax) → action ∈ [-1,1]^6
 - The `action_scale` in deployment must match training (0.04 for 50Hz policy)
 - servoj parameters affect smoothness: `gain` (stiffness 100-2000), `lookahead_time` (smoothing 0.03-0.2s)
 - MuJoCo model XML: `mujoco_playground/_src/manipulation/my_ur10/xmls/mjx_reach.xml`
-- Code style: pyink with 2-space indentation, 80-char line length, majority quotes. Imports sorted by isort (single-line, 120-char).
+- Code style: pyink with 2-space indentation, 80-char line length, majority quotes. Imports sorted by isort (single-line, 120-char). Ruff config is in `pyproject.toml` (no standalone `ruff.toml`). `__init__.py` files are excluded from pre-commit formatting.
+- `mujoco_menagerie/` and `external_deps/` are excluded from all linting/formatting tools.

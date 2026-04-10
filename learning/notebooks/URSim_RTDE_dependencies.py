@@ -128,19 +128,20 @@ class URSimRTDESimpleReach:
         prog = self.urscript_program(lines, name="movej_cmd")
         self.send_urscript(prog)
 
-    def urscript_servoj(self, q, t=0.04, lookahead_time=0.1, gain=300) -> str:
+    def urscript_servoj(self, q, a=1.4, v=1.05, t=0.04, lookahead_time=0.1, gain=300) -> str:
         return (
             f"servoj({list(map(float, q))}, "
+            f"a={float(a)}, v={float(v)}, "
             f"t={float(t)}, "
             f"lookahead_time={float(lookahead_time)}, "
             f"gain={int(gain)})"
         )
 
-    def send_servoj(self, q, t=0.04, lookahead_time=0.1, gain=300, textmsg=None):
+    def send_servoj(self, q, a=1.4, v=1.05, t=0.04, lookahead_time=0.1, gain=300, textmsg=None):
         lines = []
         if textmsg is not None:
             lines.append(self.urscript_textmsg(textmsg))
-        lines.append(self.urscript_servoj(q, t=t, lookahead_time=lookahead_time, gain=gain))
+        lines.append(self.urscript_servoj(q, a=a, v=v, t=t, lookahead_time=lookahead_time, gain=gain))
         prog = self.urscript_program(lines, name="servoj_cmd")
         self.send_urscript(prog)
 
@@ -326,14 +327,15 @@ class URSimRTDESimpleReach:
         q: np.ndarray,
         action: np.ndarray,
         action_scale: float = 0.04,
-        dt: float = 0.02,
-        max_joint_speed: Optional[float] = None,
         alpha: float = 1.0,
         dtype=np.float32,
     ) -> np.ndarray:
         """
         Compute servoj target from measured q and policy action.
         Returns ctrl_next (6,) ready to send to servoj.
+
+        Velocity/acceleration safety is enforced robot-side via servoj's
+        ``a`` and ``v`` parameters — no client-side clamping needed.
         """
         action = np.asarray(action, dtype=dtype).reshape(-1)
         q = np.asarray(q, dtype=dtype)
@@ -349,15 +351,6 @@ class URSimRTDESimpleReach:
         if alpha < 1.0:
             ctrl_next = alpha * ctrl_next + (1.0 - alpha) * q
 
-        # Velocity clamp: limit max joint delta per step
-        #   UR10e max ~2.1 rad/s (base/shoulder/elbow), ~3.14 rad/s (wrists)
-        #   Slow: 0.1-0.3 | Medium: 0.5 | Fast: 1.0+ rad/s
-        if max_joint_speed is not None:
-            max_delta = max_joint_speed * dt
-            delta = ctrl_next - q
-            delta = np.clip(delta, -max_delta, max_delta)
-            ctrl_next = q + delta
-
         return ctrl_next
 
     # =========================================================================
@@ -372,8 +365,11 @@ class URSimRTDESimpleReach:
         action_scale: float = 0.04,
         lookahead_time: float = 0.1,
         gain: int = 300,
-        max_joint_speed: Optional[float] = None,  # rad/s per joint. None=disabled
+        servoj_a: float = 1.4,   # max joint acceleration [rad/s^2] enforced by UR controller
+        servoj_v: float = 1.05,  # max joint velocity [rad/s] enforced by UR controller
         alpha: float = 1.0,
+        reach_tol: float = None,
+        dwell_time_s: float = 0.0,
         dtype=np.float32,
         debug_print: bool = True,
     ) -> Tuple[pd.DataFrame, dict]:
@@ -392,6 +388,7 @@ class URSimRTDESimpleReach:
         overrun_count = 0
         prev_tcp_xyz = None
         prev_tcp_to_target_dist = None
+        in_tol_since = None
 
         start_time = time.perf_counter()
         next_tick = start_time
@@ -437,16 +434,18 @@ class URSimRTDESimpleReach:
             action = np.asarray(action_raw, dtype=dtype).reshape(-1)
             t1_policy = time.perf_counter()
 
-            # 4. Control update: q + action_scale * action, clipped, velocity-clamped
+            # 4. Control update: q + action_scale * action, clipped
             ctrl_next = self.policy_step_ctrl_update(
-                q, action, action_scale, dt, max_joint_speed, alpha=alpha, dtype=dtype,
+                q, action, action_scale, alpha=alpha, dtype=dtype,
             )
 
-            # 5. Send servoj
+            # 5. Send servoj (a/v safety enforced robot-side)
             t0_send = time.perf_counter()
             self.send_servoj(
                 ctrl_next.tolist(),
-                t=dt,
+                a=servoj_a,
+                v=servoj_v,
+                t= 5 * dt,
                 lookahead_time=lookahead_time,
                 gain=gain,
             )
@@ -508,6 +507,17 @@ class URSimRTDESimpleReach:
                     f"| tcp={np.round(tcp_xyz, 3)}",
                     end="", flush=True,
                 )
+
+            if reach_tol is not None and tcp_to_target_dist < reach_tol:
+                if in_tol_since is None:
+                    in_tol_since = time.perf_counter()
+                dwell_elapsed = time.perf_counter() - in_tol_since
+                if dwell_elapsed >= dwell_time_s:
+                    if debug_print:
+                        print(f"\nTarget reached (dwell {dwell_elapsed:.2f}s) at step {step_count}!")
+                    break
+            else:
+                in_tol_since = None
 
             if elapsed >= timeout_s:
                 break
