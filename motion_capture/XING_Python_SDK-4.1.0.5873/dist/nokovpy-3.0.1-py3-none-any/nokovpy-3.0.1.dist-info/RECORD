@@ -1,0 +1,11 @@
+nokov/nokovsdk.py,sha256=DBNRNopnzkwX1YyLStsYSHTdCKcCRuobcnsY1ZJWf9g,23149
+nokov/lib/libnokov_sdk.so,sha256=oVHBg06voyGCFFinjcAHPpoZk0qDNk8krdljMwBAFGo,218576
+nokov/lib/libnokov_sdk_aarch64.so,sha256=YxJzTDI84ZIn5nBub7CBrx4BWSq1sTI5ajrifCMJnhg,202096
+nokov/lib/nokov_sdk.dll,sha256=m6rD5eXbighPk0twHkbbGa-7hFt6WKtoGdE2K_VOaos,123392
+nokov/lib32/libnokov_sdk.so,sha256=n0HLuxpPEo9xpVOax7EGO3r71xxQAmSSPWtk29eXq5s,232640
+nokov/lib32/libnokov_sdk_armhf.so,sha256=E-2FZ2U_sWQlMoU_DqUfEyg9J-DczPKEtTcK6sLr4TQ,128052
+nokov/lib32/nokov_sdk.dll,sha256=cXvUXuYEdL8OzAcSmjfoY-obA2Q2WvR_bpBhm4Hn6rA,102400
+nokovpy-3.0.1.dist-info/METADATA,sha256=tnLWPupJTI3_H7HAQUgUE9brOeKfm3ffWdbYoDR4GWc,296
+nokovpy-3.0.1.dist-info/WHEEL,sha256=oiQVh_5PnQM0E3gPdiz09WCNmwiHDMaGer_elqB3coM,92
+nokovpy-3.0.1.dist-info/top_level.txt,sha256=Zv3i1xvETzudvpn12Zqx7NlwQGeCV0wXXwt6CYX3iQQ,6
+nokovpy-3.0.1.dist-info/RECORD,,

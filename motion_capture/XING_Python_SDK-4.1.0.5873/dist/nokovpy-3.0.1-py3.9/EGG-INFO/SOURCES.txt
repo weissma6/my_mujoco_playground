@@ -1,0 +1,12 @@
+setup.py
+nokovpy.egg-info/PKG-INFO
+nokovpy.egg-info/SOURCES.txt
+nokovpy.egg-info/dependency_links.txt
+nokovpy.egg-info/top_level.txt
+src/nokov/nokovsdk.py
+src/nokov/lib/libnokov_sdk.so
+src/nokov/lib/libnokov_sdk_aarch64.so
+src/nokov/lib/nokov_sdk.dll
+src/nokov/lib32/libnokov_sdk.so
+src/nokov/lib32/libnokov_sdk_armhf.so
+src/nokov/lib32/nokov_sdk.dll

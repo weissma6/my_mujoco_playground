@@ -1,0 +1,6 @@
+nokov/lib/libnokov_sdk.so
+nokov/lib/libnokov_sdk_aarch64.so
+nokov/lib/nokov_sdk.dll
+nokov/lib32/libnokov_sdk.so
+nokov/lib32/libnokov_sdk_armhf.so
+nokov/lib32/nokov_sdk.dll
