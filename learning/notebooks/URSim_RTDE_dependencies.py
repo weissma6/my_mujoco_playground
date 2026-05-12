@@ -10,8 +10,11 @@ Simplified from the VT2 URSimRTDEControlFeedback class:
 from typing import Dict, List, Optional, Tuple
 import os
 import pickle
-import socket
+import sys
 import time
+
+if sys.platform.startswith("linux"):
+  os.environ.setdefault("MUJOCO_GL", "egl")
 
 import imageio.v2 as imageio
 import jax
@@ -19,6 +22,7 @@ import jax.numpy as jnp
 import mujoco
 import numpy as np
 import pandas as pd
+import rtde_control
 import rtde_receive
 from IPython.display import clear_output
 
@@ -35,14 +39,11 @@ class URSimRTDESimpleReach:
         self,
         host: str = "127.0.0.1",
         port_rtde: int = 30004,
-        port_urscript: int = 30002,
-        port_dashboard: int = 29999,
     ):
         self.host = host
         self.port_rtde = port_rtde
-        self.port_urscript = port_urscript
-        self.port_dashboard = port_dashboard
         self._receiver: Optional[rtde_receive.RTDEReceiveInterface] = None
+        self._control: Optional[rtde_control.RTDEControlInterface] = None
         self._policy_fn = None
         self._ctrl_lowers: Optional[np.ndarray] = None
         self._ctrl_uppers: Optional[np.ndarray] = None
@@ -54,17 +55,27 @@ class URSimRTDESimpleReach:
     def connect(self) -> rtde_receive.RTDEReceiveInterface:
         if self._receiver is None:
             self._receiver = rtde_receive.RTDEReceiveInterface(self.host)
+        if self._control is None:
+            self._control = rtde_control.RTDEControlInterface(self.host)
         return self._receiver
 
     def disconnect(self):
+        if self._control is not None:
+            try:
+                self._control.servoStop()
+                self._control.stopScript()
+            except Exception:
+                pass
+            self._control.disconnect()
+            self._control = None
         if self._receiver is not None:
             self._receiver.disconnect()
             self._receiver = None
 
     def is_connected(self) -> bool:
-        if self._receiver is None:
+        if self._receiver is None or self._control is None:
             return False
-        return self._receiver.isConnected()
+        return self._receiver.isConnected() and self._control.isConnected()
 
     def receive_feedback(self) -> Dict[str, List[float]]:
         """Returns dict with joint state, TCP, currents, control output, TCP force."""
@@ -94,56 +105,34 @@ class URSimRTDESimpleReach:
         print("tcp_xyz=", [round(v, digits) for v in fb["tcp_xyz"]])
 
     # =========================================================================
-    # B — Socket Commands (URScript on port 30002, Dashboard on port 29999)
+    # B — Motion Commands via RTDEControlInterface
     # =========================================================================
 
-    def send_urscript(self, script: str, timeout: float = 2.0):
-        with socket.create_connection((self.host, self.port_urscript), timeout=timeout) as s:
-            s.sendall(script.encode("utf-8"))
-
-    def dashboard_send(self, cmd: str, timeout: float = 2.0) -> str:
-        with socket.create_connection((self.host, self.port_dashboard), timeout=timeout) as s:
-            banner = s.recv(4096).decode("utf-8", errors="ignore")
-            s.sendall((cmd.strip() + "\n").encode("utf-8"))
-            time.sleep(0.05)
-            resp = s.recv(4096).decode("utf-8", errors="ignore")
-        return (banner + resp).strip()
-
-    def urscript_program(self, lines, name="py_prog") -> str:
-        body = "\n  ".join(lines)
-        return f"def {name}():\n  {body}\nend\n{name}()\n"
-
-    def urscript_movej(self, q, a=0.3, v=0.3) -> str:
-        return f"movej({list(map(float, q))}, a={a}, v={v})"
-
-    def urscript_textmsg(self, msg: str) -> str:
-        safe = msg.replace('"', "'")
-        return f'textmsg("{safe}")'
-
     def send_movej(self, q, a=0.4, v=0.4, textmsg=None):
-        lines = []
+        """Asynchronous moveJ via rtde_control. textmsg is printed locally."""
+        self.connect()
         if textmsg is not None:
-            lines.append(self.urscript_textmsg(textmsg))
-        lines.append(self.urscript_movej(q, a=a, v=v))
-        prog = self.urscript_program(lines, name="movej_cmd")
-        self.send_urscript(prog)
-
-    def urscript_servoj(self, q, a=1.4, v=1.05, t=0.04, lookahead_time=0.1, gain=300) -> str:
-        return (
-            f"servoj({list(map(float, q))}, "
-            f"a={float(a)}, v={float(v)}, "
-            f"t={float(t)}, "
-            f"lookahead_time={float(lookahead_time)}, "
-            f"gain={int(gain)})"
-        )
+            print(f"[movej] {textmsg}")
+        # rtde_control.moveJ(q, speed, acceleration, asynchronous)
+        self._control.moveJ(list(map(float, q)), float(v), float(a), True)
 
     def send_servoj(self, q, a=1.4, v=1.05, t=0.04, lookahead_time=0.1, gain=300, textmsg=None):
-        lines = []
+        """Non-blocking servoJ via rtde_control.
+
+        NOTE: rtde_control.servoJ argument order is (q, speed, acceleration, time,
+        lookahead_time, gain) — speed (v) is passed BEFORE acceleration (a),
+        opposite to URScript's servoj(q, a, v, ...). Don't flip these.
+        """
         if textmsg is not None:
-            lines.append(self.urscript_textmsg(textmsg))
-        lines.append(self.urscript_servoj(q, a=a, v=v, t=t, lookahead_time=lookahead_time, gain=gain))
-        prog = self.urscript_program(lines, name="servoj_cmd")
-        self.send_urscript(prog)
+            print(f"[servoj] {textmsg}")
+        self._control.servoJ(
+            list(map(float, q)),
+            float(v),
+            float(a),
+            float(t),
+            float(lookahead_time),
+            float(gain),
+        )
 
     # =========================================================================
     # C — Movement Helpers
@@ -393,136 +382,143 @@ class URSimRTDESimpleReach:
         start_time = time.perf_counter()
         next_tick = start_time
 
-        while True:
-            loop_start = time.perf_counter()
+        try:
+            while True:
+                loop_start = time.perf_counter()
 
-            # 1. RTDE receive
-            t0_obs = time.perf_counter()
-            fb = self.receive_feedback()
-            t1_obs = time.perf_counter()
+                # 1. RTDE receive
+                t0_obs = time.perf_counter()
+                fb = self.receive_feedback()
+                t1_obs = time.perf_counter()
 
-            q = np.asarray(fb["q"], dtype=float)
-            qd = np.asarray(fb["qd"], dtype=float)
-            tcp_xyz = np.asarray(fb["tcp_xyz"], dtype=float)
-            current = np.asarray(fb["current"], dtype=float)
-            ctrl_output = np.asarray(fb["ctrl_output"], dtype=float)
-            tcp_force = np.asarray(fb["tcp_force"], dtype=float)
+                q = np.asarray(fb["q"], dtype=float)
+                qd = np.asarray(fb["qd"], dtype=float)
+                tcp_xyz = np.asarray(fb["tcp_xyz"], dtype=float)
+                current = np.asarray(fb["current"], dtype=float)
+                ctrl_output = np.asarray(fb["ctrl_output"], dtype=float)
+                tcp_force = np.asarray(fb["tcp_force"], dtype=float)
 
-            # TCP motion tracking (using RTDE TCP directly)
-            if prev_tcp_xyz is None:
-                tcp_delta = np.zeros(3, dtype=float)
-                tcp_dist_loop = 0.0
-            else:
-                tcp_delta = tcp_xyz - prev_tcp_xyz
-                tcp_dist_loop = float(np.linalg.norm(tcp_delta))
-            prev_tcp_xyz = tcp_xyz.copy()
+                # TCP motion tracking (using RTDE TCP directly)
+                if prev_tcp_xyz is None:
+                    tcp_delta = np.zeros(3, dtype=float)
+                    tcp_dist_loop = 0.0
+                else:
+                    tcp_delta = tcp_xyz - prev_tcp_xyz
+                    tcp_dist_loop = float(np.linalg.norm(tcp_delta))
+                prev_tcp_xyz = tcp_xyz.copy()
 
-            # TCP to target distance
-            tcp_to_target_dist = float(np.linalg.norm(target_pos - tcp_xyz))
-            if prev_tcp_to_target_dist is None:
-                tcp_to_target_improvement = 0.0
-            else:
-                tcp_to_target_improvement = prev_tcp_to_target_dist - tcp_to_target_dist
-            prev_tcp_to_target_dist = tcp_to_target_dist
+                # TCP to target distance
+                tcp_to_target_dist = float(np.linalg.norm(target_pos - tcp_xyz))
+                if prev_tcp_to_target_dist is None:
+                    tcp_to_target_improvement = 0.0
+                else:
+                    tcp_to_target_improvement = prev_tcp_to_target_dist - tcp_to_target_dist
+                prev_tcp_to_target_dist = tcp_to_target_dist
 
-            # 2. Build observation
-            obs_batch = self.build_obs_from_feedback(fb, target_pos, dtype)
+                # 2. Build observation
+                obs_batch = self.build_obs_from_feedback(fb, target_pos, dtype)
 
-            # 3. Policy inference
-            t0_policy = time.perf_counter()
-            action_raw = self._policy_fn(obs_batch)
-            action = np.asarray(action_raw, dtype=dtype).reshape(-1)
-            t1_policy = time.perf_counter()
+                # 3. Policy inference
+                t0_policy = time.perf_counter()
+                action_raw = self._policy_fn(obs_batch)
+                action = np.asarray(action_raw, dtype=dtype).reshape(-1)
+                t1_policy = time.perf_counter()
 
-            # 4. Control update: q + action_scale * action, clipped
-            ctrl_next = self.policy_step_ctrl_update(
-                q, action, action_scale, alpha=alpha, dtype=dtype,
-            )
-
-            # 5. Send servoj (a/v safety enforced robot-side)
-            t0_send = time.perf_counter()
-            self.send_servoj(
-                ctrl_next.tolist(),
-                a=servoj_a,
-                v=servoj_v,
-                t= 5 * dt,
-                lookahead_time=lookahead_time,
-                gain=gain,
-            )
-            t1_send = time.perf_counter()
-
-            # 6. Timing control
-            next_tick += dt
-            now = time.perf_counter()
-            sleep_time = next_tick - now
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            else:
-                overrun_count += 1
-                next_tick = now
-
-            loop_end = time.perf_counter()
-            loop_dt_true = loop_end - loop_start
-            loop_hz_true = 1.0 / loop_dt_true if loop_dt_true > 1e-12 else np.nan
-            elapsed = loop_end - start_time
-
-            # 7. Log
-            qd_norm = float(np.linalg.norm(qd))
-            cmd_err_norm = float(np.linalg.norm(ctrl_next - q))
-            ctrl_delta_norm = float(np.linalg.norm(ctrl_next - q))
-
-            row = {
-                "step": step_count,
-                "time": elapsed,
-                **{f"q{i}": q[i] for i in range(6)},
-                **{f"qd{i}": qd[i] for i in range(6)},
-                **{f"ctrl{i}": ctrl_next[i] for i in range(6)},
-                **{f"action{i}": action[i] for i in range(6)},
-                **{f"current{i}": current[i] for i in range(6)},
-                **{f"ctrl_output{i}": ctrl_output[i] for i in range(6)},
-                **{f"tcp_force{i}": tcp_force[i] for i in range(6)},
-                "tcp_x": tcp_xyz[0], "tcp_y": tcp_xyz[1], "tcp_z": tcp_xyz[2],
-                "target_x": target_pos[0], "target_y": target_pos[1], "target_z": target_pos[2],
-                "tcp_to_target_dist": tcp_to_target_dist,
-                "tcp_to_target_improvement": tcp_to_target_improvement,
-                "tcp_dx": tcp_delta[0], "tcp_dy": tcp_delta[1], "tcp_dz": tcp_delta[2],
-                "tcp_dist_loop_m": tcp_dist_loop,
-                "tcp_speed_mps": tcp_dist_loop / max(loop_dt_true, 1e-9),
-                "qd_norm": qd_norm,
-                "cmd_err_norm": cmd_err_norm,
-                "ctrl_delta_norm": ctrl_delta_norm,
-                "obs_time_s": t1_obs - t0_obs,
-                "policy_time_s": t1_policy - t0_policy,
-                "send_time_s": t1_send - t0_send,
-                "loop_dt_true_s": loop_dt_true,
-                "loop_hz_true": loop_hz_true,
-                "overrun_count": overrun_count,
-            }
-            log.append(row)
-
-            if debug_print:
-                print(
-                    f"\r[{step_count:4d}] tcp→tgt={tcp_to_target_dist:.4f}m "
-                    f"| hz={loop_hz_true:.1f} "
-                    f"| tcp={np.round(tcp_xyz, 3)}",
-                    end="", flush=True,
+                # 4. Control update: q + action_scale * action, clipped
+                ctrl_next = self.policy_step_ctrl_update(
+                    q, action, action_scale, alpha=alpha, dtype=dtype,
                 )
 
-            if reach_tol is not None and tcp_to_target_dist < reach_tol:
-                if in_tol_since is None:
-                    in_tol_since = time.perf_counter()
-                dwell_elapsed = time.perf_counter() - in_tol_since
-                if dwell_elapsed >= dwell_time_s:
-                    if debug_print:
-                        print(f"\nTarget reached (dwell {dwell_elapsed:.2f}s) at step {step_count}!")
+                # 5. Send servoj (a/v safety enforced robot-side)
+                t0_send = time.perf_counter()
+                self.send_servoj(
+                    ctrl_next.tolist(),
+                    a=servoj_a,
+                    v=servoj_v,
+                    t= 5 * dt,
+                    lookahead_time=lookahead_time,
+                    gain=gain,
+                )
+                t1_send = time.perf_counter()
+
+                # 6. Timing control
+                next_tick += dt
+                now = time.perf_counter()
+                sleep_time = next_tick - now
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                else:
+                    overrun_count += 1
+                    next_tick = now
+
+                loop_end = time.perf_counter()
+                loop_dt_true = loop_end - loop_start
+                loop_hz_true = 1.0 / loop_dt_true if loop_dt_true > 1e-12 else np.nan
+                elapsed = loop_end - start_time
+
+                # 7. Log
+                qd_norm = float(np.linalg.norm(qd))
+                cmd_err_norm = float(np.linalg.norm(ctrl_next - q))
+                ctrl_delta_norm = float(np.linalg.norm(ctrl_next - q))
+
+                row = {
+                    "step": step_count,
+                    "time": elapsed,
+                    **{f"q{i}": q[i] for i in range(6)},
+                    **{f"qd{i}": qd[i] for i in range(6)},
+                    **{f"ctrl{i}": ctrl_next[i] for i in range(6)},
+                    **{f"action{i}": action[i] for i in range(6)},
+                    **{f"current{i}": current[i] for i in range(6)},
+                    **{f"ctrl_output{i}": ctrl_output[i] for i in range(6)},
+                    **{f"tcp_force{i}": tcp_force[i] for i in range(6)},
+                    "tcp_x": tcp_xyz[0], "tcp_y": tcp_xyz[1], "tcp_z": tcp_xyz[2],
+                    "target_x": target_pos[0], "target_y": target_pos[1], "target_z": target_pos[2],
+                    "tcp_to_target_dist": tcp_to_target_dist,
+                    "tcp_to_target_improvement": tcp_to_target_improvement,
+                    "tcp_dx": tcp_delta[0], "tcp_dy": tcp_delta[1], "tcp_dz": tcp_delta[2],
+                    "tcp_dist_loop_m": tcp_dist_loop,
+                    "tcp_speed_mps": tcp_dist_loop / max(loop_dt_true, 1e-9),
+                    "qd_norm": qd_norm,
+                    "cmd_err_norm": cmd_err_norm,
+                    "ctrl_delta_norm": ctrl_delta_norm,
+                    "obs_time_s": t1_obs - t0_obs,
+                    "policy_time_s": t1_policy - t0_policy,
+                    "send_time_s": t1_send - t0_send,
+                    "loop_dt_true_s": loop_dt_true,
+                    "loop_hz_true": loop_hz_true,
+                    "overrun_count": overrun_count,
+                }
+                log.append(row)
+
+                if debug_print:
+                    print(
+                        f"\r[{step_count:4d}] tcp→tgt={tcp_to_target_dist:.4f}m "
+                        f"| hz={loop_hz_true:.1f} "
+                        f"| tcp={np.round(tcp_xyz, 3)}",
+                        end="", flush=True,
+                    )
+
+                if reach_tol is not None and tcp_to_target_dist < reach_tol:
+                    if in_tol_since is None:
+                        in_tol_since = time.perf_counter()
+                    dwell_elapsed = time.perf_counter() - in_tol_since
+                    if dwell_elapsed >= dwell_time_s:
+                        if debug_print:
+                            print(f"\nTarget reached (dwell {dwell_elapsed:.2f}s) at step {step_count}!")
+                        break
+                else:
+                    in_tol_since = None
+
+                if elapsed >= timeout_s:
                     break
-            else:
-                in_tol_since = None
 
-            if elapsed >= timeout_s:
-                break
-
-            step_count += 1
+                step_count += 1
+        finally:
+            if self._control is not None:
+                try:
+                    self._control.servoStop()
+                except Exception:
+                    pass
 
         total_wall = time.perf_counter() - start_time
         df = pd.DataFrame(log)
