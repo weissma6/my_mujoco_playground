@@ -1,3 +1,15 @@
+# =====================================================================
+# Run ONE UR3 pick training try on the ZHAW cluster (uv pipeline)
+# =====================================================================
+# Pipeline pieces (all UR3 siblings of the UR10 uv files):
+#   sweep   : batch_runs/sweeps/UR3Pick_sweep.jsonl   (1-indexed configs)
+#   runner  : batch_runs/scripts/run_one_ur3.py       (env-agnostic, dispatches on env_name)
+#   submit  : batch_runs/cluster/ur3_jsonl_array.submit
+#   bootstrap: batch_runs/cluster/env_bootstrap.sh    (uv venv + jax[cuda12])
+# Sweep lines:  1=ur3pick_smoke  2=ur3pick_baseline  3=ur3pick_DR_MFR
+#
+# (Alternative Podman/EGL pipeline lives at batch_runs/slurm/run_array_ur3.sbatch.)
+
 # connect to Login node
 ssh weissma6@dallas.zhaw.ch
 cd ~/VT1_MBRL/my_mujoco_playground
@@ -5,27 +17,36 @@ cd ~/VT1_MBRL/my_mujoco_playground
 # ------------------------------------------------
 # Step 1 (Strongly recommended) Pre-warm the UV environment once
 # ------------------------------------------------
-# This avoids 20 array jobs racing to install packages.
-# Run this once on a login node (or submit a tiny job if required):
+# Avoids array jobs racing to install packages. Run once on a GPU shell.
+# env_bootstrap.sh creates/activates the uv venv (default name mujoco_env_egl,
+# override with VENV=...), installs requirements.txt, and reinstalls jax[cuda12].
 givemeagpushell sanfrancisco
-export REQ_FILE=requirements.txt
-export JAX_MODE=cuda12   # or cuda12 if you *know* CUDA+JAX works
 source batch_runs/cluster/env_bootstrap.sh
-python -c "import mujoco, wandb; print('env OK')"
+python -c "import mujoco, wandb, jax; print('env OK; jax devices:', jax.devices())"
+# Confirm the UR3 env registers and has the expected dims (7D action, 21D obs):
+python -c "from mujoco_playground import registry; e=registry.load('UR3Pick'); print('UR3Pick', e.action_size, e.observation_size)"
 
 # ------------------------------------------------
-# Debug one run (no SLURM)
+# Step 2  Debug ONE run interactively (no SLURM) on the GPU shell
 # ------------------------------------------------
+# Runs the smoke config (line 1 of the sweep: 300k steps, 512 envs) directly.
+export MUJOCO_GL=egl PYOPENGL_PLATFORM=egl EGL_PLATFORM=surfaceless
+export WANDB_API_KEY="$(< "$HOME/.secrets/wandb_key")"
+python batch_runs/scripts/run_one_ur3.py \
+  --jsonl batch_runs/sweeps/UR3Pick_sweep.jsonl \
+  --index 1 \
+  --out_root results
 
 # ------------------------------------------------
-# Step 2 testrun a single job interactively (optional but recommended)
+# Step 3  Submit ONE try via SLURM (smoke = array index 1)
 # ------------------------------------------------
-sbatch --array=2-2 batch_runs/cluster/ur10_jsonl_array.submit
-sbatch --array=2-5 batch_runs/cluster/ur10_jsonl_array.submit
+sbatch --array=1-1 batch_runs/cluster/ur3_jsonl_array.submit   # ur3pick_smoke only
 
-sbatch batch_runs/cluster/robustness_eval.submit
-sbatch batch_runs/cluster/robustness_eval_parallel.submit
+# Full sweep (all 3 configs, max 2 at a time):
+sbatch batch_runs/cluster/ur3_jsonl_array.submit
 
+# Just the 20M baseline:
+sbatch --array=2-2 batch_runs/cluster/ur3_jsonl_array.submit
 
 # See the active jobs
 squeue -u weissma6
@@ -37,46 +58,30 @@ sacct -u weissma6 \
   --format=JobID,JobName%20,State,ExitCode,Elapsed \
   | grep -v '\.'
 
-# More detailed tracking
-# find the outoutfiles with the job ID from squeue
-find . -maxdepth 3 -type f -name "*82353*" -print
+# Logs (job-name is UR3Pick_sweep_uv -> logs/UR3Pick_sweep_uv_<jobid>_<arrayidx>.{out,err})
+find . -maxdepth 3 -type f -name "*UR3Pick_sweep_uv*" -print
+tail -f logs/UR3Pick_sweep_uv_<job_id>_1.err
 
-tail -f logs/UR10_sweep_uv_86756_2.err
-tail -f logs/ur10_robustness_86825.err
-# Watch resource usage (CPU)
-sstat -j 82108_1.batch --format=AveCPU,AveRSS,MaxRSS,MaxVMSize,AveDiskRead,AveDiskWrite
-srun --jobid 82108_1 -n 1 nvidia-smi
-
-# Stop trailing:srun --jobid 82108_1 -n 1 nvidia-smi
-# Press Ctrl + C
+# Watch resource usage (CPU / GPU)
+sstat -j <job_id>_1.batch --format=AveCPU,AveRSS,MaxRSS,MaxVMSize,AveDiskRead,AveDiskWrite
+srun --jobid <job_id>_1 -n 1 nvidia-smi
+# Stop trailing: Press Ctrl + C
 
 # See detailed job info
-scontrol show job 86741 
+scontrol show job <job_id>
 
 ## Cancel job if needed
 scancel <job_id>
-## Canel all jobs of user
+## Cancel all jobs of user
 scancel -u weissma6
 
 #### -----------------------
 # Sanity checks
 #### -----------------------
-# Ensure image tar path exists (adjust filename)
-ls -lh mujoco_env.tar
+# Sweep file exists and has 3 configs
+ls -lh batch_runs/sweeps/UR3Pick_sweep.jsonl
+wc -l batch_runs/sweeps/UR3Pick_sweep.jsonl
 
-
-# Sanity: check JSONL sweep file exists
-ls -lh batch_runs/sweeps/panda_sweep.jsonl
-wc -l batch_runs/sweeps/panda_sweep.jsonl
-
-
-#### -----------------------
-# Panda Pipeline
-#### -----------------------
-sbatch batch_runs/cluster/panda_uv_array.submit
-# Run specific configs (e.g., 2-4)
-sbatch --array=2-4 batch_runs/cluster/panda_uv_array.submit
-
-# Monitor logs
-tail -f logs/panda_sweep_uv_85421_2.err
-
+# Trained policy artifact is uploaded to W&B project "UR3_pick_ppo".
+# Local outputs land in results/<run_id>/ (e.g. results/ur3pick_smoke/).
+ls -lh results/ur3pick_smoke/ 2>/dev/null
