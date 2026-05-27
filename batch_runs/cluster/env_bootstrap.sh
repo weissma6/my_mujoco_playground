@@ -35,9 +35,12 @@ export PYTHONPATH="${PWD}:${PYTHONPATH:-}"
 # Install your pinned deps
 uv pip install -r requirements.txt
 
-# JAX is needed by UR10_ppo.py; your requirements.txt does not include it
-uv pip uninstall -y jax jaxlib || true
-uv pip install -U "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+# JAX is needed by UR10_ppo.py; your requirements.txt does not include it.
+# Pin to 0.6.2: brax==0.13.0 (PPO train.py) still calls jax.device_put_replicated,
+# which was removed in jax>=0.10. Do NOT use -U here or it pulls an incompatible jax.
+JAX_VERSION="${JAX_VERSION:-0.6.2}"
+uv pip uninstall -y jax jaxlib jax-cuda12-plugin jax-cuda12-pjrt || true
+uv pip install "jax[cuda12]==${JAX_VERSION}" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 python -c "import jax; print(jax.__version__); print(jax.devices())"
 
 uv pip freeze > /tmp/pip_freeze_env_bootstrap.txt || true
