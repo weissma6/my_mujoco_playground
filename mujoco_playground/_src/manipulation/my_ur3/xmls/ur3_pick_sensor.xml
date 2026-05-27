@@ -1,0 +1,21 @@
+<mujoco>
+<!-- Called from mjx_single_cube_position_ur3.xml, before </mujoco>.
+     Mirror of my_ur10/xmls/ur10_sensor.xml.
+-->
+  <sensor>
+
+    <contact name="left_finger_pad_floor_found" geom1="left_finger_collision" geom2="floor" reduce="mindist" num="1" data="found"/>
+    <contact name="right_finger_pad_floor_found" geom1="right_finger_collision" geom2="floor" reduce="mindist" num="1" data="found"/>
+    <contact name="hand_capsule_floor_found" geom1="attachment_site_collision" geom2="floor" reduce="mindist" num="1" data="found"/>
+    <contact name="box_hand_found" geom1="box" geom2="attachment_site_collision" reduce="mindist" num="1" data="found"/>
+
+    <!-- Box contact (for grasp detection) -->
+    <contact name="left_finger_box_contact" geom1="left_finger_collision" geom2="box" reduce="mindist" num="1" data="found"/>
+    <contact name="right_finger_box_contact" geom1="right_finger_collision" geom2="box" reduce="mindist" num="1" data="found"/>
+
+    <!-- Position tracking -->
+    <framepos name="tcp_position" objtype="site" objname="tcp"/>
+    <framepos name="box_position" objtype="body" objname="box"/>
+
+  </sensor>
+</mujoco>

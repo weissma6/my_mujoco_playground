@@ -1,0 +1,202 @@
+"""
+UR3 + Hand-E pick loop with a mocap-derived box position.
+
+Mirror of UR10_RealRobot_Reach_ONE.py, adapted for the UR3Pick policy:
+  - 21D obs [q(6), qd(6), tcp(3), box(3), drop_target(3)]
+  - 7D action (6 arm + 1 gripper)
+  - the box position is streamed live from a Nokov rigid body
+  - the drop target is hardcoded below
+
+Position the robot, place the tracked rigid body in the cameras' view, then run.
+A MuJoCo replay video + diagnostic plots + run metadata are written to results/.
+
+Usage:
+    python ur3_realrobot_pickloop.py
+For a URSim dry-run set ROBOT_IP=127.0.0.1 and ENABLE_GRIPPER=False.
+"""
+
+import os
+import platform
+
+os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
+if platform.system() == "Darwin":
+    os.environ["MUJOCO_GL"] = "glfw"
+    os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+
+import numpy as np
+
+from ur3_realrobot_dependencies import UR3RealRobotPick
+
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "../.."))
+from motion_capture.mocap_dependencies import NokovRigidBodyReader
+
+# ===========================================================================
+# CONFIGURATION
+# ===========================================================================
+
+ROBOT_IP = "192.168.1.2"          # real UR3; URSim = "127.0.0.1"
+
+# Drop target (where to bring the box). UR3-reachable workspace.
+DROP_TARGET = [0.30, 0.10, 0.15]
+
+# Start pose — UR3 "low_home" keyframe arm angles from mjx_single_cube_position_ur3.xml
+Q_START = [0, -1.7, 2.25, -2.15, -1.5, -1.5]
+
+# Motion capture
+MOCAP_SERVER_IP = "10.1.1.198"
+MOCAP_RIGID_BODY_ID = 1           # ID from test_mocap_connection.py; None = first body
+
+# Gripper: True wires send_gripper(); False = no-op (URSim dry-run / arm-only test)
+ENABLE_GRIPPER = False
+
+# Convergence
+REACH_TOL = 0.03                  # 3 cm (box-to-target)
+DWELL_TIME_S = 2.0
+TIMEOUT_S = 30.0
+
+# Control (must match training: 50 Hz -> ctrl_dt=0.02, action_scale=0.04)
+CONTROL_HZ = 50.0
+ACTION_SCALE = 0.04
+LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
+GAIN = 300                        # servoj stiffness [100, 2000]
+SERVOJ_A = 1.0                    # max joint accel [rad/s^2]
+SERVOJ_V = 1.0                    # max joint vel  [rad/s]
+ALPHA = 1.0
+USE_FK_TCP = True                 # compute tcp_pos via MuJoCo FK (matches sim site)
+
+# Paths (relative to this script)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(
+    SCRIPT_DIR,
+    "../../mujoco_playground/_src/manipulation/my_ur3/xmls/"
+    "mjx_single_cube_position_ur3.xml",
+)
+POLICY_PATH = os.path.join(
+    SCRIPT_DIR,
+    "../../evaluation/downloaded_policies/ur3_pick_policy",
+)
+FOLDER_OUT = os.path.join(SCRIPT_DIR, "results")
+VIDEO_OUT = os.path.join(FOLDER_OUT, "ur3_pick_replay.mp4")
+PLOTS_OUT = os.path.join(FOLDER_OUT, "ur3_pick_plots.png")
+META_OUT = os.path.join(FOLDER_OUT, "ur3_pick_meta.json")
+VIDEO_FPS = 50.0
+
+# ===========================================================================
+# MAIN
+# ===========================================================================
+
+os.makedirs(FOLDER_OUT, exist_ok=True)
+
+# ── Connect robot ──────────────────────────────────────────────────────
+print(f"Connecting to robot {ROBOT_IP} ...")
+robot = UR3RealRobotPick(host=ROBOT_IP)
+robot.connect()
+if not robot.is_connected():
+    raise RuntimeError(
+        "RTDE failed to connect. Check robot IP and that PolyScope is in "
+        "Remote Control mode."
+    )
+robot.print_feedback()
+
+# ── Connect mocap ──────────────────────────────────────────────────────
+print(f"\nConnecting to mocap {MOCAP_SERVER_IP} (rigid body {MOCAP_RIGID_BODY_ID}) ...")
+mocap = NokovRigidBodyReader(MOCAP_SERVER_IP, rigid_body_id=MOCAP_RIGID_BODY_ID)
+if not mocap.start(timeout=5.0):
+    raise RuntimeError(
+        "Mocap failed to connect. Check the server IP, that 'SDK Enabled' is "
+        "on, and that the rigid body is defined and visible to the cameras."
+    )
+box0 = mocap.get_rigid_body_xyz()
+print(f"Initial box (mocap): {None if box0 is None else np.round(box0, 4).tolist()}")
+
+# ── Move to start ──────────────────────────────────────────────────────
+print(f"\nMoving to start pose {Q_START}")
+robot.move_to_start(Q_START, a=1.0, v=0.5, timeout_s=15.0, tol=0.01)
+
+# ── Load policy + FK model ─────────────────────────────────────────────
+robot.load_policy_fn(policy_path=POLICY_PATH, deterministic=True)
+if USE_FK_TCP:
+    robot.init_fk_model(MODEL_PATH)
+
+# ── Gripper wiring ─────────────────────────────────────────────────────
+gripper_fn = None if ENABLE_GRIPPER else (lambda norm: None)
+
+target = np.array(DROP_TARGET, dtype=np.float32)
+print(f"\nDrop target : {target.tolist()}")
+print(f"Starting pick loop at {CONTROL_HZ} Hz ...")
+
+# ── Run policy loop ────────────────────────────────────────────────────
+df, stats = robot.run_policy_loop(
+    drop_target=target,
+    mocap_reader=mocap,
+    control_hz=CONTROL_HZ,
+    timeout_s=TIMEOUT_S,
+    action_scale=ACTION_SCALE,
+    lookahead_time=LOOKAHEAD_TIME,
+    gain=GAIN,
+    servoj_a=SERVOJ_A,
+    servoj_v=SERVOJ_V,
+    alpha=ALPHA,
+    gripper_fn=gripper_fn,
+    use_fk_tcp=USE_FK_TCP,
+    reach_tol=REACH_TOL,
+    dwell_time_s=DWELL_TIME_S,
+)
+
+# ── Results ────────────────────────────────────────────────────────────
+final_dist = stats["final_box_to_target_dist"]
+print(f"\nFinal box->target: {final_dist * 1000:.1f} mm — "
+      f"{'REACHED' if final_dist < REACH_TOL else 'NOT REACHED'}")
+print(f"Steps: {len(df)}, wall time: {stats['total_wall_time_s']:.2f}s")
+robot.print_stats(stats, keys=[
+    "true_inferred_frequency_hz",
+    "mean_loop_hz_true",
+    "start_box_to_target_dist",
+    "final_box_to_target_dist",
+    "min_box_to_target_dist",
+    "net_improvement",
+    "num_overruns",
+])
+
+# ── Render video ───────────────────────────────────────────────────────
+print("\nRendering MuJoCo replay ...")
+mj = robot.mujoco_init_model(
+    xml_path=MODEL_PATH, height=480, width=640,
+    cam_lookat=(0.3, 0.0, 0.3), cam_distance=1.2,
+    cam_azimuth=130, cam_elevation=-20,
+)
+frames, actual_fps = robot.render_video_from_log(mj, df, video_fps=VIDEO_FPS)
+robot.save_video(frames, out_path=VIDEO_OUT, fps=actual_fps)
+print(f"Video: {VIDEO_OUT}")
+
+# ── Save plots + metadata ──────────────────────────────────────────────
+robot.save_plots(df, out_path=PLOTS_OUT)
+robot.save_run_metadata(
+    META_OUT,
+    robot_ip=ROBOT_IP,
+    drop_target=DROP_TARGET,
+    q_start=Q_START,
+    mocap_server_ip=MOCAP_SERVER_IP,
+    mocap_rigid_body_id=MOCAP_RIGID_BODY_ID,
+    enable_gripper=ENABLE_GRIPPER,
+    reach_tol=REACH_TOL,
+    timeout_s=TIMEOUT_S,
+    control_hz=CONTROL_HZ,
+    action_scale=ACTION_SCALE,
+    lookahead_time=LOOKAHEAD_TIME,
+    gain=GAIN,
+    servoj_a=SERVOJ_A,
+    servoj_v=SERVOJ_V,
+    alpha=ALPHA,
+    use_fk_tcp=USE_FK_TCP,
+    policy_path=POLICY_PATH,
+    model_path=MODEL_PATH,
+    stats=stats,
+)
+
+# ── Disconnect ─────────────────────────────────────────────────────────
+mocap.stop()
+robot.disconnect()
+print("Done.")
