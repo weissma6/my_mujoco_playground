@@ -12,12 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""UR3 pick task: 6-DOF arm + Hand-E gripper, bring a box to a drop target.
+"""UR3 pick task: 6-DOF arm + Hand-E gripper, lift a box to a target point.
 
-Observation (21D):
-  [q(6), qd(6), tcp_pos(3), box_pos(3), drop_target(3)]
-Action (7D):
-  6 arm joint deltas + 1 Hand-E tendon delta.
+The mocap target is used as the lift goal (a point in the air above the box).
+Mirrors the commented-out reward scaffolding of ur10pick.py.
 """
 
 from typing import Any, Dict, Optional, Union
@@ -42,13 +40,16 @@ def default_config() -> config_dict.ConfigDict:
         action_scale=0.04,
         reward_config=config_dict.create(
             scales=config_dict.create(
-                # Bring the box to the drop target.
+                ## Reward scaling factors
+                # Box goes to the mocap target (lift point in the air).
                 box_target=8.0,
-                # Bring the gripper (TCP) to the box.
-                reach_box=4.0,
-                # Do not collide the gripper/fingers with the floor.
+                # Gripper (TCP) approaches the box.
+                gripper_box=4.0,
+                # Encourage finger opening relative to box distance (ur10pick formula).
+                finger_touch=1.0,
+                # Do not collide the gripper with the floor.
                 no_floor_collision=0.25,
-                # Stay close to the initial arm pose.
+                # Arm stays close to initial pose.
                 robot_target_qpos=0.3,
             )
         ),
@@ -60,11 +61,7 @@ def default_config() -> config_dict.ConfigDict:
 
 
 class UR3Pick(ur3_base.UR3Base):
-    """Bring a box to a drop target with the UR3 + Hand-E.
-
-    Observation (21D):
-      [q(6), qd(6), tcp_pos(3), box_pos(3), drop_target(3)]
-    """
+    """Lift a box to a target point with the UR3 + Hand-E."""
 
     def __init__(
         self,
@@ -84,8 +81,6 @@ class UR3Pick(ur3_base.UR3Base):
         init_keyframe = getattr(self._config, "init_keyframe", "low_home")
         self._post_init(obj_name="box", keyframe=init_keyframe)
 
-        self._gripper_site = self._mj_model.site("tcp").id
-
         # Floor-collision sensors (Hand-E fingers + hand capsule vs floor).
         self._floor_hand_found_sensor = [
             self._mj_model.sensor(name).id
@@ -99,8 +94,7 @@ class UR3Pick(ur3_base.UR3Base):
     def reset(self, rng: jax.Array) -> State:
         rng, rng_box, rng_target, rng_robot, rng_gripper = jax.random.split(rng, 5)
 
-        # Box position: jitter around the keyframe box pose (on the table).
-        # UR3 reach is ~0.5 m, so the jitter is tighter than the UR10 task.
+        # initialize box position (tight jitter around keyframe — UR3 reach ~0.5 m)
         box_pos = (
             jax.random.uniform(
                 rng_box,
@@ -108,48 +102,57 @@ class UR3Pick(ur3_base.UR3Base):
                 minval=jp.array([-0.08, -0.08, 0.0]),
                 maxval=jp.array([0.08, 0.08, 0.0]),
             )
+            + self._init_obj_pos  # Box position from XML keyframe
+        )
+
+        # initialize target position — a lift point in the air above the box
+        target_pos = (
+            jax.random.uniform(
+                rng_target,
+                (3,),
+                minval=jp.array([-0.10, -0.10, 0.10]),
+                maxval=jp.array([0.10, 0.10, 0.25]),
+            )
             + self._init_obj_pos
         )
 
-        # Drop target: a reachable workspace volume for the UR3.
-        drop_target = jax.random.uniform(
-            rng_target,
-            (3,),
-            minval=jp.array([0.25, -0.15, 0.10]),
-            maxval=jp.array([0.40, 0.15, 0.30]),
-        )
-
-        # Arm joint noise (±0.05 rad around keyframe).
+        # -----------------------------
+        # Randomize robot joint positions (arm only, not gripper)
+        # -----------------------------
         robot_qpos_noise = jax.random.uniform(
             rng_robot,
-            (len(self._robot_arm_qposadr),),
-            minval=-0.05,
+            (len(self._robot_arm_qposadr),),  # 6 arm joints
+            minval=-0.05,  # ~3 degrees in radians
             maxval=0.05,
         )
         init_arm_qpos = jp.array(self._init_q[self._robot_arm_qposadr])
         noisy_arm_qpos = init_arm_qpos + robot_qpos_noise
 
-        # Gripper finger noise (small; finger range is 0-0.025).
+        # Gripper noise (small range since finger range is 0-0.025)
         gripper_noise = jax.random.uniform(
             rng_gripper,
-            (2,),
+            (2,),  # left and right finger
             minval=0.0,
             maxval=0.01,
         )
         init_finger_qpos = jp.array(self._init_q[self._robot_qposadr[-2:]])
         noisy_finger_qpos = init_finger_qpos + gripper_noise
 
-        # Build qpos: noisy arm + noisy fingers + box pose.
+        # -----------------------------
+        # Build initial qpos with randomized arm joints
+        # -----------------------------
         init_q = jp.array(self._init_q)
         init_q = init_q.at[self._obj_qposadr : self._obj_qposadr + 3].set(box_pos)
         init_q = init_q.at[self._robot_arm_qposadr].set(noisy_arm_qpos)
         init_q = init_q.at[self._robot_qposadr[-2:]].set(noisy_finger_qpos)
 
-        # ctrl consistent with qpos to avoid residual torques at reset.
+        # -----------------------------
+        # Make ctrl consistent with init_q (avoids residual torques at reset)
+        # -----------------------------
         init_ctrl = jp.array(self._init_ctrl)
-        init_ctrl = init_ctrl.at[:6].set(noisy_arm_qpos)
-        # Tendon actuator commands the symmetric finger position (coef 0.5 each).
-        init_ctrl = init_ctrl.at[6].set(noisy_finger_qpos.sum() * 0.5)
+        init_ctrl = init_ctrl.at[: len(self._robot_arm_qposadr)].set(noisy_arm_qpos)
+        # Tendon actuator commands the symmetric finger position (coef 0.5 each)
+        init_ctrl = init_ctrl.at[-1].set(noisy_finger_qpos.sum() * 0.5)
 
         data = mjx_env.make_data(
             self._mj_model,
@@ -161,23 +164,26 @@ class UR3Pick(ur3_base.UR3Base):
             njmax=self._config.njmax,
         )
 
-        # Place the mocap target marker at the drop target.
+        # set target mocap position (lift goal marker)
         data = data.replace(
-            mocap_pos=data.mocap_pos.at[self._mocap_target, :].set(drop_target),
+            mocap_pos=data.mocap_pos.at[self._mocap_target, :].set(target_pos),
         )
 
+        # initialize env state and info
         metrics = {
             "out_of_bounds": jp.array(0.0, dtype=float),
             "success": jp.array(0.0, dtype=float),
             "box_target_dist": jp.array(0.0, dtype=float),
+            "reached_box": jp.array(0.0, dtype=float),
             **{k: jp.array(0.0, dtype=float)
                for k in self._config.reward_config.scales.keys()},
         }
         info = {
             "rng": rng,
-            "drop_target": drop_target,
+            "target_pos": target_pos,
             "step": jp.array(0, dtype=jp.int32),
             "success_counter": jp.array(0, dtype=jp.int32),
+            "reached_box": jp.array(0.0, dtype=float),
         }
 
         obs = self._get_obs(data, info)
@@ -193,7 +199,7 @@ class UR3Pick(ur3_base.UR3Base):
         info = dict(state.info)
         info["step"] = info["step"] + 1
 
-        raw_rewards = self._get_reward(data, info)
+        raw_rewards, raw_signals = self._get_reward(data, info)
         rewards = {
             k: v * self._config.reward_config.scales[k]
             for k, v in raw_rewards.items()
@@ -201,7 +207,7 @@ class UR3Pick(ur3_base.UR3Base):
         reward = jp.clip(sum(rewards.values()), -1e4, 1e4)
 
         box_pos = data.xpos[self._obj_body]
-        box_target_dist = jp.linalg.norm(info["drop_target"] - box_pos)
+        box_target_dist = jp.linalg.norm(info["target_pos"] - box_pos)
 
         success_now = box_target_dist < 0.03
         info["success_counter"] = jp.where(
@@ -213,7 +219,7 @@ class UR3Pick(ur3_base.UR3Base):
 
         tcp_pos = data.site_xpos[self._gripper_site]
         out_of_bounds = (
-            jp.any(jp.abs(tcp_pos[:2]) > 0.8) | (tcp_pos[2] < 0.0)
+            jp.any(jp.abs(tcp_pos[:2]) > 0.6) | (tcp_pos[2] < 0.0)
         )
         invalid_state = (
             jp.isnan(data.qpos).any() | jp.isnan(data.qvel).any()
@@ -226,50 +232,153 @@ class UR3Pick(ur3_base.UR3Base):
             out_of_bounds=out_of_bounds.astype(jp.float32),
             success=success.astype(jp.float32),
             box_target_dist=box_target_dist,
+            reached_box=info["reached_box"],
         )
 
         obs = self._get_obs(data, info)
         return State(data, obs, reward, done, metrics, info)
 
     def _get_reward(self, data: mjx.Data, info: Dict[str, Any]) -> Dict[str, Any]:
-        tcp_pos = data.site_xpos[self._gripper_site]
-        box_pos = data.xpos[self._obj_body]
-        drop_target = info["drop_target"]
+        # ==============================
+        # Postition world-frame
+        # ==============================
+        # Endposition of the mocap target - JAX array (3,) float64
+        target_pos = info[
+            "target_pos"
+        ]
+        # Current position of the box - JAX array (3,) float64
+        box_pos = data.xpos[
+            self._obj_body
+        ]
+        # World-frame Cartesian position of the TCP site - JAX array (3,) float64
+        gripper_pos = data.site_xpos[
+            self._gripper_site
+        ]
+        # World-frame Cartesian position of the left_finger_touch site - JAX array (3,) float64
+        left_finger_touch_pos = data.site_xpos[
+            self._left_finger_touch
+        ]
+        # World-frame Cartesian position of the right_finger_touch site - JAX array (3,) float64
+        right_finger_touch_pos = data.site_xpos[
+            self._right_finger_touch
+        ]
 
-        tcp_box_dist = jp.linalg.norm(box_pos - tcp_pos)
-        box_target_dist = jp.linalg.norm(drop_target - box_pos)
+        # ==============================
+        # Distance calcluation
+        # ==============================
+        # Euclidean distance between box and target - scalar JAX float64
+        box_target_dist = jp.linalg.norm(
+            target_pos - box_pos
+        )
+        # Euclidean distance between gripper and box - scalar JAX float64
+        gripper_box_dist = jp.linalg.norm(
+            box_pos - gripper_pos
+        )
+        # Euclidean distance between the two finger touch sites - scalar JAX float64
+        finger_touch_dist = jp.linalg.norm(
+            right_finger_touch_pos - left_finger_touch_pos
+        )
 
-        reach_box = 1 - jp.tanh(5.0 * tcp_box_dist)
-        box_target = 1 - jp.tanh(5.0 * box_target_dist)
+        # ==============================
+        # --- Rotation related computations ---
+        # # ==============================
+        # # World-frame rotation matrix of the box - JAX array (3,3) float64
+        # box_mat = data.xmat[
+        #     self._obj_body
+        # ]
+        # # World-frame rotation matrix of the mocap target - JAX array (3,3) float64
+        # target_mat = math.quat_to_mat(
+        #     data.mocap_quat[self._mocap_target]
+        # )
+        # # Rotation error between box and target - scalar JAX float64
+        # rot_err = jp.linalg.norm(
+        #     target_mat.ravel()[:6] - box_mat.ravel()[:6]
+        # )
 
-        robot_target_qpos = 1 - jp.tanh(
+        # ==============================
+        # --- Reward terms ---
+        # ==============================
+        # Reward for box being at target - scalar JAX float64
+        box_target_Reward = 1 - jp.tanh(
+            5 * box_target_dist
+        )
+        # Reward for gripper being at box - scalar JAX float64
+        gripper_box_Reward = 1 - jp.tanh(
+            5 * gripper_box_dist
+        )
+        # Penalty for deviating too far from the initial arm configuration - scalar JAX float64
+        robot_target_qpos_penalty = 1 - jp.tanh(
             jp.linalg.norm(
                 data.qpos[self._robot_arm_qposadr]
                 - self._init_q[self._robot_arm_qposadr]
             )
         )
+        # rewartd for finger distans large, when distance to boy large
+        finger_touch_Reward = jp.tanh(
+            finger_touch_dist / (gripper_box_dist + 1e-6)
+        )
 
-        # Floor collision via contact sensors.
+        # Floor collision via touch sensors (same as Panda) - scalar JAX float64
+        # List of booleans indicating if each sensor detects contact with the floor
         hand_floor_collision = [
             data.sensordata[self._mj_model.sensor_adr[sensor_id]] > 0
             for sensor_id in self._floor_hand_found_sensor
         ]
-        floor_collision = sum(hand_floor_collision) > 0
-        no_floor_collision = (1 - floor_collision).astype(float)
+        # Boolean indicating if any sensor detects contact with the floor
+        floor_collision = (
+            sum(hand_floor_collision) > 0
+        )
+        # Reward for no floor collision - scalar JAX float64
+        no_floor_collision_Reward = (1 - floor_collision).astype(
+            float
+        )
+        # ==============================
+        # --- Same "reached_box" gate as Panda, but based on fingertip midpoint ---
+        # Binary indicator if the gripper has reached the box - scalar JAX float64
+        info["reached_box"] = 1.0 * jp.maximum(
+            info["reached_box"],
+            (gripper_box_dist < 0.02).astype(float),  # Panda threshold was 0.012
+        )
 
-        return {
-            "box_target": box_target,
-            "reach_box": reach_box,
-            "no_floor_collision": no_floor_collision,
-            "robot_target_qpos": robot_target_qpos,
+        rewards = {
+            "box_target": box_target_Reward,
+            "gripper_box": gripper_box_Reward,
+            "finger_touch": finger_touch_Reward,
+            "no_floor_collision": no_floor_collision_Reward,
+            "robot_target_qpos": robot_target_qpos_penalty,
+        }
+        # ==============================
+        # Raw signals dict (for debug)
+        # ==============================
+        raw = {
+            # positions
+            "target_pos": target_pos,
+            "box_pos": box_pos,
+            "gripper_pos": gripper_pos,
+            "left_finger_touch_pos": left_finger_touch_pos,
+            "right_finger_touch_pos": right_finger_touch_pos,
+
+            # errors / distances
+            "box_target_dist": box_target_dist,
+            # "rot_err": rot_err,
+            "grip_box_dist": gripper_box_dist,
+            "finger_touch_dist": finger_touch_dist,
+
+            # events
+            "reached_box": info["reached_box"],
+            "number_floor_collision": floor_collision,
         }
 
-    def _get_obs(self, data: mjx.Data, info: Dict[str, Any]) -> jax.Array:
-        """Returns 21D obs: [q(6), qd(6), tcp_pos(3), box_pos(3), drop_target(3)]."""
-        q = data.qpos[self._robot_arm_qposadr]        # (6,)
-        qd = data.qvel[self._robot_arm_qveladr]        # (6,)
-        tcp_pos = data.site_xpos[self._gripper_site]   # (3,)
-        box_pos = data.xpos[self._obj_body]            # (3,)
-        drop_target = info["drop_target"]              # (3,)
+        return rewards, raw
 
-        return jp.concatenate([q, qd, tcp_pos, box_pos, drop_target])  # (21,)
+    def _get_obs(self, data: mjx.Data, info: Dict[str, Any]) -> jax.Array:
+        """Returns 20D obs: [q(8), qd(6), (box-tcp)(3), (target-box)(3)]."""
+        obs = jp.concatenate(
+            [
+                data.qpos[self._robot_qposadr],                                # 8 (6 arm + 2 finger)
+                data.qvel[self._robot_arm_qveladr],                            # 6 arm vel
+                data.xpos[self._obj_body] - data.site_xpos[self._gripper_site],  # 3 box - tcp
+                info["target_pos"] - data.xpos[self._obj_body],                # 3 target - box
+            ]
+        )
+        return obs

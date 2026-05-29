@@ -128,6 +128,11 @@ class UR3Base(mjx_env.MjxEnv):
             self._mj_model.geom("hand_base").id if "hand_base" in geom_names else None
         )
 
+        # Finger touch sites on the inner faces of the Hand-E fingers
+        # (mirrors ur10pick; used by ur3_pick reward for finger_touch_dist).
+        self._left_finger_touch = self._mj_model.site("left_finger_touch_site").id
+        self._right_finger_touch = self._mj_model.site("right_finger_touch_site").id
+
         # Environment object references (like cube) — optional for reach-only tasks
         if obj_name is not None:
             self._obj_body = self._mj_model.body(obj_name).id

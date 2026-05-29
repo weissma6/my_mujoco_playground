@@ -14,6 +14,7 @@
 ssh weissma6@dallas.zhaw.ch
 cd ~/VT1_MBRL/my_mujoco_playground
 
+
 # ------------------------------------------------
 # Step 1 (Strongly recommended) Pre-warm the UV environment once
 # ------------------------------------------------
@@ -60,7 +61,7 @@ sacct -u weissma6 \
 
 # Logs (job-name is UR3Pick_sweep_uv -> logs/UR3Pick_sweep_uv_<jobid>_<arrayidx>.{out,err})
 find . -maxdepth 3 -type f -name "*UR3Pick_sweep_uv*" -print
-tail -f logs/UR3Pick_sweep_uv_<job_id>_1.err
+tail -f logs/UR3Pick_sweep_uv_23307_1.err
 
 # Watch resource usage (CPU / GPU)
 sstat -j <job_id>_1.batch --format=AveCPU,AveRSS,MaxRSS,MaxVMSize,AveDiskRead,AveDiskWrite
