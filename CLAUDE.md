@@ -120,9 +120,12 @@ python learning/train_jax_ppo.py --env_name UR3Pick \
 # policy_hidden_layer_sizes=(32,32,32,32), num_timesteps=20M.
 
 # Cluster training (ZHAW SLURM, rootless Podman + EGL). Submit from repo root:
-sbatch --array=2 batch_runs/slurm/run_array_ur3.sbatch   # ur3pick_smoke (line 2 of sweep)
-sbatch batch_runs/slurm/run_array_ur3.sbatch             # full 3-line sweep
+sbatch --array=1 batch_runs/slurm/run_array_ur3.sbatch   # ur3pick_smoke (line 1 of sweep)
+sbatch --array=2 batch_runs/slurm/run_array_ur3.sbatch   # ur3pick_base baseline (line 2)
+sbatch --array=1-10 batch_runs/slurm/run_array_ur3.sbatch  # full hyperparameter sweep
 # Sweep config: batch_runs/sweeps/UR3Pick_sweep.jsonl (1-indexed by SLURM array task).
+# Lines: 1 smoke, 2 base, 3 base_seed1, 4 lr_low, 5 lr_high, 6 entropy_high,
+#        7 gamma_high, 8 unroll_long, 9 envs_large, 10 DR_MFR.
 
 # Real robot deployment (from learning/notebooks/)
 python UR10_RealRobot_Reach_ONE.py                       # UR10 reach
@@ -152,8 +155,8 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` across Pyt
   - `ur10pick.py` — Pick task with gripper.
   - `xmls/mjx_reach.xml` — Primary MuJoCo model for reach task.
 - `manipulation/my_ur3/` — Custom UR3e + Robotiq Hand-E pick environment (`ur3_pick` branch), mirroring `my_ur10/`:
-  - `ur3_base.py` — `UR3Base`. `_ARM_JOINTS` are the 6 standard UR joint names; `_FINGER_JOINTS = ["hande_left_finger_joint", "hande_right_finger_joint"]`. `get_assets()` reads from `my_ur3/xmls` + `my_ur3/universal_robots_ur3e` (+ its `assets/`).
-  - `ur3_pick.py` — `UR3Pick` env. **21D obs** `[q(6), qd(6), tcp_pos(3), box_pos(3), drop_target(3)]`, **7D action** (6 arm delta + 1 Hand-E tendon). `ctrl_dt=0.02`, `sim_dt=0.005`, `action_scale=0.04`, `episode_length=150`, `init_keyframe="low_home"`. Reward scales `{box_target:8.0, reach_box:4.0, no_floor_collision:0.25, robot_target_qpos:0.3}`. `box_pos` is the freejoint cube; `drop_target` is sampled at reset and stored in `info["drop_target"]`. Success: `||box - drop_target|| < 0.03` for 3 consecutive steps.
+  - `ur3_base.py` — `UR3Base`. `_ARM_JOINTS` are the 6 standard UR joint names; `_FINGER_JOINTS = ["hande_left_finger_joint", "hande_right_finger_joint"]`. `get_assets()` reads from `my_ur3/xmls` + `my_ur3/universal_robots_ur3e` (+ its `assets/`). `_post_init` resolves `self._left_finger_touch` / `self._right_finger_touch` (site IDs for `left_finger_touch_site` / `right_finger_touch_site` on the inner faces of the Hand-E fingers) — used by `ur3_pick._get_reward` for `finger_touch_dist`.
+  - `ur3_pick.py` — `UR3Pick` env. **Pick + lift task** (drop/place stage deferred). **20D obs** `[q(8 arm+finger), qd(6 arm), (box−tcp)(3), (target_pos−box)(3)]`, **7D action** (6 arm delta + 1 Hand-E tendon). `ctrl_dt=0.02`, `sim_dt=0.005`, `action_scale=0.04`, `episode_length=150`, `init_keyframe="low_home"`. Reward scales `{box_target:8.0, gripper_box:4.0, finger_touch:1.0, no_floor_collision:0.25, robot_target_qpos:0.3}` — the `_get_reward` body mirrors `ur10pick.py`'s commented scaffolding (sections: positions / distances / rotation [commented] / reward terms / `reached_box` gate) so future re-enables are comment-flips. `target_pos` is sampled at reset as a **lift point in the air above the box** (`init_obj_pos + uniform([-0.1,-0.1,0.10], [0.1,0.1,0.25])`), written to `mocap_pos` for viz, and stored in `info["target_pos"]`. `info["reached_box"]` is a sticky gate that latches at `gripper_box_dist < 0.02`. Success: `||box − target_pos|| < 0.03` for 3 consecutive steps. `out_of_bounds`: `|tcp.xy| > 0.6` (UR3 reach ≈ 0.5 m).
   - `universal_robots_ur3e/ur3e_position.xml` — UR3e arm with Hand-E **inlined** at the wrist_3 attachment (`pos="0 0.09215 0"`, vs UR10's 0.1): mount body, two coupled slide-joint fingers via `<tendon><fixed name="split">` (coef 0.5 each), one `position` actuator `ctrlrange="0 0.05"` → `nu=7`, `nq=8` standalone. **meshdir footgun:** set to `../universal_robots_ur3e/assets` so it resolves from the top-level loader (`xmls/`), not the included file's dir. Hand-E meshes (`hande.stl`, `coupler.stl`, `finger_*.stl`) live in `universal_robots_ur3e/assets/` — there is **no** separate `robotiq_hande/` dir (unlike `my_ur10/`).
   - `xmls/mjx_single_cube_position_ur3.xml` — pick scene: includes the robot + scene, box freejoint, `mocap_target` body, `ur3_pick_sensor.xml`. Loads to `nu=7, nq=15, nkey=5, nsensor=8`. Keyframes `task_home`/`low_home`/`tucked` (15 qpos = 6 arm + 2 finger + 7 box; 7 ctrl).
   - `xmls/ur3_pick_sensor.xml` — 3 floor-contact + 3 finger/box-contact + 2 framepos sensors.
@@ -168,7 +171,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` across Pyt
 ZHAW SLURM cluster, rootless Podman container (`mujoco_env_EGL.tar`, tag `mujoco:env_EGL`) with `MUJOCO_GL=egl`. A sweep is a JSONL file (one config per line, **1-indexed** by `$SLURM_ARRAY_TASK_ID`); each array task trains one config and uploads a `policy_parameters_*` artifact to W&B.
 - `slurm/run_array_ur{10,3}.sbatch` — SLURM array job. Loads the image tar under a `flock`, mounts the repo at `/workspace`, runs `scripts/run_one_ur{10,3}.py`. `REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"`; W&B key read from `$HOME/.secrets/wandb_key`.
 - `scripts/run_one_ur{10,3}.py` — thin per-task runner: parses one JSONL line (`--jsonl … --index … --out_root …`) and calls `UR10_ppo.run_experiment`. The UR3 copy differs only in defaults; the import target is identical (env-agnostic).
-- `sweeps/UR3Pick_sweep.jsonl` — 3 lines: `ur3pick_smoke` (300k/512 envs), `ur3pick_baseline` (20M/2048), `ur3pick_DR_MFR` (domain randomization). All `env_name="UR3Pick"`, `wandb_project="UR3_pick_ppo"`.
+- `sweeps/UR3Pick_sweep.jsonl` — 10 lines, mirrors the UR10 sweep's hyperparameter-exploration pattern. `run_id`s name the variation: `ur3pick_smoke` (300k/512 envs), `ur3pick_base` (20M baseline), `ur3pick_base_seed1`, `ur3pick_lr_low_5e-4`, `ur3pick_lr_high_2e-3`, `ur3pick_entropy_high_5e-2`, `ur3pick_gamma_high_0.99`, `ur3pick_unroll_long_50`, `ur3pick_envs_large_8k`, `ur3pick_DR_MFR`. Each line carries a unique `seed` (0–8). Variation directions are *vs UR3 defaults* (lr=1e-3, entropy=0.02, γ=0.97, unroll=10) — γ and unroll vary *up* because UR3 defaults are lower than UR10's. All `env_name="UR3Pick"`, `wandb_project="UR3_pick_ppo"`.
 
 ### Trained Policies (`evaluation/downloaded_policies/`)
 - `simple_reach_policy_50hz/` — Production policy. Contains `params.msgpack` + `metadata.json`.
@@ -190,7 +193,7 @@ ZHAW SLURM cluster, rootless Podman container (`mujoco_env_EGL.tar`, tag `mujoco
 - `run_multi_target.py` — Multi-target reach with 5mm convergence tolerance.
 - `URSim_RTDE_SimpleReach.ipynb` — Comprehensive testing notebook (frequency sweeps, robustness tests, policy comparison).
 - `ur3_realrobot_dependencies.py` — `UR3RealRobotPick`, the UR3 pick analog of `URSim_RTDE_dependencies.py`. Key differences:
-  - `build_obs_from_feedback(fb, box_pos, drop_target, tcp_pos)` assembles the **21D** obs (`box_pos` from mocap each tick, `drop_target` from config).
+  - `build_obs_from_feedback(fb, box_pos, drop_target, tcp_pos)` currently still assembles the old 21D obs. **STALE**: the sim env was rewritten to 20D `[q(8), qd_arm(6), (box−tcp)(3), (target−box)(3)]`. This function needs updating before the next real-robot run; the deploy script's `drop_target` arg becomes the lift target `target_pos`.
   - `policy_step_ctrl_update` returns `(arm_ctrl[6], gripper_norm)` — the 7th action drives `self._gripper_ctrl` clipped to `[0, 0.05]`, normalized to `[0, 1]`. **`servoJ` accepts only 6 joints**, so the gripper goes on a separate channel.
   - `send_gripper(norm_cmd)` is a **STUB** (`raise NotImplementedError`) — it must be wired to the lab's specific Hand-E setup (Robotiq URCap RTDE register vs. tool I/O) before a real-robot run.
   - `run_policy_loop(drop_target, mocap_reader, …, gripper_fn, use_fk_tcp)` reads `mocap_reader.get_rigid_body_xyz()` every tick, falling back to the last good value when a frame is missing.
@@ -229,7 +232,7 @@ Policy (JAX/Brax) → action ∈ [-1,1]^6
 
 ## Important Conventions
 
-- UR10 reach policy observations must match the 18D layout: `[q(6), qd(6), tcp_pos(3), target_pos(3)]`. UR3 pick is **21D**: `[q(6), qd(6), tcp_pos(3), box_pos(3), drop_target(3)]` with a **7D** action (the 7th element is the Hand-E tendon command). Obs/action dims and ordering must match between sim training and deployment.
+- UR10 reach policy observations must match the 18D layout: `[q(6), qd(6), tcp_pos(3), target_pos(3)]`. UR3 pick is **20D**: `[q(8 arm+finger), qd(6 arm), (box−tcp)(3), (target_pos−box)(3)]` (relative vectors, no raw world positions) with a **7D** action (the 7th element is the Hand-E tendon command). Obs/action dims and ordering must match between sim training and deployment.
 - RTDE TCP pose has X/Y axes negated to match MuJoCo base frame orientation
 - For UR3 pick, the gripper is **not** part of the `servoJ` `q`-vector (servoJ is 6-joint only) — it travels on a separate channel via `send_gripper()`, which is an unwired stub until the lab Hand-E I/O is confirmed.
 - The `action_scale` in deployment must match training (0.04 for 50Hz policy)
