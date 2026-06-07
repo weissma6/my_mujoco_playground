@@ -14,9 +14,11 @@
 # ==============================================================================
 """UR3 pick task: 6-DOF arm + Hand-E gripper, lift a box to a target point.
 
-The mocap target is used as the lift goal (a point in the air above the box).
-The 4x4x4 cm box spawns with a random Y-axis tilt and a rotation-error reward
-encourages bringing it back to the canonical (identity) orientation while lifting.
+The mocap target is a 5x5x5 cm box (the lift goal, in the air above the box).
+The 4x4x4 cm box spawns with a random Y-axis tilt; the policy must lift it and
+position it fully *inside* the 5 cm target box (all 8 box corners within the
+axis-aligned target bounds), which jointly requires correct position and an
+upright orientation.
 Mirrors the commented-out reward scaffolding of ur10pick.py.
 """
 
@@ -47,9 +49,10 @@ def default_config() -> config_dict.ConfigDict:
                 box_target=8.0,
                 # Gripper (TCP) approaches the box.
                 gripper_box=4.0,
-                # Box orientation aligns with the canonical (identity) target —
+                # 4 cm box sits fully inside the 5 cm target box (all 8 corners
+                # within bounds) — encodes fine position + upright orientation,
                 # gated by sticky reached_box (only active once at the box).
-                box_orient=2.0,
+                box_inside=3.0,
                 # Encourage finger opening relative to box distance (ur10pick formula).
                 finger_touch=1.0,
                 # Do not collide the gripper with the floor.
@@ -97,8 +100,25 @@ class UR3Pick(ur3_base.UR3Base):
         ]
 
         # Canonical (identity) box orientation target, pre-flattened to the first
-        # two rows of the rotation matrix (matches the obs/reward layout).
+        # two rows of the rotation matrix (kept only as a logged diagnostic).
         self._target_xmat_flat = jp.eye(3).ravel()[:6]
+
+        # Box (4 cm) and target (5 cm) half-extents — single source of truth is
+        # the XML; used by the containment reward (box must sit inside target).
+        self._box_half = jp.array(self._mj_model.geom("box").size, dtype=float)
+        self._target_half = jp.array(
+            self._mj_model.geom("mocap_target_geom").size, dtype=float
+        )
+        # 8 corner sign combinations of an axis-aligned box, shape (8, 3).
+        self._box_corner_signs = jp.array(
+            [
+                [sx, sy, sz]
+                for sx in (-1.0, 1.0)
+                for sy in (-1.0, 1.0)
+                for sz in (-1.0, 1.0)
+            ],
+            dtype=float,
+        )
 
     def reset(self, rng: jax.Array) -> State:
         rng, rng_box, rng_quat, rng_target, rng_robot, rng_gripper = (
@@ -229,7 +249,9 @@ class UR3Pick(ur3_base.UR3Base):
         box_pos = data.xpos[self._obj_body]
         box_target_dist = jp.linalg.norm(info["target_pos"] - box_pos)
 
-        success_now = box_target_dist < 0.03
+        # Success: the whole 4 cm box sits inside the 5 cm target box
+        # (worst corner at most 1 mm outside the bounds).
+        success_now = raw_signals["containment_max"] <= 1e-3
         info["success_counter"] = jp.where(
             success_now,
             info["success_counter"] + 1,
@@ -304,8 +326,24 @@ class UR3Pick(ur3_base.UR3Base):
         # ==============================
         # First two rows of the box world-frame rotation matrix - JAX array (6,) float64
         box_xmat_flat = data.xmat[self._obj_body].ravel()[:6]
-        # Rotation error between box and the canonical (identity) target - scalar float64
+        # Rotation error vs the canonical (identity) target - scalar float64 (diagnostic only)
         rot_err = jp.linalg.norm(self._target_xmat_flat - box_xmat_flat)
+
+        # ==============================
+        # --- Containment: 4 cm box fully inside the 5 cm target box ---
+        # ==============================
+        # World-frame rotation matrix of the box - JAX array (3,3) float64
+        box_mat = data.xmat[self._obj_body].reshape(3, 3)
+        # 8 box corners in world frame: box_pos + R_box @ (signs * box_half) - (8,3)
+        box_corners = box_pos + (self._box_corner_signs * self._box_half) @ box_mat.T
+        # Per-corner, per-axis overshoot beyond the axis-aligned target box - (8,3) m
+        corner_overshoot = jp.maximum(
+            jp.abs(box_corners - target_pos) - self._target_half, 0.0
+        )
+        # Total overshoot (m); zero iff every corner is inside the target box.
+        containment_violation = jp.sum(corner_overshoot)
+        # Worst single-corner overshoot (m) - used for the success criterion.
+        containment_max = jp.max(corner_overshoot)
 
         # ==============================
         # --- Reward terms ---
@@ -352,14 +390,16 @@ class UR3Pick(ur3_base.UR3Base):
             (gripper_box_dist < 0.02).astype(float),  # Panda threshold was 0.012
         )
 
-        # Orientation reward — only active once the gripper has reached the box
-        # (avoids rewarding orientation noise during the free-floating approach).
-        box_orient_Reward = (1 - jp.tanh(2 * rot_err)) * info["reached_box"]
+        # Containment reward — only active once the gripper has reached the box
+        # (avoids rewarding overlap with the target during the free approach).
+        box_inside_Reward = (
+            1 - jp.tanh(15.0 * containment_violation)
+        ) * info["reached_box"]
 
         rewards = {
             "box_target": box_target_Reward,
             "gripper_box": gripper_box_Reward,
-            "box_orient": box_orient_Reward,
+            "box_inside": box_inside_Reward,
             "finger_touch": finger_touch_Reward,
             "no_floor_collision": no_floor_collision_Reward,
             "robot_target_qpos": robot_target_qpos_penalty,
@@ -378,6 +418,8 @@ class UR3Pick(ur3_base.UR3Base):
             # errors / distances
             "box_target_dist": box_target_dist,
             "rot_err": rot_err,
+            "containment_violation": containment_violation,
+            "containment_max": containment_max,
             "grip_box_dist": gripper_box_dist,
             "finger_touch_dist": finger_touch_dist,
 
