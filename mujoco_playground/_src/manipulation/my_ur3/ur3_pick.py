@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""UR3 pick task: 6-DOF arm + Hand-E gripper, lift a box to a target point.
+"""UR3 pick-and-place: 6-DOF arm + Hand-E gripper, carry a box to a drop zone.
 
-The mocap target is a 5x5x5 cm box (the lift goal, in the air above the box).
-The 4x4x4 cm box spawns with a random Y-axis tilt; the policy must lift it and
-position it fully *inside* the 5 cm target box (all 8 box corners within the
-axis-aligned target bounds), which jointly requires correct position and an
-upright orientation.
+The 4x4x4 cm box spawns on the +Y side (~20 cm from the workspace center) with a
+random Y-axis tilt. The 5x5x5 cm mocap target is a drop zone on the -Y side at
+the same radius, 5 cm above the floor. The policy must pick the box, carry it
+across, position it fully *inside* the target box (all 8 corners within the
+axis-aligned bounds — jointly correct position + upright orientation), and let
+go (open the fingers) at the drop.
 Mirrors the commented-out reward scaffolding of ur10pick.py.
 """
 
@@ -39,7 +40,7 @@ def default_config() -> config_dict.ConfigDict:
     return config_dict.create(
         ctrl_dt=0.02,
         sim_dt=0.005,
-        episode_length=150,
+        episode_length=250,
         action_repeat=1,
         action_scale=0.04,
         reward_config=config_dict.create(
@@ -53,8 +54,13 @@ def default_config() -> config_dict.ConfigDict:
                 # within bounds) — encodes fine position + upright orientation,
                 # gated by sticky reached_box (only active once at the box).
                 box_inside=3.0,
+                # Box rotation matches upright (identity): 1 - tanh(5*rot_err),
+                # congruent with gripper_box — more reward the closer it gets.
+                box_orient=4.0,
                 # Encourage finger opening relative to box distance (ur10pick formula).
                 finger_touch=1.0,
+                # Open the fingers (let go) once the box has reached the target.
+                release=2.0,
                 # Do not collide the gripper with the floor.
                 no_floor_collision=0.25,
                 # Arm stays close to initial pose.
@@ -125,15 +131,18 @@ class UR3Pick(ur3_base.UR3Base):
             jax.random.split(rng, 6)
         )
 
-        # initialize box position (tight jitter around keyframe — UR3 reach ~0.5 m)
+        # initialize box position — spawn ~20 cm to the +Y side of the workspace
+        # center, tight jitter (UR3 reach ~0.5 m). The -Y drop target is kept at
+        # the same radius (symmetric in Y).
         box_pos = (
             jax.random.uniform(
                 rng_box,
                 (3,),
-                minval=jp.array([-0.08, -0.08, 0.0]),
-                maxval=jp.array([0.08, 0.08, 0.0]),
+                minval=jp.array([-0.06, -0.06, 0.0]),
+                maxval=jp.array([0.06, 0.06, 0.0]),
             )
             + self._init_obj_pos  # Box position from XML keyframe
+            + jp.array([0.0, 0.20, 0.0])  # shift to +Y20cm spawn side
         )
 
         # initialize box orientation — random rotation around world Y axis, ±45°.
@@ -144,15 +153,17 @@ class UR3Pick(ur3_base.UR3Base):
             [jp.cos(theta / 2.0), 0.0, jp.sin(theta / 2.0), 0.0], dtype=float
         )
 
-        # initialize target position — a lift point in the air above the box
+        # initialize target position — drop zone ~20 cm to the -Y side, 5 cm
+        # above the floor (box center z = 0.05), same radius as the +Y spawn.
         target_pos = (
             jax.random.uniform(
                 rng_target,
                 (3,),
-                minval=jp.array([-0.10, -0.10, 0.10]),
-                maxval=jp.array([0.10, 0.10, 0.25]),
+                minval=jp.array([-0.05, -0.05, -0.01]),
+                maxval=jp.array([0.05, 0.05, 0.01]),
             )
             + self._init_obj_pos
+            + jp.array([0.0, -0.20, 0.03])  # -Y20cm side, z: 0.02 -> 0.05
         )
 
         # -----------------------------
@@ -396,11 +407,24 @@ class UR3Pick(ur3_base.UR3Base):
             1 - jp.tanh(15.0 * containment_violation)
         ) * info["reached_box"]
 
+        # Orientation reward — non-linear (tanh), congruent with gripper_box:
+        # more reward the closer the box is to upright (identity).
+        box_orient_Reward = 1 - jp.tanh(5.0 * rot_err)
+
+        # Release reward — open the fingers once the box is at the target.
+        # Gated by proximity to the target so it does not fight the grasp during
+        # the approach/carry; rewards a large finger gap (let go) at the drop.
+        near_target = 1 - jp.tanh(10.0 * box_target_dist)
+        finger_open = jp.tanh(finger_touch_dist / 0.05)
+        release_Reward = near_target * finger_open
+
         rewards = {
             "box_target": box_target_Reward,
             "gripper_box": gripper_box_Reward,
             "box_inside": box_inside_Reward,
+            "box_orient": box_orient_Reward,
             "finger_touch": finger_touch_Reward,
+            "release": release_Reward,
             "no_floor_collision": no_floor_collision_Reward,
             "robot_target_qpos": robot_target_qpos_penalty,
         }

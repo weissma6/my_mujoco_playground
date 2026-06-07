@@ -120,12 +120,11 @@ python learning/train_jax_ppo.py --env_name UR3Pick \
 # policy_hidden_layer_sizes=(32,32,32,32), num_timesteps=20M.
 
 # Cluster training (ZHAW SLURM, rootless Podman + EGL). Submit from repo root:
-sbatch --array=1 batch_runs/slurm/run_array_ur3.sbatch    # fastest config (lr=1e-3, unroll=10, 20M)
-sbatch --array=5 batch_runs/slurm/run_array_ur3.sbatch    # slowest config (lr=5e-4, unroll=50, 60M)
+sbatch --array=1 batch_runs/slurm/run_array_ur3.sbatch    # config 1 (lr=1e-3, unroll=10)
 sbatch --array=1-5 batch_runs/slurm/run_array_ur3.sbatch  # full sweep (5 configs)
 # Sweep config: batch_runs/sweeps/UR3Pick_sweep.jsonl (1-indexed by SLURM array task).
-# 5 lines interpolate lr 1e-3->5e-4, unroll 10->50, num_timesteps 20M->60M (seed 0).
-# sbatch --time is sized for the 60M run (~12h) — verify the partition allows it.
+# 5 lines: lr 1e-3->5e-4 (1e-3, 8.75e-4, 7.5e-4, 6.25e-4, 5e-4), unroll 10/12/15/20/25,
+# all num_timesteps=20M, seed 0, wandb_project=UR3_PicknDrop.
 
 # Real robot deployment (from learning/notebooks/)
 python UR10_RealRobot_Reach_ONE.py                       # UR10 reach
@@ -171,7 +170,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` across Pyt
 ZHAW SLURM cluster, rootless Podman container (`mujoco_env_EGL.tar`, tag `mujoco:env_EGL`) with `MUJOCO_GL=egl`. A sweep is a JSONL file (one config per line, **1-indexed** by `$SLURM_ARRAY_TASK_ID`); each array task trains one config and uploads a `policy_parameters_*` artifact to W&B.
 - `slurm/run_array_ur{10,3}.sbatch` — SLURM array job. Loads the image tar under a `flock`, mounts the repo at `/workspace`, runs `scripts/run_one_ur{10,3}.py`. `REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"`; W&B key read from `$HOME/.secrets/wandb_key`.
 - `scripts/run_one_ur{10,3}.py` — thin per-task runner: parses one JSONL line (`--jsonl … --index … --out_root …`) and calls `UR10_ppo.run_experiment`. The UR3 copy differs only in defaults; the import target is identical (env-agnostic).
-- `sweeps/UR3Pick_sweep.jsonl` — **5 lines** (`pickInside5cm_*`) interpolating learning_rate **linearly from 1e-3 → 5e-4** with unroll_length **10 → 50** and num_timesteps **20M → 60M** (lower lr = longer unroll = more steps, to match each config's expected convergence). All seed 0, `num_envs=2048`, `num_evals=15`, `env_name="UR3Pick"`, `wandb_project="UR3_PicknDrop"` (new project, case-sensitive), `camera_kwargs={"camera":"box_detail"}`, tags `cube4cm`/`inside5cm`/`rand_orient`/`lr<value>`. (Older pick policies still live in the separate `UR3_pick_ppo` project; the deployment `download_policy_from_wandb` default still points there.)
+- `sweeps/UR3Pick_sweep.jsonl` — **5 lines** (`pickInside5cm_*`): learning_rate **1e-3 → 5e-4** (1e-3, 8.75e-4, 7.5e-4, 6.25e-4, 5e-4) paired with unroll_length **10/12/15/20/25**, all **num_timesteps=20M**, seed 0, `num_envs=2048`, `num_evals=15`, `env_name="UR3Pick"`, `wandb_project="UR3_PicknDrop"` (new project, case-sensitive), `camera_kwargs={"camera":"box_detail"}`, tags `cube4cm`/`inside5cm`/`rand_orient`/`lr<value>`. (Older pick policies still live in the separate `UR3_pick_ppo` project; the deployment `download_policy_from_wandb` default still points there.)
 
 ### Trained Policies (`evaluation/downloaded_policies/`)
 - `simple_reach_policy_50hz/` — Production policy. Contains `params.msgpack` + `metadata.json`.
