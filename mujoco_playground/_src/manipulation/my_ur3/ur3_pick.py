@@ -15,6 +15,8 @@
 """UR3 pick task: 6-DOF arm + Hand-E gripper, lift a box to a target point.
 
 The mocap target is used as the lift goal (a point in the air above the box).
+The 4x4x4 cm box spawns with a random Y-axis tilt and a rotation-error reward
+encourages bringing it back to the canonical (identity) orientation while lifting.
 Mirrors the commented-out reward scaffolding of ur10pick.py.
 """
 
@@ -45,6 +47,9 @@ def default_config() -> config_dict.ConfigDict:
                 box_target=8.0,
                 # Gripper (TCP) approaches the box.
                 gripper_box=4.0,
+                # Box orientation aligns with the canonical (identity) target —
+                # gated by sticky reached_box (only active once at the box).
+                box_orient=2.0,
                 # Encourage finger opening relative to box distance (ur10pick formula).
                 finger_touch=1.0,
                 # Do not collide the gripper with the floor.
@@ -91,8 +96,14 @@ class UR3Pick(ur3_base.UR3Base):
             ]
         ]
 
+        # Canonical (identity) box orientation target, pre-flattened to the first
+        # two rows of the rotation matrix (matches the obs/reward layout).
+        self._target_xmat_flat = jp.eye(3).ravel()[:6]
+
     def reset(self, rng: jax.Array) -> State:
-        rng, rng_box, rng_target, rng_robot, rng_gripper = jax.random.split(rng, 5)
+        rng, rng_box, rng_quat, rng_target, rng_robot, rng_gripper = (
+            jax.random.split(rng, 6)
+        )
 
         # initialize box position (tight jitter around keyframe — UR3 reach ~0.5 m)
         box_pos = (
@@ -103,6 +114,14 @@ class UR3Pick(ur3_base.UR3Base):
                 maxval=jp.array([0.08, 0.08, 0.0]),
             )
             + self._init_obj_pos  # Box position from XML keyframe
+        )
+
+        # initialize box orientation — random rotation around world Y axis, ±45°.
+        theta = jax.random.uniform(
+            rng_quat, (), minval=-jp.pi / 4.0, maxval=jp.pi / 4.0
+        )
+        box_quat = jp.array(
+            [jp.cos(theta / 2.0), 0.0, jp.sin(theta / 2.0), 0.0], dtype=float
         )
 
         # initialize target position — a lift point in the air above the box
@@ -143,6 +162,7 @@ class UR3Pick(ur3_base.UR3Base):
         # -----------------------------
         init_q = jp.array(self._init_q)
         init_q = init_q.at[self._obj_qposadr : self._obj_qposadr + 3].set(box_pos)
+        init_q = init_q.at[self._obj_qposadr + 3 : self._obj_qposadr + 7].set(box_quat)
         init_q = init_q.at[self._robot_arm_qposadr].set(noisy_arm_qpos)
         init_q = init_q.at[self._robot_qposadr[-2:]].set(noisy_finger_qpos)
 
@@ -281,19 +301,11 @@ class UR3Pick(ur3_base.UR3Base):
 
         # ==============================
         # --- Rotation related computations ---
-        # # ==============================
-        # # World-frame rotation matrix of the box - JAX array (3,3) float64
-        # box_mat = data.xmat[
-        #     self._obj_body
-        # ]
-        # # World-frame rotation matrix of the mocap target - JAX array (3,3) float64
-        # target_mat = math.quat_to_mat(
-        #     data.mocap_quat[self._mocap_target]
-        # )
-        # # Rotation error between box and target - scalar JAX float64
-        # rot_err = jp.linalg.norm(
-        #     target_mat.ravel()[:6] - box_mat.ravel()[:6]
-        # )
+        # ==============================
+        # First two rows of the box world-frame rotation matrix - JAX array (6,) float64
+        box_xmat_flat = data.xmat[self._obj_body].ravel()[:6]
+        # Rotation error between box and the canonical (identity) target - scalar float64
+        rot_err = jp.linalg.norm(self._target_xmat_flat - box_xmat_flat)
 
         # ==============================
         # --- Reward terms ---
@@ -340,9 +352,14 @@ class UR3Pick(ur3_base.UR3Base):
             (gripper_box_dist < 0.02).astype(float),  # Panda threshold was 0.012
         )
 
+        # Orientation reward — only active once the gripper has reached the box
+        # (avoids rewarding orientation noise during the free-floating approach).
+        box_orient_Reward = (1 - jp.tanh(2 * rot_err)) * info["reached_box"]
+
         rewards = {
             "box_target": box_target_Reward,
             "gripper_box": gripper_box_Reward,
+            "box_orient": box_orient_Reward,
             "finger_touch": finger_touch_Reward,
             "no_floor_collision": no_floor_collision_Reward,
             "robot_target_qpos": robot_target_qpos_penalty,
@@ -360,7 +377,7 @@ class UR3Pick(ur3_base.UR3Base):
 
             # errors / distances
             "box_target_dist": box_target_dist,
-            # "rot_err": rot_err,
+            "rot_err": rot_err,
             "grip_box_dist": gripper_box_dist,
             "finger_touch_dist": finger_touch_dist,
 
@@ -372,13 +389,14 @@ class UR3Pick(ur3_base.UR3Base):
         return rewards, raw
 
     def _get_obs(self, data: mjx.Data, info: Dict[str, Any]) -> jax.Array:
-        """Returns 20D obs: [q(8), qd(6), (box-tcp)(3), (target-box)(3)]."""
+        """Returns 26D obs: [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)]."""
         obs = jp.concatenate(
             [
                 data.qpos[self._robot_qposadr],                                # 8 (6 arm + 2 finger)
                 data.qvel[self._robot_arm_qveladr],                            # 6 arm vel
                 data.xpos[self._obj_body] - data.site_xpos[self._gripper_site],  # 3 box - tcp
                 info["target_pos"] - data.xpos[self._obj_body],                # 3 target - box
+                data.xmat[self._obj_body].ravel()[:6],                         # 6 box orientation (rows 0-1)
             ]
         )
         return obs

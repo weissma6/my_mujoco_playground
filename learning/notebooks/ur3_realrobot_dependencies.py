@@ -4,10 +4,13 @@ RTDE dependencies for the UR3 + Hand-E pick task.
 Mirrors learning/notebooks/URSim_RTDE_dependencies.py (the UR10 reach backbone)
 but adapted for the UR3Pick policy:
 
-- 21D observation  [q(6), qd(6), tcp_pos(3), box_pos(3), drop_target(3)]
+- 26D observation  [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)]
+                   q = 6 arm joints + 2 finger positions; box_xmat[:6] = first
+                   two rows of the box rotation matrix (from the mocap quaternion)
 - 7D action        6 arm joint deltas + 1 Hand-E gripper delta
-- box_pos comes from a Nokov rigid body (motion_capture.mocap_dependencies)
-- drop_target is supplied by the caller (hardcoded in the pick-loop script)
+- box pose comes from a Nokov rigid body (motion_capture.mocap_dependencies):
+  xyz via get_rigid_body_xyz(), orientation via get_rigid_body_quat()
+- the lift target is supplied by the caller (hardcoded in the pick-loop script)
 - the gripper command is sent on a SEPARATE channel from servoj (servoJ only
   accepts the 6 arm joints); see send_gripper(), which is stubbed until the
   lab Hand-E wiring (Robotiq URCap register vs. tool I/O) is confirmed.
@@ -38,7 +41,7 @@ from mujoco_playground import registry
 
 
 class UR3RealRobotPick:
-    """RTDE control loop for the UR3 pick task (6-DOF arm + Hand-E, 21D obs)."""
+    """RTDE control loop for the UR3 pick task (6-DOF arm + Hand-E, 26D obs)."""
 
     def __init__(
         self,
@@ -211,10 +214,70 @@ class UR3RealRobotPick:
     # D — Policy Loading
     # =========================================================================
 
+    @staticmethod
+    def download_policy_from_wandb(
+        run_id: str,
+        out_dir: str,
+        entity: str = "weissma6-zhaw-school-of-engineering",
+        project: str = "UR3_pick_ppo",
+        force: bool = False,
+    ) -> str:
+        """Download a trained PPO policy from W&B into a load_policy_fn-ready dir.
+
+        Fetches the run's `model` artifact (params.msgpack) and writes a
+        metadata.json alongside it (env_name + network_factory from run.config,
+        obs_dim/action_dim resolved from the registry so they track the env).
+        Skips the download if out_dir already has both files unless force=True.
+        Returns out_dir.
+        """
+        import json as _json
+        import shutil
+
+        params_out = os.path.join(out_dir, "params.msgpack")
+        meta_out = os.path.join(out_dir, "metadata.json")
+        if not force and os.path.exists(params_out) and os.path.exists(meta_out):
+            print(f"[wandb] policy already present at {out_dir} (skipping download)")
+            return out_dir
+
+        import wandb
+
+        os.makedirs(out_dir, exist_ok=True)
+        api = wandb.Api()
+        run = api.run(f"{entity}/{project}/{run_id}")
+
+        policy_art = next(
+            (a for a in run.logged_artifacts() if a.type == "model"), None
+        )
+        if policy_art is None:
+            raise ValueError(f"No 'model' artifact found for run {run_id}")
+        art_dir = policy_art.download(root=os.path.join(out_dir, "_artifact"))
+        shutil.copyfile(os.path.join(art_dir, "params.msgpack"), params_out)
+
+        env_name = run.config.get("env_name", "UR3Pick")
+        env = registry.load(env_name)
+        nf = run.config.get("network_factory", {}) or {}
+        metadata = {
+            "env_name": env_name,
+            "obs_dim": int(env.observation_size),
+            "action_dim": int(env.action_size),
+            "network_factory": nf,
+            "wandb_run_id": run_id,
+            "wandb_entity": entity,
+            "wandb_project": project,
+            "action_scale": run.config.get("action_scale", 0.04),
+            "ctrl_dt": run.config.get("ctrl_dt", 0.02),
+            "episode_length": run.config.get("episode_length"),
+        }
+        with open(meta_out, "w") as f:
+            _json.dump(metadata, f, indent=2)
+        print(f"[wandb] downloaded policy -> {out_dir} "
+              f"(obs={metadata['obs_dim']}, act={metadata['action_dim']})")
+        return out_dir
+
     def load_policy_fn(self, policy_path: str, deterministic: bool = True):
         """Load a Brax PPO policy from saved files (metadata.json + params.msgpack).
 
-        Everything (env_name, obs_dim=21, action_dim=7, network architecture)
+        Everything (env_name, obs_dim=26, action_dim=7, network architecture)
         is read from the saved artifacts. Same pattern as the UR10 reach loop.
         """
         import json as _json
@@ -298,31 +361,63 @@ class UR3RealRobotPick:
         return self._fk_data.site_xpos[self._fk_tcp_id].copy()
 
     # =========================================================================
-    # F — Observation Building (21D)
+    # F — Observation Building (26D)
     # =========================================================================
+
+    @staticmethod
+    def quat_to_xmat_flat(quat: Optional[np.ndarray]) -> np.ndarray:
+        """Convert a (w, x, y, z) quaternion to the first two rows of its 3x3
+        rotation matrix, flattened to (6,). Returns identity rows if quat is None.
+        """
+        if quat is None:
+            return np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float64)
+        w, x, y, z = (float(v) for v in quat)
+        n = (w * w + x * x + y * y + z * z) ** 0.5
+        if n < 1e-9:
+            return np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float64)
+        w, x, y, z = w / n, x / n, y / n, z / n
+        mat = np.array(
+            [
+                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+            ],
+            dtype=np.float64,
+        )
+        return mat.ravel()[:6]
 
     def build_obs_from_feedback(
         self,
         fb: dict,
         box_pos: np.ndarray,
-        drop_target: np.ndarray,
+        target_pos: np.ndarray,
         tcp_pos: Optional[np.ndarray] = None,
+        box_quat: Optional[np.ndarray] = None,
         dtype=np.float32,
     ) -> np.ndarray:
-        """Build 21D obs: [q(6), qd(6), tcp_pos(3), box_pos(3), drop_target(3)].
+        """Build 26D obs to match UR3Pick._get_obs:
+        [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)].
 
+        q(8) = 6 arm joints (RTDE) + 2 finger positions (from the internal gripper
+        tracker; the real robot has no finger encoder). qd(6) = arm velocities.
         tcp_pos defaults to RTDE getActualTCPPose()[:3] (X/Y already negated in
-        receive_feedback). Pass an FK-computed tcp_pos to override.
-        Returns shape (1, 21) for batched policy input.
+        receive_feedback); pass an FK-computed tcp_pos to override. box_xmat[:6]
+        is derived from the mocap quaternion (identity rows when box_quat is None).
+        Returns shape (1, 26) for batched policy input.
         """
-        q = np.array(fb["q"], dtype=dtype)
-        qd = np.array(fb["qd"], dtype=dtype)
+        arm_q = np.array(fb["q"], dtype=dtype)
+        finger_q = np.full(2, float(self._gripper_ctrl), dtype=dtype)
+        q = np.concatenate([arm_q, finger_q])                       # 8
+        qd = np.array(fb["qd"], dtype=dtype)                        # 6 (arm)
         tcp = (np.array(fb["tcp_xyz"], dtype=dtype) if tcp_pos is None
                else np.array(tcp_pos, dtype=dtype))
         box = np.array(box_pos, dtype=dtype)
-        tgt = np.array(drop_target, dtype=dtype)
-        obs = np.concatenate([q, qd, tcp, box, tgt])
-        return obs[None, :]  # (1, 21)
+        tgt = np.array(target_pos, dtype=dtype)
+        box_to_tcp = box - tcp                                      # 3
+        target_to_box = tgt - box                                  # 3
+        box_xmat_flat = self.quat_to_xmat_flat(box_quat).astype(dtype)  # 6
+        obs = np.concatenate([q, qd, box_to_tcp, target_to_box, box_xmat_flat])
+        return obs[None, :]  # (1, 26)
 
     # =========================================================================
     # G — Control Update
@@ -412,6 +507,7 @@ class UR3RealRobotPick:
         overrun_count = 0
         in_tol_since = None
         last_box_pos = None
+        last_box_quat = None
 
         start_time = time.perf_counter()
         next_tick = start_time
@@ -431,7 +527,7 @@ class UR3RealRobotPick:
                 if use_fk_tcp:
                     tcp_xyz = self.compute_tcp_pos(q)
 
-                # 2. Box position from mocap (fall back to last good value)
+                # 2. Box pose from mocap (fall back to last good value)
                 box_pos = mocap_reader.get_rigid_body_xyz()
                 if box_pos is None:
                     box_pos = (last_box_pos if last_box_pos is not None
@@ -439,12 +535,22 @@ class UR3RealRobotPick:
                 box_pos = np.asarray(box_pos, dtype=float)
                 last_box_pos = box_pos.copy()
 
+                # Box orientation (quaternion w,x,y,z) — internal obs detail; the
+                # caller only places the box. Identity fallback if unavailable.
+                box_quat = mocap_reader.get_rigid_body_quat()
+                if box_quat is None:
+                    box_quat = last_box_quat
+                else:
+                    box_quat = np.asarray(box_quat, dtype=float)
+                    last_box_quat = box_quat.copy()
+
                 box_target_dist = float(np.linalg.norm(drop_target - box_pos))
 
-                # 3. Build observation (21D)
+                # 3. Build observation (26D)
                 obs_batch = self.build_obs_from_feedback(
                     fb, box_pos, drop_target,
-                    tcp_pos=tcp_xyz if use_fk_tcp else None, dtype=dtype,
+                    tcp_pos=tcp_xyz if use_fk_tcp else None,
+                    box_quat=box_quat, dtype=dtype,
                 )
 
                 # 4. Policy inference

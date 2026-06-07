@@ -2,10 +2,11 @@
 UR3 + Hand-E pick loop with a mocap-derived box position.
 
 Mirror of UR10_RealRobot_Reach_ONE.py, adapted for the UR3Pick policy:
-  - 21D obs [q(6), qd(6), tcp(3), box(3), drop_target(3)]
+  - 26D obs [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)]
   - 7D action (6 arm + 1 gripper)
-  - the box position is streamed live from a Nokov rigid body
-  - the drop target is hardcoded below
+  - the box pose (xyz + orientation) is streamed live from a Nokov rigid body;
+    you only place the box, the loop reads its pose every tick
+  - the lift target is hardcoded below
 
 Position the robot, place the tracked rigid body in the cameras' view, then run.
 A MuJoCo replay video + diagnostic plots + run metadata are written to results/.
@@ -77,6 +78,12 @@ POLICY_PATH = os.path.join(
     SCRIPT_DIR,
     "../../evaluation/downloaded_policies/ur3_pick_policy",
 )
+
+# W&B policy download (used only if POLICY_PATH does not already exist).
+# Fill WANDB_RUN_ID with the trained run id after the cluster job completes.
+WANDB_RUN_ID = None               # e.g. "ur3pick_baseline_20260605_..."
+WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
+WANDB_PROJECT = "UR3_pick_ppo"
 FOLDER_OUT = os.path.join(SCRIPT_DIR, "results")
 VIDEO_OUT = os.path.join(FOLDER_OUT, "ur3_pick_replay.mp4")
 PLOTS_OUT = os.path.join(FOLDER_OUT, "ur3_pick_plots.png")
@@ -114,6 +121,18 @@ print(f"Initial box (mocap): {None if box0 is None else np.round(box0, 4).tolist
 # ── Move to start ──────────────────────────────────────────────────────
 print(f"\nMoving to start pose {Q_START}")
 robot.move_to_start(Q_START, a=1.0, v=0.5, timeout_s=15.0, tol=0.01)
+
+# ── Download policy from W&B if missing ────────────────────────────────
+if not os.path.exists(os.path.join(POLICY_PATH, "params.msgpack")):
+    if WANDB_RUN_ID is None:
+        raise RuntimeError(
+            f"No policy at {POLICY_PATH} and WANDB_RUN_ID is unset. "
+            "Set WANDB_RUN_ID to download the trained policy from W&B."
+        )
+    robot.download_policy_from_wandb(
+        run_id=WANDB_RUN_ID, out_dir=POLICY_PATH,
+        entity=WANDB_ENTITY, project=WANDB_PROJECT,
+    )
 
 # ── Load policy + FK model ─────────────────────────────────────────────
 robot.load_policy_fn(policy_path=POLICY_PATH, deterministic=True)

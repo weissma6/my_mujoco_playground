@@ -78,6 +78,7 @@ class NokovRigidBodyReader:
 
         self._lock = Lock()
         self._latest_xyz: Optional[np.ndarray] = None
+        self._latest_quat: Optional[np.ndarray] = None
         self.frame_count = 0
         self.last_update_time: Optional[float] = None
 
@@ -103,9 +104,14 @@ class NokovRigidBodyReader:
             [chosen.x / 1000.0, chosen.y / 1000.0, chosen.z / 1000.0],
             dtype=np.float64,
         )
+        quat = np.array(
+            [chosen.qw, chosen.qx, chosen.qy, chosen.qz],
+            dtype=np.float64,
+        )
 
         with self._lock:
             self._latest_xyz = xyz
+            self._latest_quat = quat
             self.frame_count += 1
             self.last_update_time = time.time()
 
@@ -165,6 +171,21 @@ class NokovRigidBodyReader:
         with self._lock:
             return None if self._latest_xyz is None else self._latest_xyz.copy()
 
+    def get_rigid_body_quat(self) -> Optional[np.ndarray]:
+        """Return the latest rigid-body orientation as quaternion (w, x, y, z).
+
+        Returns None if no frame containing the tracked body has arrived yet.
+        """
+        with self._lock:
+            return None if self._latest_quat is None else self._latest_quat.copy()
+
+    def get_rigid_body_pose(self):
+        """Return (xyz[3] in meters, quat[4] as w,x,y,z), or (None, None)."""
+        with self._lock:
+            xyz = None if self._latest_xyz is None else self._latest_xyz.copy()
+            quat = None if self._latest_quat is None else self._latest_quat.copy()
+            return xyz, quat
+
     def get_stats(self) -> dict:
         with self._lock:
             return {
@@ -198,10 +219,13 @@ if __name__ == "__main__":
         for i in range(n):
             time.sleep(0.1)
             if i % 10 == 0:
-                xyz = reader.get_rigid_body_xyz()
+                xyz, quat = reader.get_rigid_body_pose()
                 if xyz is not None:
-                    print(f"[{i * 0.1:5.1f}s] rigid body xyz (m): "
-                          f"{xyz[0]:.3f} {xyz[1]:.3f} {xyz[2]:.3f}")
+                    print(f"[{i * 0.1:5.1f}s] xyz (m): "
+                          f"{xyz[0]:7.3f} {xyz[1]:7.3f} {xyz[2]:7.3f}  | "
+                          f"quat (w,x,y,z): "
+                          f"{quat[0]:6.3f} {quat[1]:6.3f} "
+                          f"{quat[2]:6.3f} {quat[3]:6.3f}")
                 else:
                     print(f"[{i * 0.1:5.1f}s] no rigid body yet")
     except KeyboardInterrupt:

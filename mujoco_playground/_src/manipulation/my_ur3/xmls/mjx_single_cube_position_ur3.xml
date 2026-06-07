@@ -5,16 +5,16 @@
 
   <worldbody>
     <!-- Box to pick (UR3 has shorter reach than UR10: pulled in from 0.7 m to 0.3 m) -->
-    <body name="box" pos="0.3 0 0.03">
+    <body name="box" pos="0.3 0 0.02">
       <freejoint/>
-      <geom type="box" name="box" size="0.02 0.02 0.03" condim="4"
+      <geom type="box" name="box" size="0.02 0.02 0.02" condim="4"
             friction="1 .03 .003" rgba="0 1 0 1"
             contype="1" conaffinity="3" solref="0.01 1"/>
     </body>
 
     <!-- Mocap target (drop location visualization; pose set per-episode by reset) -->
     <body mocap="true" name="mocap_target">
-      <geom type="box" size="0.02 0.02 0.03" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
+      <geom type="box" size="0.02 0.02 0.02" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
     </body>
   </worldbody>
 
@@ -22,19 +22,19 @@
   <keyframe>
     <key name="task_home"
       qpos="0 -2.0 1.6 -1.6 -1.5 0 0.025 0.025
-            0.3 0 0.03
+            0.3 0 0.02
             1 0 0 0"
       ctrl="0 -2.0 1.6 -1.6 -1.5 0  0.05"/>
 
     <key name="low_home"
       qpos="0 -1.7 2.25 -2.15 -1.5 -1.5  0 0
-            0.3 0 0.03
+            0.3 0 0.02
             1 0 0 0"
       ctrl="0 -1.7 2.25 -2.15 -1.5 -1.5  0"/>
 
     <key name="tucked"
       qpos="0 -2.36 2.36 -1.57 -1.57 0  0 0
-            0.3 0 0.03
+            0.3 0 0.02
             1 0 0 0"
       ctrl="0 -2.36 2.36 -1.57 -1.57 0  0"/>
   </keyframe>
