@@ -1,7 +1,7 @@
 import argparse
 import json
 import os
-from learning.notebooks.UR10_ppo import run_experiment
+from robots.UR10e.UR10_ppo import run_experiment
 
 
 def load_config(jsonl_path: str, index_1based: int) -> dict:

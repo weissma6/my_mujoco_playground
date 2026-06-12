@@ -62,8 +62,8 @@ intact.
   - `disconnect()` must call `servoStop()` + `stopScript()` before tearing
     down, and `run_policy_loop` wraps in `try/finally` with a `servoStop()`
     so a Ctrl-C doesn't leave the controller chasing the last target.
-- Output: `learning/notebooks/UR10_RealRobot_Reach_ONE.py`,
-  `run_multi_target.py`, plus a comprehensive testing notebook.
+- Output: `robots/UR10e/UR10_RealRobot_Reach_ONE.py`,
+  `learning/notebooks/run_multi_target.py`, plus a comprehensive testing notebook.
 
 ### Phase 3 — Linux-ready stack
 - Moved off macOS sockets. `ur_rtde` builds cleanly on Linux.
@@ -141,7 +141,7 @@ intact.
 - Pinned `jax[cuda]==0.6.2` (commit `e89fc24`) for cluster GPU compat.
 
 ### Phase 7 — UR3 real-robot scaffolding
-- `learning/notebooks/ur3_realrobot_dependencies.py` — `UR3RealRobotPick`
+- `robots/UR3e/ur3_realrobot_dependencies.py` — `UR3RealRobotPick`
   class, mirror of `URSim_RTDE_dependencies.py`. Differences:
   - `build_obs_from_feedback(fb, box_pos, drop_target, tcp_pos)` builds
     the 21D obs; `box_pos` comes from `NokovRigidBodyReader` each tick

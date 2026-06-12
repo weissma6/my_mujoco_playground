@@ -1,19 +1,19 @@
 """
 RTDE dependencies for the UR3 + Hand-E pick task.
 
-Mirrors learning/notebooks/URSim_RTDE_dependencies.py (the UR10 reach backbone)
+Mirrors robots/URSim/URSim_RTDE_dependencies.py (the UR10 reach backbone)
 but adapted for the UR3Pick policy:
 
 - 26D observation  [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)]
                    q = 6 arm joints + 2 finger positions; box_xmat[:6] = first
                    two rows of the box rotation matrix (from the mocap quaternion)
 - 7D action        6 arm joint deltas + 1 Hand-E gripper delta
-- box pose comes from a Nokov rigid body (motion_capture.mocap_dependencies):
+- box pose comes from a Nokov rigid body (motion_capture.mymocap.mocap_dependencies):
   xyz via get_rigid_body_xyz(), orientation via get_rigid_body_quat()
 - the lift target is supplied by the caller (hardcoded in the pick-loop script)
 - the gripper command is sent on a SEPARATE channel from servoj (servoJ only
-  accepts the 6 arm joints); see send_gripper(), which is stubbed until the
-  lab Hand-E wiring (Robotiq URCap register vs. tool I/O) is confirmed.
+  accepts the 6 arm joints); see send_gripper(), which drives the Hand-E via the
+  Robotiq URCapX XML-RPC server (PolyScope X, http://<host>:49999/, slaveId 9).
 
 The UR10 reach files are left untouched; this is a sibling, not a replacement.
 """
@@ -47,9 +47,17 @@ class UR3RealRobotPick:
         self,
         host: str = "127.0.0.1",
         port_rtde: int = 30004,
+        use_ext_urcap: bool = False,
+        ur_cap_port: int = 50002,
     ):
         self.host = host
         self.port_rtde = port_rtde
+        # PolyScope X does not run ur_rtde's headless uploaded control script;
+        # set use_ext_urcap=True to drive the arm through the External Control
+        # URCapX instead (a program with an External Control node, configured to
+        # this PC's IP + ur_cap_port, must be PLAYING on the pendant).
+        self._use_ext_urcap = bool(use_ext_urcap)
+        self._ur_cap_port = int(ur_cap_port)
         self._receiver: Optional[rtde_receive.RTDEReceiveInterface] = None
         self._control: Optional[rtde_control.RTDEControlInterface] = None
         self._policy_fn = None
@@ -60,6 +68,19 @@ class UR3RealRobotPick:
         self._gripper_ctrl: float = 0.0
         self._gripper_lo: float = 0.0
         self._gripper_hi: float = 0.05
+        # Real Hand-E gripper. On PolyScope X the Robotiq URCapX exposes control
+        # via an XML-RPC server (HTTP :49999), NOT the legacy 63352 socket; this
+        # Hand-E is slaveId 9 ("Gripper ID 1" in the UI). Units are percent.
+        self._gripper = None  # xmlrpc.client.ServerProxy once connected
+        self._gripper_xmlrpc_port: int = 49999
+        self._gripper_slave_id: int = 9
+        self._gripper_speed_pct: int = 100
+        self._gripper_force_pct: int = 50
+        # Native percent at the open / closed extremes. Default assumes the
+        # Robotiq register direction (0 % = open, 100 % = closed); confirm with
+        # the open/close test (notebook chunk 3b) and flip these two if needed.
+        self._gripper_open_pct: float = 0.0
+        self._gripper_closed_pct: float = 100.0
 
     # =========================================================================
     # A — RTDE Connection & Feedback
@@ -69,10 +90,25 @@ class UR3RealRobotPick:
         if self._receiver is None:
             self._receiver = rtde_receive.RTDEReceiveInterface(self.host)
         if self._control is None:
-            self._control = rtde_control.RTDEControlInterface(self.host)
+            if self._use_ext_urcap:
+                # External Control URCapX path (PolyScope X): ur_rtde does NOT
+                # upload a script; it waits for the pendant's External Control
+                # program (set to this PC's IP + ur_cap_port) to connect. Press
+                # Play on the pendant for this constructor to return.
+                flags = rtde_control.RTDEControlInterface.FLAG_USE_EXT_UR_CAP
+                self._control = rtde_control.RTDEControlInterface(
+                    self.host, -1.0, flags, self._ur_cap_port
+                )
+            else:
+                # Default: ur_rtde uploads + runs its own control script
+                # (PolyScope 5 / CB-series, requires Remote Control mode).
+                self._control = rtde_control.RTDEControlInterface(self.host)
         return self._receiver
 
     def disconnect(self):
+        # XML-RPC ServerProxy holds no persistent socket; just drop the handle
+        # and leave the gripper activated on the controller.
+        self._gripper = None
         if self._control is not None:
             try:
                 self._control.servoStop()
@@ -149,27 +185,133 @@ class UR3RealRobotPick:
             float(gain),
         )
 
+    def connect_gripper(self, slave_id: int = None, speed: int = None,
+                        force: int = None, reset: bool = False):
+        """Connect + activate the real Hand-E via the Robotiq URCapX XML-RPC API.
+
+        PolyScope X exposes gripper control over an XML-RPC server on
+        http://<host>:49999/ (NOT the legacy 63352 socket). Requires the Robotiq
+        URCapX installed/running on the pendant and the gripper scanned. Errors
+        propagate so a missing server fails loudly rather than silently.
+
+        (On a PolyScope 5 / CB-series robot the channel is instead the socket on
+        port 63352 — see robotiq_gripper.py, the fallback client for that path.)
+        """
+        import xmlrpc.client
+
+        if slave_id is not None:
+            self._gripper_slave_id = int(slave_id)
+        sid = self._gripper_slave_id
+        g = xmlrpc.client.ServerProxy(
+            f"http://{self.host}:{self._gripper_xmlrpc_port}/"
+        )
+        if reset:
+            g.activate([sid], True)
+        else:
+            g.activateIfRequired([sid])
+        if speed is not None:
+            self._gripper_speed_pct = int(speed)
+        if force is not None:
+            self._gripper_force_pct = int(force)
+        g.setSpeed([sid], self._gripper_speed_pct)
+        g.setForce([sid], self._gripper_force_pct)
+        self._gripper = g
+        print(
+            f"[gripper] XML-RPC {self.host}:{self._gripper_xmlrpc_port} "
+            f"slaveId={sid} connected={g.isGripperConnected(sid)} "
+            f"activated={g.isGripperActivated(sid)}"
+        )
+        return g
+
     def send_gripper(self, norm_cmd: float):
         """Send a normalized [0,1] gripper command to the real Hand-E.
 
-        0.0 = fully closed, 1.0 = fully open (matches the sim tendon ctrl
-        mapped from [0, 0.05]).
+        0.0 = fully closed (sim tendon 0), 1.0 = fully open (sim tendon 0.05).
+        Maps norm -> native percent via the open/closed-pct constants, then
+        calls the URCapX move(). servoJ controls only the 6 arm joints, so the
+        gripper rides this separate XML-RPC channel.
 
-        STUB: servoJ controls only the 6 arm joints, so the Hand-E command
-        must go on a separate channel. On the lab UR3 this is typically the
-        Robotiq URCap reading an RTDE register, or tool digital/analog I/O.
-        Wire one of these up before running on hardware, e.g.:
+        NOTE: the URCapX XML-RPC server should not be polled/commanded above
+        ~10 Hz; rate-limit calls in tight loops (see run_policy_loop note).
 
-            # via RTDE IO register (Robotiq URCap listening on it):
-            # self._io.setInputIntRegister(18, int(norm_cmd * 255))
-
-        On URSim there is no gripper, so the pick-loop script passes a no-op
-        for `gripper_fn` during dry runs.
+        Requires connect_gripper() first (raises otherwise).
         """
-        raise NotImplementedError(
-            "send_gripper() is unwired. Provide a gripper_fn to run_policy_loop "
-            "(or override this method) matching the lab Hand-E setup."
+        if self._gripper is None:
+            raise RuntimeError(
+                "Gripper not connected. Call connect_gripper() before "
+                "send_gripper()/open_gripper()/close_gripper()."
+            )
+        norm = float(np.clip(norm_cmd, 0.0, 1.0))
+        # norm 1.0 -> open_pct, norm 0.0 -> closed_pct (linear).
+        pct = self._gripper_closed_pct + norm * (
+            self._gripper_open_pct - self._gripper_closed_pct
         )
+        pct = float(np.clip(pct, 0.0, 100.0))
+        self._gripper.move([self._gripper_slave_id], pct, 0, [0] * 16)
+
+    def open_gripper(self):
+        """Fully open the Hand-E (sim tendon 0.05; norm 1.0).
+
+        Uses the direction-independent openGripper() so it is correct even
+        before the open/closed-pct mapping is confirmed.
+        """
+        if self._gripper is None:
+            raise RuntimeError("Gripper not connected. Call connect_gripper() first.")
+        self._gripper.openGripper(self._gripper_slave_id)
+
+    def close_gripper(self):
+        """Fully close the Hand-E (sim tendon 0; norm 0.0).
+
+        Uses the direction-independent closeGripper() (see open_gripper()).
+        """
+        if self._gripper is None:
+            raise RuntimeError("Gripper not connected. Call connect_gripper() first.")
+        self._gripper.closeGripper(self._gripper_slave_id)
+
+    def read_gripper_state(self) -> Dict[str, float]:
+        """Read back the real Hand-E state via XML-RPC (no motion command sent).
+
+        Returns the raw native values plus a mapping onto the sim finger range so
+        we can feed real gripper feedback into the 26D obs (UR3Pick uses 2 finger
+        positions, each in [0, 0.025]).
+
+        Raw native values (URCapX, units = percent):
+          pos_pct    getCurrentPosition (0-100)
+          obj_flag   getObjectDetectionFlag (0 none, 1 on-open, 2 on-close)
+          fault      getFault (0 = ok)
+          activated  isGripperActivated (bool)
+          connected  isGripperConnected (bool)
+
+        Derived (sim convention 0 = closed, 0.025 = open per finger), using the
+        open/closed-pct constants:
+          open_frac    1.0 fully open ... 0.0 fully closed
+          sim_finger   open_frac * 0.025  (per-finger sim position)
+        """
+        if self._gripper is None:
+            raise RuntimeError(
+                "Gripper not connected. Call connect_gripper() before "
+                "read_gripper_state()."
+            )
+        g = self._gripper
+        sid = self._gripper_slave_id
+        pos_pct = float(g.getCurrentPosition(sid, 0, 0, 0, 0, 0))
+        obj_flag = int(g.getObjectDetectionFlag(sid))
+        fault = int(g.getFault(sid))
+        activated = bool(g.isGripperActivated(sid))
+        connected = bool(g.isGripperConnected(sid))
+        span = self._gripper_open_pct - self._gripper_closed_pct
+        open_frac = float(
+            np.clip((pos_pct - self._gripper_closed_pct) / span, 0.0, 1.0)
+        ) if span != 0 else 0.0
+        return {
+            "pos_pct": pos_pct,
+            "obj_flag": float(obj_flag),
+            "fault": float(fault),
+            "activated": float(activated),
+            "connected": float(connected),
+            "open_frac": open_frac,
+            "sim_finger": open_frac * 0.025,
+        }
 
     # =========================================================================
     # C — Movement Helpers
@@ -508,6 +650,12 @@ class UR3RealRobotPick:
         in_tol_since = None
         last_box_pos = None
         last_box_quat = None
+        # The URCapX XML-RPC server must not be commanded above ~10 Hz, so the
+        # gripper is sent at most every gripper_min_dt seconds even though the
+        # arm loop runs at control_hz (e.g. 50 Hz).
+        gripper_min_dt = 0.1
+        last_gripper_t = -1.0
+        last_gripper_norm = None
 
         start_time = time.perf_counter()
         next_tick = start_time
@@ -571,12 +719,19 @@ class UR3RealRobotPick:
                     a=servoj_a, v=servoj_v, t=5 * dt,
                     lookahead_time=lookahead_time, gain=gain,
                 )
-                try:
-                    gripper_fn(gripper_norm)
-                except NotImplementedError:
-                    if step_count == 0 and debug_print:
-                        print("\n[warn] gripper unwired (send_gripper stub); "
-                              "arm runs, gripper ignored.")
+                # Gripper on a separate (XML-RPC) channel, rate-limited to
+                # <=10 Hz and only re-sent when the command changes meaningfully.
+                if (loop_start - last_gripper_t >= gripper_min_dt and
+                        (last_gripper_norm is None
+                         or abs(gripper_norm - last_gripper_norm) > 1e-3)):
+                    try:
+                        gripper_fn(gripper_norm)
+                        last_gripper_t = loop_start
+                        last_gripper_norm = gripper_norm
+                    except Exception as e:  # noqa: BLE001
+                        if step_count == 0 and debug_print:
+                            print(f"\n[warn] gripper command failed: {e}; "
+                                  "arm runs, gripper ignored.")
                 t1_send = time.perf_counter()
 
                 # 7. Timing control

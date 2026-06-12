@@ -25,6 +25,11 @@ import jax
 import numpy as np
 import pandas as pd
 
+# URSimRTDESimpleReach lives in robots/URSim/ (this script is in robots/random_sample_code/).
+sys.path.insert(
+    0,
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "URSim"),
+)
 from URSim_RTDE_dependencies import URSimRTDESimpleReach
 
 # ===========================================================================

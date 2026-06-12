@@ -31,7 +31,7 @@ from ur3_realrobot_dependencies import UR3RealRobotPick
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "../.."))
-from motion_capture.mocap_dependencies import NokovRigidBodyReader
+from motion_capture.mymocap.mocap_dependencies import NokovRigidBodyReader
 
 # ===========================================================================
 # CONFIGURATION
@@ -47,7 +47,8 @@ Q_START = [0, -1.7, 2.25, -2.15, -1.5, -1.5]
 
 # Motion capture
 MOCAP_SERVER_IP = "10.1.1.198"
-MOCAP_RIGID_BODY_ID = 1           # ID from test_mocap_connection.py; None = first body
+MOCAP_RIGID_BODY_NAME = "CubeInCube"  # streamed rigid-body name; None = first body
+MOCAP_RIGID_BODY_ID = None        # optional override by integer id (takes precedence)
 
 # Gripper: True wires send_gripper(); False = no-op (URSim dry-run / arm-only test)
 ENABLE_GRIPPER = False
@@ -108,8 +109,13 @@ if not robot.is_connected():
 robot.print_feedback()
 
 # ── Connect mocap ──────────────────────────────────────────────────────
-print(f"\nConnecting to mocap {MOCAP_SERVER_IP} (rigid body {MOCAP_RIGID_BODY_ID}) ...")
-mocap = NokovRigidBodyReader(MOCAP_SERVER_IP, rigid_body_id=MOCAP_RIGID_BODY_ID)
+_body_label = MOCAP_RIGID_BODY_ID if MOCAP_RIGID_BODY_ID is not None else MOCAP_RIGID_BODY_NAME
+print(f"\nConnecting to mocap {MOCAP_SERVER_IP} (rigid body {_body_label}) ...")
+mocap = NokovRigidBodyReader(
+    MOCAP_SERVER_IP,
+    rigid_body_id=MOCAP_RIGID_BODY_ID,
+    rigid_body_name=MOCAP_RIGID_BODY_NAME,
+)
 if not mocap.start(timeout=5.0):
     raise RuntimeError(
         "Mocap failed to connect. Check the server IP, that 'SDK Enabled' is "
@@ -198,6 +204,7 @@ robot.save_run_metadata(
     drop_target=DROP_TARGET,
     q_start=Q_START,
     mocap_server_ip=MOCAP_SERVER_IP,
+    mocap_rigid_body_name=MOCAP_RIGID_BODY_NAME,
     mocap_rigid_body_id=MOCAP_RIGID_BODY_ID,
     enable_gripper=ENABLE_GRIPPER,
     reach_tol=REACH_TOL,
