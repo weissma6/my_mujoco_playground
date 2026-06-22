@@ -32,12 +32,22 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "../.."))
 from motion_capture.mymocap.mocap_dependencies import NokovRigidBodyReader
+from robots.hande.HandE_dependency import HandEGripper
 
 # ===========================================================================
 # CONFIGURATION
 # ===========================================================================
 
 ROBOT_IP = "192.168.1.2"          # real UR3; URSim = "127.0.0.1"
+
+# Arm control path. On PolyScope X the headless script ur_rtde normally uploads
+# does NOT run; set USE_EXT_URCAP=True to drive the arm via the External Control
+# URCapX (port UR_CAP_PORT). robot.connect() then BLOCKS until an External Control
+# program (Host IP = this PC, port = UR_CAP_PORT) is PLAYING on the pendant with the
+# robot in Remote Control — i.e. pressing Play on the pendant is the robot-side
+# "go" gate. Leave False for the URSim dry-run (script-upload path, no gate).
+USE_EXT_URCAP = False
+UR_CAP_PORT = 50002
 
 # Drop target (where to bring the box). UR3-reachable workspace.
 DROP_TARGET = [0.30, 0.10, 0.15]
@@ -50,8 +60,13 @@ MOCAP_SERVER_IP = "10.1.1.198"
 MOCAP_RIGID_BODY_NAME = "CubeInCube"  # streamed rigid-body name; None = first body
 MOCAP_RIGID_BODY_ID = None        # optional override by integer id (takes precedence)
 
-# Gripper: True wires send_gripper(); False = no-op (URSim dry-run / arm-only test)
+# Gripper: True drives the real Hand-E via the HandEGripper wrapper (Robotiq URCapX
+# XML-RPC, PolyScope X); False = no-op (URSim dry-run / arm-only test).
 ENABLE_GRIPPER = False
+GRIPPER_PORT = 49999              # Robotiq URCapX XML-RPC server (PolyScope X)
+GRIPPER_SLAVE_ID = 9             # this Hand-E = slaveId 9 ("Gripper ID 1")
+GRIPPER_SPEED_PCT = 100
+GRIPPER_FORCE_PCT = 50
 
 # Convergence
 REACH_TOL = 0.03                  # 3 cm (box-to-target)
@@ -99,7 +114,13 @@ os.makedirs(FOLDER_OUT, exist_ok=True)
 
 # ── Connect robot ──────────────────────────────────────────────────────
 print(f"Connecting to robot {ROBOT_IP} ...")
-robot = UR3RealRobotPick(host=ROBOT_IP)
+robot = UR3RealRobotPick(
+    host=ROBOT_IP, use_ext_urcap=USE_EXT_URCAP, ur_cap_port=UR_CAP_PORT,
+)
+if USE_EXT_URCAP:
+    print(f"  Waiting for the go from the robot: press Play on the pendant "
+          f"(External Control → Host IP = this PC, port {UR_CAP_PORT}, "
+          f"Remote Control). connect() blocks until it is PLAYING ...")
 robot.connect()
 if not robot.is_connected():
     raise RuntimeError(
@@ -146,7 +167,19 @@ if USE_FK_TCP:
     robot.init_fk_model(MODEL_PATH)
 
 # ── Gripper wiring ─────────────────────────────────────────────────────
-gripper_fn = None if ENABLE_GRIPPER else (lambda norm: None)
+# run_policy_loop passes gripper_norm in [0,1] (0=open, 1=closed); the policy's
+# tendon-ctrl span [0,0.05] maps to per-finger [0,0.025] m, so norm*0.025 is the
+# sim finger value the wrapper expects. ENABLE_GRIPPER=False keeps the dry-run no-op.
+gripper = None
+if ENABLE_GRIPPER:
+    gripper = HandEGripper(
+        ROBOT_IP, port=GRIPPER_PORT, slave_id=GRIPPER_SLAVE_ID,
+        speed_pct=GRIPPER_SPEED_PCT, force_pct=GRIPPER_FORCE_PCT,
+    )
+    gripper.connect()
+    gripper_fn = lambda norm: gripper.command(norm * 0.025)  # noqa: E731
+else:
+    gripper_fn = lambda norm: None  # noqa: E731
 
 target = np.array(DROP_TARGET, dtype=np.float32)
 print(f"\nDrop target : {target.tolist()}")
@@ -224,5 +257,7 @@ robot.save_run_metadata(
 
 # ── Disconnect ─────────────────────────────────────────────────────────
 mocap.stop()
+if gripper is not None:
+    gripper.disconnect()
 robot.disconnect()
 print("Done.")
