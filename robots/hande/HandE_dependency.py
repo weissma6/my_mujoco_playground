@@ -17,10 +17,13 @@ Direction conventions (verified, see the module CLAUDE.md / the mapping notebook
     direction is the one bit not provable from code; confirm/flip NATIVE_OPEN_PCT /
     NATIVE_CLOSED_PCT with the open/close test in the mapping notebook.
 
-(NOTE: the inline send_gripper() in ur3_realrobot_dependencies.py uses an INVERTED
-norm->percent mapping with a "0 = closed" docstring; that is a latent bug in that
-file. This wrapper gets the direction right and the pick loop routes the gripper
-through here instead.)
+This class is the SINGLE source of gripper truth. UR3RealRobotPick
+(ur3_realrobot_dependencies.py) does NOT re-implement any gripper logic: its
+connect_gripper / send_gripper / open_gripper / close_gripper / read_gripper_state
+are thin delegators that build and drive an instance of this class. The arm and
+the gripper are two independent connection channels:
+  - ARM     -> the External Control URCap over RTDE (PolyScope X, port 50002);
+  - GRIPPER -> this XML-RPC server (port 49999).
 """
 
 import xmlrpc.client
