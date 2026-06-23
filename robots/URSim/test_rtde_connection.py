@@ -1,7 +1,7 @@
 """Quick test: connect to real robot via RTDE and print state."""
 import rtde_receive
 
-ROBOT_IP = "192.168.1.2"
+ROBOT_IP = "192.168.1.4"
 
 r = rtde_receive.RTDEReceiveInterface(ROBOT_IP)
 print("Connected!")

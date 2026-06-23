@@ -84,6 +84,14 @@ class UR3RealRobotPick:
         self._gripper_slave_id: int = 9
         self._gripper_speed_pct: int = 100
         self._gripper_force_pct: int = 50
+        # Base-frame calibration (mocap world -> robot base). Auto-loaded from
+        # calibration/base_frame_calibration.json if present; applied to every
+        # mocap reading so the box pose lands in the policy frame (see
+        # mocap_pos_to_base / run_policy_loop). None => mocap used raw (identity).
+        self._cal_p0 = None     # base origin in world
+        self._cal_R0T = None    # world->base rotation (R0.T)
+        self._cal_q_w2s = None  # world->sim-base quaternion (incl. the X/Y negation)
+        self.load_base_calibration()
 
     # =========================================================================
     # A — RTDE Connection & Feedback
@@ -110,7 +118,7 @@ class UR3RealRobotPick:
 
     def connect(self) -> rtde_receive.RTDEReceiveInterface:
         """Back-compat alias for connect_arm() (used by receive_feedback,
-        send_movej, move_to_start, and the pick-loop / calibration scripts)."""
+        send_movej, and the pick-loop / calibration scripts)."""
         return self.connect_arm()
 
     def disconnect(self):
@@ -172,12 +180,18 @@ class UR3RealRobotPick:
     # B — Motion Commands via RTDEControlInterface
     # =========================================================================
 
-    def send_movej(self, q, a=0.4, v=0.4, textmsg=None):
-        """Asynchronous moveJ via rtde_control."""
+    def send_movej(self, q, a=0.4, v=0.4, asynchronous=True, textmsg=None):
+        """moveJ via rtde_control.
+
+        asynchronous=True returns immediately (for sweeps that record while the
+        joint travels); asynchronous=False blocks until the controller reports the
+        move converged (repositioning — what the old move_to_start poll loop did).
+        NOTE: moveJ arg order is (q, speed, acceleration) — v BEFORE a. Don't flip.
+        """
         self.connect()
         if textmsg is not None:
             print(f"[movej] {textmsg}")
-        self._control.moveJ(list(map(float, q)), float(v), float(a), True)
+        self._control.moveJ(list(map(float, q)), float(v), float(a), bool(asynchronous))
 
     def send_servoj(self, q, a=1.4, v=1.05, t=0.04, lookahead_time=0.1, gain=300,
                     textmsg=None):
@@ -296,33 +310,6 @@ class UR3RealRobotPick:
 
     def reached_joint_target(self, q_target, tol=0.05) -> bool:
         return self.joint_error_norm(q_target) < tol
-
-    def move_to_start(self, q_start, a=0.5, v=0.1, timeout_s=20.0, tol=0.01,
-                      check_hz=5.0, debug_print=True):
-        """Send movej to q_start and poll RTDE until converged."""
-        dt = 1.0 / float(check_hz)
-        q_start = np.asarray(q_start, dtype=float)
-
-        if debug_print:
-            print(f"Moving to start pose with movej (a={a}, v={v})...")
-
-        self.send_movej(q_start.tolist(), a=a, v=v, textmsg="go_start")
-        t0 = time.perf_counter()
-
-        while True:
-            q_now = np.array(self.receive_feedback()["q"], dtype=float)
-            err = np.linalg.norm(q_now - q_start)
-            if debug_print:
-                print(f"\r  err={err:.4f}  q={np.round(q_now, 3)}", end="", flush=True)
-            if err < tol:
-                break
-            if (time.perf_counter() - t0) > timeout_s:
-                print("\n  Pre-position timeout!")
-                break
-            time.sleep(dt)
-
-        if debug_print:
-            print(f"\n  Reached start in {time.perf_counter() - t0:.2f}s")
 
     # =========================================================================
     # D — Policy Loading
@@ -534,6 +521,79 @@ class UR3RealRobotPick:
         return obs[None, :]  # (1, 26)
 
     # =========================================================================
+    # F2 — Mocap base-frame calibration (mocap world -> policy/base frame)
+    # =========================================================================
+
+    # Raw UR base frame -> MuJoCo/sim base frame: the same X/Y negation
+    # receive_feedback() applies to the TCP (the sim base is 180 deg about Z from
+    # the real UR base). The calibration maps mocap -> RAW base (its probes use the
+    # raw TCP pose), so this negation is needed for the box to share the TCP frame.
+    _XY_NEG = np.array([-1.0, -1.0, 1.0])
+
+    def load_base_calibration(self, json_path: Optional[str] = None) -> bool:
+        """Load base_frame_calibration.json (mocap world -> robot base).
+
+        Default path: calibration/base_frame_calibration.json next to this file.
+        Sets the transform applied to every mocap reading. If the file is absent,
+        the mocap is used raw (identity) and a note is printed. Returns True if a
+        calibration was loaded.
+        """
+        import json as _json
+
+        if json_path is None:
+            json_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "calibration", "base_frame_calibration.json",
+            )
+        if not os.path.exists(json_path):
+            print(f"[cal] no base-frame calibration at {json_path}; mocap used raw.")
+            self._cal_p0 = self._cal_R0T = self._cal_q_w2s = None
+            return False
+        with open(json_path) as f:
+            cal = _json.load(f)
+        self._cal_p0 = np.array(cal["translation_m"], dtype=float)
+        self._cal_R0T = np.array(cal["rotation_matrix"], dtype=float).T  # world->base
+        # world->sim quaternion = q_D (x) conj(q_R0): conj(q_R0) is world->raw-base
+        # rotation, q_D = 180 deg about Z folds in the X/Y negation so orientation
+        # lands in the same (sim) frame as the negated TCP.
+        qw, qx, qy, qz = (float(v) for v in cal["rotation_quat_wxyz"])
+        q_r0_conj = np.array([qw, -qx, -qy, -qz])
+        q_d = np.array([0.0, 0.0, 0.0, 1.0])  # 180 deg about Z
+        self._cal_q_w2s = self._quat_mult(q_d, q_r0_conj)
+        print(f"[cal] loaded base-frame calibration from {json_path}")
+        return True
+
+    @staticmethod
+    def _quat_mult(a, b) -> np.ndarray:
+        """Hamilton product of two (w, x, y, z) quaternions."""
+        aw, ax, ay, az = a
+        bw, bx, by, bz = b
+        return np.array([
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ], dtype=float)
+
+    def mocap_pos_to_base(self, p_world):
+        """Map a mocap-world position into the policy/base frame: apply the
+        calibration (world->raw base) then the X/Y negation (raw->sim base, to
+        match the TCP). Identity if no calibration is loaded or p_world is None.
+        """
+        if self._cal_R0T is None or p_world is None:
+            return p_world
+        p_raw = self._cal_R0T @ (np.asarray(p_world, dtype=float) - self._cal_p0)
+        return p_raw * self._XY_NEG
+
+    def mocap_quat_to_base(self, quat_world):
+        """Map a mocap-world (w, x, y, z) quaternion into the policy/base frame.
+        Identity if no calibration is loaded or quat_world is None.
+        """
+        if self._cal_q_w2s is None or quat_world is None:
+            return quat_world
+        return self._quat_mult(self._cal_q_w2s, np.asarray(quat_world, dtype=float))
+
+    # =========================================================================
     # G — Control Update
     # =========================================================================
 
@@ -647,21 +707,25 @@ class UR3RealRobotPick:
                 if use_fk_tcp:
                     tcp_xyz = self.compute_tcp_pos(q)
 
-                # 2. Box pose from mocap (fall back to last good value)
+                # 2. Box pose from mocap, mapped into the policy/base frame via the
+                # base-frame calibration (identity if none loaded). Fall back to the
+                # last good value.
                 box_pos = mocap_reader.get_rigid_body_xyz()
+                if box_pos is not None:
+                    box_pos = self.mocap_pos_to_base(box_pos)   # mocap world -> base
                 if box_pos is None:
                     box_pos = (last_box_pos if last_box_pos is not None
                                else drop_target.copy())
                 box_pos = np.asarray(box_pos, dtype=float)
                 last_box_pos = box_pos.copy()
 
-                # Box orientation (quaternion w,x,y,z) — internal obs detail; the
-                # caller only places the box. Identity fallback if unavailable.
+                # Box orientation (quaternion w,x,y,z), also mapped to the base
+                # frame. Identity fallback if unavailable.
                 box_quat = mocap_reader.get_rigid_body_quat()
                 if box_quat is None:
                     box_quat = last_box_quat
                 else:
-                    box_quat = np.asarray(box_quat, dtype=float)
+                    box_quat = self.mocap_quat_to_base(np.asarray(box_quat, dtype=float))
                     last_box_quat = box_quat.copy()
 
                 box_target_dist = float(np.linalg.norm(drop_target - box_pos))

@@ -147,7 +147,7 @@ print(f"Initial box (mocap): {None if box0 is None else np.round(box0, 4).tolist
 
 # ── Move to start ──────────────────────────────────────────────────────
 print(f"\nMoving to start pose {Q_START}")
-robot.move_to_start(Q_START, a=1.0, v=0.5, timeout_s=15.0, tol=0.01)
+robot.send_movej(Q_START, a=1.0, v=0.5, asynchronous=False)  # blocking moveJ
 
 # ── Download policy from W&B if missing ────────────────────────────────
 if not os.path.exists(os.path.join(POLICY_PATH, "params.msgpack")):
