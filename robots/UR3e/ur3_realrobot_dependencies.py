@@ -354,20 +354,45 @@ class UR3RealRobotPick:
         art_dir = policy_art.download(root=os.path.join(out_dir, "_artifact"))
         shutil.copyfile(os.path.join(art_dir, "params.msgpack"), params_out)
 
-        env_name = run.config.get("env_name", "UR3Pick")
+        # Prefer the inference_config.json shipped inside the artifact (carries the
+        # real network_factory + obs/action sizes); fall back to run.config + the
+        # registry for older runs that predate self-describing artifacts.
+        inf_cfg_path = os.path.join(art_dir, "inference_config.json")
+        inf_cfg = {}
+        if os.path.exists(inf_cfg_path):
+            with open(inf_cfg_path) as f:
+                inf_cfg = _json.load(f)
+
+        env_name = inf_cfg.get("env_name") or run.config.get("env_name", "UR3Pick")
         env = registry.load(env_name)
-        nf = run.config.get("network_factory", {}) or {}
+        reg_obs, reg_act = int(env.observation_size), int(env.action_size)
+
+        if inf_cfg:
+            nf = inf_cfg.get("network_factory", {}) or {}
+            obs_dim = int(inf_cfg.get("observation_size", reg_obs))
+            action_dim = int(inf_cfg.get("action_size", reg_act))
+            if obs_dim != reg_obs or action_dim != reg_act:
+                print(f"[wandb] WARNING: artifact obs/act ({obs_dim},{action_dim}) "
+                      f"!= env {env_name} ({reg_obs},{reg_act}); using artifact dims")
+        else:
+            nf = run.config.get("network_factory", {}) or {}
+            obs_dim, action_dim = reg_obs, reg_act
+            if not nf:
+                print("[wandb] WARNING: no network_factory in artifact or run.config; "
+                      "load may fail with a params shape mismatch")
         metadata = {
             "env_name": env_name,
-            "obs_dim": int(env.observation_size),
-            "action_dim": int(env.action_size),
+            "obs_dim": obs_dim,
+            "action_dim": action_dim,
             "network_factory": nf,
             "wandb_run_id": run_id,
             "wandb_entity": entity,
             "wandb_project": project,
-            "action_scale": run.config.get("action_scale", 0.04),
-            "ctrl_dt": run.config.get("ctrl_dt", 0.02),
-            "episode_length": run.config.get("episode_length"),
+            "action_scale": inf_cfg.get("action_scale",
+                                        run.config.get("action_scale", 0.04)),
+            "ctrl_dt": inf_cfg.get("ctrl_dt", run.config.get("ctrl_dt", 0.02)),
+            "episode_length": inf_cfg.get("episode_length",
+                                          run.config.get("episode_length")),
         }
         with open(meta_out, "w") as f:
             _json.dump(metadata, f, indent=2)

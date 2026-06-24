@@ -18,6 +18,7 @@ For a URSim dry-run set ROBOT_IP=127.0.0.1 and ENABLE_GRIPPER=False.
 
 import os
 import platform
+import time
 
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
 if platform.system() == "Darwin":
@@ -31,14 +32,14 @@ from ur3_realrobot_dependencies import UR3RealRobotPick
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "../.."))
-from motion_capture.mymocap.mocap_dependencies import NokovRigidBodyReader
+from motion_capture.mymocap.vrpn_dependencies import VRPNRigidBodyReader
 from robots.hande.HandE_dependency import HandEGripper
 
 # ===========================================================================
 # CONFIGURATION
 # ===========================================================================
 
-ROBOT_IP = "192.168.1.2"          # real UR3; URSim = "127.0.0.1"
+ROBOT_IP = "192.168.1.4"          # real UR3e (PolyScope X); URSim = "127.0.0.1"
 
 # Arm control path. On PolyScope X the headless script ur_rtde normally uploads
 # does NOT run; set USE_EXT_URCAP=True to drive the arm via the External Control
@@ -46,23 +47,24 @@ ROBOT_IP = "192.168.1.2"          # real UR3; URSim = "127.0.0.1"
 # program (Host IP = this PC, port = UR_CAP_PORT) is PLAYING on the pendant with the
 # robot in Remote Control — i.e. pressing Play on the pendant is the robot-side
 # "go" gate. Leave False for the URSim dry-run (script-upload path, no gate).
-USE_EXT_URCAP = False
+USE_EXT_URCAP = True
 UR_CAP_PORT = 50002
 
 # Drop target (where to bring the box). UR3-reachable workspace.
-DROP_TARGET = [0.30, 0.10, 0.15]
+DROP_TARGET = [0.45, -0.10, 0.10]
 
-# Start pose — UR3 "low_home" keyframe arm angles from mjx_single_cube_position_ur3.xml
-Q_START = [0, -1.7, 2.25, -2.15, -1.5, -1.5]
+# Start pose — UR3 "task_home" keyframe arm angles from mjx_single_cube_position_ur3.xml
+# (gripper is opened separately below, since servoJ/moveJ only covers the 6 arm joints)
+Q_START = [0, -2.0, 1.6, -1.6, -1.5, 0]
 
 # Motion capture
 MOCAP_SERVER_IP = "10.1.1.198"
-MOCAP_RIGID_BODY_NAME = "CubeInCube"  # streamed rigid-body name; None = first body
-MOCAP_RIGID_BODY_ID = None        # optional override by integer id (takes precedence)
+MOCAP_RIGID_BODY_NAME = "CubeInCube2"  # streamed VRPN tracker name
+MOCAP_RIGID_BODY_ID = None        # kept for run-metadata only (VRPN reads by name)
 
 # Gripper: True drives the real Hand-E via the HandEGripper wrapper (Robotiq URCapX
 # XML-RPC, PolyScope X); False = no-op (URSim dry-run / arm-only test).
-ENABLE_GRIPPER = False
+ENABLE_GRIPPER = True
 GRIPPER_PORT = 49999              # Robotiq URCapX XML-RPC server (PolyScope X)
 GRIPPER_SLAVE_ID = 9             # this Hand-E = slaveId 9 ("Gripper ID 1")
 GRIPPER_SPEED_PCT = 100
@@ -78,8 +80,8 @@ CONTROL_HZ = 50.0
 ACTION_SCALE = 0.04
 LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
-SERVOJ_A = 1.0                    # max joint accel [rad/s^2]
-SERVOJ_V = 1.0                    # max joint vel  [rad/s]
+SERVOJ_A = 0.2                    # max joint accel [rad/s^2]
+SERVOJ_V = 0.2                    # max joint vel  [rad/s]
 ALPHA = 1.0
 USE_FK_TCP = True                 # compute tcp_pos via MuJoCo FK (matches sim site)
 
@@ -97,11 +99,12 @@ POLICY_PATH = os.path.join(
 
 # W&B policy download (used only if POLICY_PATH does not already exist).
 # Fill WANDB_RUN_ID with the trained run id after the cluster job completes.
-WANDB_RUN_ID = None               # e.g. "ur3pick_baseline_20260605_..."
+WANDB_RUN_ID = "pickOrient4cm_lr_low_longunroll_20260607_125238_2201"              # e.g. "ur3pick_baseline_20260605_..."
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
 FOLDER_OUT = os.path.join(SCRIPT_DIR, "results")
 VIDEO_OUT = os.path.join(FOLDER_OUT, "ur3_pick_replay.mp4")
+CSV_OUT = os.path.join(FOLDER_OUT, "ur3_pick_states.csv")
 PLOTS_OUT = os.path.join(FOLDER_OUT, "ur3_pick_plots.png")
 META_OUT = os.path.join(FOLDER_OUT, "ur3_pick_meta.json")
 VIDEO_FPS = 50.0
@@ -129,12 +132,10 @@ if not robot.is_connected():
     )
 robot.print_feedback()
 
-# ── Connect mocap ──────────────────────────────────────────────────────
-_body_label = MOCAP_RIGID_BODY_ID if MOCAP_RIGID_BODY_ID is not None else MOCAP_RIGID_BODY_NAME
-print(f"\nConnecting to mocap {MOCAP_SERVER_IP} (rigid body {_body_label}) ...")
-mocap = NokovRigidBodyReader(
+# ── Connect mocap (VRPN) ───────────────────────────────────────────────
+print(f"\nConnecting to mocap {MOCAP_SERVER_IP} (rigid body {MOCAP_RIGID_BODY_NAME}) ...")
+mocap = VRPNRigidBodyReader(
     MOCAP_SERVER_IP,
-    rigid_body_id=MOCAP_RIGID_BODY_ID,
     rigid_body_name=MOCAP_RIGID_BODY_NAME,
 )
 if not mocap.start(timeout=5.0):
@@ -144,6 +145,26 @@ if not mocap.start(timeout=5.0):
     )
 box0 = mocap.get_rigid_body_xyz()
 print(f"Initial box (mocap): {None if box0 is None else np.round(box0, 4).tolist()}")
+
+# ── Gripper wiring ─────────────────────────────────────────────────────
+# run_policy_loop passes gripper_norm in [0,1] (0=open, 1=closed); the policy's
+# tendon-ctrl span [0,0.05] maps to per-finger [0,0.025] m, so norm*0.025 is the
+# sim finger value the wrapper expects. ENABLE_GRIPPER=False keeps the dry-run no-op.
+gripper = None
+if ENABLE_GRIPPER:
+    gripper = HandEGripper(
+        ROBOT_IP, port=GRIPPER_PORT, slave_id=GRIPPER_SLAVE_ID,
+        speed_pct=GRIPPER_SPEED_PCT, force_pct=GRIPPER_FORCE_PCT,
+    )
+    gripper.connect()
+    gripper.open_gripper()  # start the task with fingers open
+    gripper_fn = lambda norm: gripper.command(norm * 0.025)  # noqa: E731
+else:
+    gripper_fn = lambda norm: None  # noqa: E731
+
+target = np.array(DROP_TARGET, dtype=np.float32)
+print(f"\nDrop target : {target.tolist()}")
+print(f"Starting pick loop at {CONTROL_HZ} Hz ...")
 
 # ── Move to start ──────────────────────────────────────────────────────
 print(f"\nMoving to start pose {Q_START}")
@@ -166,24 +187,7 @@ robot.load_policy_fn(policy_path=POLICY_PATH, deterministic=True)
 if USE_FK_TCP:
     robot.init_fk_model(MODEL_PATH)
 
-# ── Gripper wiring ─────────────────────────────────────────────────────
-# run_policy_loop passes gripper_norm in [0,1] (0=open, 1=closed); the policy's
-# tendon-ctrl span [0,0.05] maps to per-finger [0,0.025] m, so norm*0.025 is the
-# sim finger value the wrapper expects. ENABLE_GRIPPER=False keeps the dry-run no-op.
-gripper = None
-if ENABLE_GRIPPER:
-    gripper = HandEGripper(
-        ROBOT_IP, port=GRIPPER_PORT, slave_id=GRIPPER_SLAVE_ID,
-        speed_pct=GRIPPER_SPEED_PCT, force_pct=GRIPPER_FORCE_PCT,
-    )
-    gripper.connect()
-    gripper_fn = lambda norm: gripper.command(norm * 0.025)  # noqa: E731
-else:
-    gripper_fn = lambda norm: None  # noqa: E731
 
-target = np.array(DROP_TARGET, dtype=np.float32)
-print(f"\nDrop target : {target.tolist()}")
-print(f"Starting pick loop at {CONTROL_HZ} Hz ...")
 
 # ── Run policy loop ────────────────────────────────────────────────────
 df, stats = robot.run_policy_loop(
@@ -208,6 +212,20 @@ final_dist = stats["final_box_to_target_dist"]
 print(f"\nFinal box->target: {final_dist * 1000:.1f} mm — "
       f"{'REACHED' if final_dist < REACH_TOL else 'NOT REACHED'}")
 print(f"Steps: {len(df)}, wall time: {stats['total_wall_time_s']:.2f}s")
+
+# ── Success + release ──────────────────────────────────────────────────
+reached = final_dist < REACH_TOL
+if reached:
+    print("\nSUCCESS")
+    time.sleep(3.0)
+    if gripper is not None:
+        gripper.open_gripper()   # direction-independent URCapX open
+    else:
+        gripper_fn(0.0)          # dry-run no-op / norm=0 = open
+    print("Gripper opened.")
+    print(f"Returning to task_home {Q_START}")
+    robot.send_movej(Q_START, a=1.0, v=0.5, asynchronous=False)  # blocking moveJ
+
 robot.print_stats(stats, keys=[
     "true_inferred_frequency_hz",
     "mean_loop_hz_true",
@@ -229,7 +247,9 @@ frames, actual_fps = robot.render_video_from_log(mj, df, video_fps=VIDEO_FPS)
 robot.save_video(frames, out_path=VIDEO_OUT, fps=actual_fps)
 print(f"Video: {VIDEO_OUT}")
 
-# ── Save plots + metadata ──────────────────────────────────────────────
+# ── Save full per-step state + plots + metadata ────────────────────────
+df.to_csv(CSV_OUT, index=False)
+print(f"States: {CSV_OUT}")
 robot.save_plots(df, out_path=PLOTS_OUT)
 robot.save_run_metadata(
     META_OUT,
