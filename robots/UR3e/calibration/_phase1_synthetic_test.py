@@ -98,9 +98,65 @@ def main(seed=0, noise_m=0.0005):
     return p0_err_mm
 
 
+def test_forward_tcp():
+    """forward_tcp recovers a KNOWN wrist center + TCP from two perpendicular
+    axis lines, and corrects the arbitrary fitted-axis sign via ref_dir."""
+    wrist_center = np.array([0.30, -0.12, 0.25])
+    z4 = np.array([0.0, 1.0, 0.0])              # wrist-2 axis
+    z5 = np.array([0.6, 0.0, 0.8]); z5 /= np.linalg.norm(z5)  # tool Z, perp to z4
+    L = cal.UR3E_D6
+    tcp_true = wrist_center + L * z5
+
+    # Points ON each axis line (offset off the wrist center along each axis).
+    c4 = wrist_center + 0.13 * z4
+    c5 = wrist_center - 0.07 * z5
+    ref = tcp_true - wrist_center               # coarse "toward TCP" direction
+
+    # Feed the tool-Z axis with a FLIPPED sign: the ref_dir must correct it.
+    tcp, wc, gap = cal.forward_tcp(c4, z4, c5, -z5, L, ref_dir=ref)
+    wc_mm = np.linalg.norm(wc - wrist_center) * 1e3
+    tcp_mm = np.linalg.norm(tcp - tcp_true) * 1e3
+    print("\n=== forward_tcp ===")
+    print(f"wrist center error = {wc_mm:.4f} mm, axis gap = {gap*1e3:.4f} mm")
+    print(f"tcp_forward error  = {tcp_mm:.4f} mm (sign correction applied)")
+    assert wc_mm < 1.0, f"wrist center off by {wc_mm:.3f} mm"
+    assert tcp_mm < 1.0, f"tcp_forward off by {tcp_mm:.3f} mm"
+    print("FORWARD_TCP PASSED: wrist center + TCP recovered < 1 mm.")
+
+
+def test_average_rotations(seed=3):
+    """average_rotations recovers a KNOWN rotation from noisy copies, returns a
+    proper orthonormal matrix, and is exact for a single matrix."""
+    rng = np.random.default_rng(seed)
+    r_true = _rot_about([0.2, -0.5, 0.84], np.deg2rad(40.0))
+
+    # Single matrix in -> the same rotation out (projection is a no-op). Use the
+    # Frobenius norm: arccos-based geodesic is ill-conditioned at ~0 angle.
+    one = cal.average_rotations([r_true])
+    assert np.linalg.norm(one - r_true) < 1e-9, "single-matrix mean drifted"
+
+    # N rotations perturbed by small zero-mean rotvecs (~1 deg) about r_true.
+    mats = []
+    for _ in range(50):
+        dv = rng.normal(0, np.deg2rad(1.0), 3)
+        ang = float(np.linalg.norm(dv))
+        mats.append(_rot_about(dv / (ang + 1e-12), ang) @ r_true)
+    r_mean = cal.average_rotations(mats)
+    err = cal.rotation_geodesic_deg(r_mean, r_true)
+
+    print("\n=== average_rotations ===")
+    print(f"mean rotation error = {err:.4f} deg (from {len(mats)} noisy copies)")
+    assert np.allclose(r_mean.T @ r_mean, np.eye(3), atol=1e-9), "result not orthonormal"
+    assert abs(np.linalg.det(r_mean) - 1.0) < 1e-9, "result not a proper rotation"
+    assert err < 0.5, f"averaged rotation off by {err:.3f} deg"
+    print("AVERAGE_ROTATIONS PASSED: orthonormal, det +1, recovered < 0.5 deg.")
+
+
 if __name__ == "__main__":
     # Exact (no noise) must be ~0; then a realistic 0.5 mm/point noise level.
     print("=== noise-free ===")
     main(noise_m=0.0)
     print("\n=== 0.5 mm/point noise ===")
     main(noise_m=0.0005)
+    test_forward_tcp()
+    test_average_rotations()

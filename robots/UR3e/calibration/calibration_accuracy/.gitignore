@@ -1,0 +1,6 @@
+# Generated repeatability outputs (regenerated each run; not version-controlled).
+accuracy_report_*.csv
+accuracy_summary_*.md
+accuracy_histograms_*.png
+calibration_history.csv
+__pycache__/

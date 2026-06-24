@@ -21,11 +21,16 @@ Everything here is pure numpy: no RTDE, no mocap, no MuJoCo imports. The noteboo
 feeds it recorded points / displacements (all in METERS) and writes the JSON.
 """
 
-from typing import Dict, Tuple
+from typing import Dict, Sequence, Tuple
 
 import numpy as np
 
 UR3E_D1 = 0.15185  # nominal UR3e shoulder height (base origin -> shoulder), meters
+UR3E_D6 = 0.0921   # nominal UR3e wrist-center (z4 inter z5) -> flange offset along tool Z, meters
+                   # (UR3e DH d6; flange = wrist_center + d6 * tool_z). Source: Universal Robots
+                   # published DH parameters, "DH Parameters for calculations of kinematics and
+                   # dynamics" (UR3e, article 212), www.universal-robots.com/articles/ur/
+                   # application-installation/dh-parameters-for-calculations-of-kinematics-and-dynamics/
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +195,48 @@ def frame_from_probe(
 
 
 # ---------------------------------------------------------------------------
+# Independent forward-TCP estimate (wrist-2 inter wrist-3 axis + nominal length)
+# ---------------------------------------------------------------------------
+def forward_tcp(
+    c4: np.ndarray,
+    a4: np.ndarray,
+    c5: np.ndarray,
+    a5: np.ndarray,
+    L: float,
+    ref_dir: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Forward TCP estimate from the last two joint axes + nominal tool length.
+
+    On a UR the wrist-2 axis (z4, from the joint-4 sweep) and wrist-3 axis
+    (z5 = tool Z, from the joint-5 sweep) intersect at frame-5 origin (DH a5=0),
+    the "wrist center". The flange/TCP sits on z5 at the nominal distance L from
+    that intersection (L = UR3E_D6 + tool-Z offset). All inputs/outputs are in the
+    same world frame and meters; this carries NO base calibration (p0/R0).
+
+    Args:
+      c4, a4: a point on and the direction of the wrist-2 axis line (world).
+      c5, a5: a point on and the direction of the wrist-3 (tool Z) axis line.
+      L:      nominal wrist-center -> TCP distance along tool Z, meters.
+      ref_dir: a coarse direction pointing from the wrist center toward the TCP,
+              used ONLY to fix the arbitrary sign of the fitted a5 (its magnitude
+              does not enter the result).
+
+    Returns:
+      tcp_forward:  (3,) estimated TCP in the world frame.
+      wrist_center: (3,) midpoint of the two axis lines' closest points.
+      axis_gap_m:   distance between the two closest points (fit-quality metric).
+    """
+    p1, p2, axis_gap = closest_point_two_lines(c4, a4, c5, a5)
+    wrist_center = 0.5 * (np.asarray(p1) + np.asarray(p2))
+    z5 = np.asarray(a5, dtype=np.float64)
+    z5 = z5 / np.linalg.norm(z5)
+    if float(z5 @ np.asarray(ref_dir, dtype=np.float64)) < 0.0:
+        z5 = -z5
+    tcp_forward = wrist_center + float(L) * z5
+    return tcp_forward, wrist_center, axis_gap
+
+
+# ---------------------------------------------------------------------------
 # Full solve
 # ---------------------------------------------------------------------------
 def solve(
@@ -231,6 +278,68 @@ def solve(
         "probe_y_len_err_mm": (float(np.linalg.norm(dp_y)) - L) * 1e3,
     }
     return p0, r0, residuals
+
+
+def rotvec_to_matrix(rotvec: np.ndarray) -> np.ndarray:
+    """Axis-angle rotation vector (Rodrigues) -> 3x3 rotation matrix.
+
+    `rotvec` is a 3-vector whose direction is the rotation axis and whose norm is
+    the angle (rad) — the format RTDE returns in getActualTCPPose()[3:6] /
+    getActualToolFlangePose()[3:6] (expressed in the robot base frame).
+    """
+    rotvec = np.asarray(rotvec, dtype=np.float64)
+    theta = float(np.linalg.norm(rotvec))
+    if theta < 1e-12:
+        return np.eye(3)
+    k = rotvec / theta
+    K = np.array([[0.0, -k[2], k[1]],
+                  [k[2], 0.0, -k[0]],
+                  [-k[1], k[0], 0.0]])
+    return np.eye(3) + np.sin(theta) * K + (1.0 - np.cos(theta)) * (K @ K)
+
+
+# ---------------------------------------------------------------------------
+# Rotation averaging (for multi-run calibration)
+# ---------------------------------------------------------------------------
+def average_rotations(mats: Sequence[np.ndarray]) -> np.ndarray:
+    """Chordal (projected) mean of several rotation matrices on SO(3).
+
+    Rotations cannot be averaged element-wise. This takes the arithmetic mean of
+    the matrices (NOT itself a rotation) and projects it back onto SO(3) via SVD:
+    R = U @ Vt, the closest orthonormal matrix in the Frobenius sense. A reflection
+    (det -1) is corrected by flipping the last column of U. For tightly clustered
+    rotations (a repeatability test) this agrees with the quaternion-eigenvector
+    mean far below measurement noise.
+
+    Args:
+      mats: iterable of (3, 3) rotation matrices, at least one.
+
+    Returns:
+      (3, 3) mean rotation (proper, det +1).
+    """
+    stack = np.stack([np.asarray(m, dtype=np.float64) for m in mats])
+    if stack.ndim != 3 or stack.shape[1:] != (3, 3):
+        raise ValueError(f"expected (N, 3, 3) rotations; got {stack.shape}")
+    m_mean = stack.mean(axis=0)
+    u, _s, vt = np.linalg.svd(m_mean)
+    r = u @ vt
+    if np.linalg.det(r) < 0.0:  # nearest result is a reflection -> flip to a rotation
+        u[:, -1] *= -1.0
+        r = u @ vt
+    return r
+
+
+def rotation_geodesic_deg(r_a: np.ndarray, r_b: np.ndarray) -> float:
+    """Geodesic angle (deg) between two rotations.
+
+    The angle of the single rotation mapping one to the other:
+    theta = arccos((trace(Ra^T @ Rb) - 1) / 2). Used to report how far each run's
+    R0 sits from the averaged R0 (rotation dispersion).
+    """
+    r_a = np.asarray(r_a, dtype=np.float64)
+    r_b = np.asarray(r_b, dtype=np.float64)
+    cos_theta = (np.trace(r_a.T @ r_b) - 1.0) / 2.0
+    return float(np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0))))
 
 
 # ---------------------------------------------------------------------------
