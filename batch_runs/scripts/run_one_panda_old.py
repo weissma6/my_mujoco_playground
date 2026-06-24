@@ -1,7 +1,7 @@
 import argparse
 import json
 import os
-from learning.notebooks.panda_test import run_experiment
+from learning.notebooks.run_experiment import run_experiment
 
 
 def load_config(jsonl_path: str, index_1based: int) -> dict:

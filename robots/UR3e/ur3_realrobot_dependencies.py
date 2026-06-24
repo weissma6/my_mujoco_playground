@@ -2,7 +2,7 @@
 RTDE dependencies for the UR3 + Hand-E pick task.
 
 Mirrors robots/URSim/URSim_RTDE_dependencies.py (the UR10 reach backbone)
-but adapted for the UR3Pick policy:
+but adapted for the UR3PicknPlace policy:
 
 - 26D observation  [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)]
                    q = 6 arm joints + 2 finger positions; box_xmat[:6] = first
@@ -363,7 +363,7 @@ class UR3RealRobotPick:
             with open(inf_cfg_path) as f:
                 inf_cfg = _json.load(f)
 
-        env_name = inf_cfg.get("env_name") or run.config.get("env_name", "UR3Pick")
+        env_name = inf_cfg.get("env_name") or run.config.get("env_name", "UR3PicknPlace")
         env = registry.load(env_name)
         reg_obs, reg_act = int(env.observation_size), int(env.action_size)
 
@@ -521,7 +521,8 @@ class UR3RealRobotPick:
         box_quat: Optional[np.ndarray] = None,
         dtype=np.float32,
     ) -> np.ndarray:
-        """Build 26D obs to match UR3Pick._get_obs:
+        """Build 26D obs to match the canonical UR3Base._get_obs (shared by
+        UR3PicknPlace, the deployment target, and UR3Pick):
         [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)].
 
         q(8) = 6 arm joints (RTDE) + 2 finger positions (from the internal gripper

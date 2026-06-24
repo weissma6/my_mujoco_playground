@@ -11,7 +11,7 @@ Hand-E mapping notebook and from ur3_realrobot_pickloop.py.
 
 Direction conventions (verified, see the module CLAUDE.md / the mapping notebook):
   - SIM finger position is in meters per finger, [0, 0.025]: 0 = OPEN, 0.025 = CLOSED
-    (UR3Pick: finger_open = tanh(finger_touch_dist/0.05); fingers close as qpos rises).
+    (UR3PicknPlace: finger_open = tanh(finger_touch_dist/0.05); fingers close as qpos rises).
   - NATIVE Robotiq URCapX percent, [0, 100]: default 0 % = OPEN, 100 % = CLOSED.
     Same direction as sim -> the mapping is pure scale, NO sign flip. The percent
     direction is the one bit not provable from code; confirm/flip NATIVE_OPEN_PCT /

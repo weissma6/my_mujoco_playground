@@ -140,6 +140,24 @@ def brax_ppo_config(
         rl_config.batch_size = 512
         rl_config.network_factory.policy_hidden_layer_sizes = (64, 64, 64)
     elif env_name == "UR3Pick":
+        # Simple pick (restored baseline). These were tuned for pick-and-place
+        # and may want retuning for the simple-pick reward later.
+        rl_config.num_timesteps = 20_000_000
+        rl_config.num_evals = 4
+        rl_config.unroll_length = 10
+        rl_config.num_minibatches = 32
+        rl_config.num_updates_per_batch = 8
+        rl_config.discounting = 0.97
+        rl_config.learning_rate = 1e-3
+        rl_config.entropy_cost = 2e-2
+        rl_config.num_envs = 2048
+        rl_config.batch_size = 512
+        rl_config.network_factory.policy_hidden_layer_sizes = (32, 32, 32, 32)
+        if impl == "warp":
+            rl_config.num_timesteps *= 4
+            rl_config.num_evals *= 4
+    elif env_name == "UR3PicknPlace":
+        # Pick-and-place (copy of the UR3Pick branch, tuned for pick&place).
         rl_config.num_timesteps = 20_000_000
         rl_config.num_evals = 4
         rl_config.unroll_length = 10

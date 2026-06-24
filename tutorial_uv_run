@@ -1,14 +1,20 @@
 # =====================================================================
-# Run ONE UR3 pick training try on the ZHAW cluster (uv pipeline)
+# Run the UR3 SIMPLE-PICK training on the ZHAW cluster (uv pipeline)
 # =====================================================================
+# Env: UR3Pick (simple pick — lift a tilted 4cm box to a point above it).
+#   The sibling pick-and-place env is UR3PicknPlace (separate sweep/sbatch).
 # Pipeline pieces (all UR3 siblings of the UR10 uv files):
 #   sweep   : batch_runs/sweeps/UR3Pick_sweep.jsonl   (1-indexed configs)
 #   runner  : batch_runs/scripts/run_one_ur3.py       (env-agnostic, dispatches on env_name)
 #   submit  : batch_runs/cluster/ur3_jsonl_array.submit
 #   bootstrap: batch_runs/cluster/env_bootstrap.sh    (uv venv + jax[cuda12])
-# Sweep lines:  1=ur3pick_smoke  2=ur3pick_baseline  3=ur3pick_DR_MFR
+# Sweep lines:  1=Pick_un20_env2048  2=Pick_un20_env1024
+#   (both UR3Pick, 20M steps, lr 8e-4, unroll 20, init_keyframe=low_home;
+#    they differ ONLY in num_envs 2048 vs 1024 — a throughput comparison.)
 #
-# (Alternative Podman/EGL pipeline lives at batch_runs/slurm/run_array_ur3.sbatch.)
+# (Alternative Podman/EGL pipeline for simple pick lives at
+#  batch_runs/slurm/run_array_ur3_simplepick.sbatch;
+#  the pick-and-place Podman job is batch_runs/slurm/run_array_ur3.sbatch.)
 
 # connect to Login node
 ssh weissma6@dallas.zhaw.ch
@@ -24,13 +30,15 @@ cd ~/VT1_MBRL/my_mujoco_playground
 givemeagpushell sanfrancisco
 source batch_runs/cluster/env_bootstrap.sh
 python -c "import mujoco, wandb, jax; print('env OK; jax devices:', jax.devices())"
-# Confirm the UR3 env registers and has the expected dims (7D action, 21D obs):
+# Confirm the UR3 env registers and has the expected dims (7D action, 26D obs):
 python -c "from mujoco_playground import registry; e=registry.load('UR3Pick'); print('UR3Pick', e.action_size, e.observation_size)"
 
 # ------------------------------------------------
-# Step 2  Debug ONE run interactively (no SLURM) on the GPU shell
+# Step 2  Run ONE config interactively (no SLURM) on the GPU shell
 # ------------------------------------------------
-# Runs the smoke config (line 1 of the sweep: 300k steps, 512 envs) directly.
+# Runs line 1 of the sweep (Pick_un20_env2048) directly. NOTE: this is the
+# full 20M-step / 2048-env run (long) — there is no smoke config in the sweep.
+# Ctrl-C to stop early; for a quick "does it load" check use the Step 1 import.
 export MUJOCO_GL=egl PYOPENGL_PLATFORM=egl EGL_PLATFORM=surfaceless
 export WANDB_API_KEY="$(< "$HOME/.secrets/wandb_key")"
 python batch_runs/scripts/run_one_ur3.py \
@@ -39,15 +47,14 @@ python batch_runs/scripts/run_one_ur3.py \
   --out_root results
 
 # ------------------------------------------------
-# Step 3  Submit ONE try via SLURM (smoke = array index 1)
+# Step 3  Submit via SLURM
 # ------------------------------------------------
-sbatch --array=1-1 batch_runs/cluster/ur3_jsonl_array.submit   # ur3pick_smoke only
+# Single config (array index = sweep line):
+sbatch --array=1-1 batch_runs/cluster/ur3_jsonl_array.submit   # Pick_un20_env2048
+sbatch --array=2-2 batch_runs/cluster/ur3_jsonl_array.submit   # Pick_un20_env1024
 
-# Full sweep (all 3 configs, max 2 at a time):
-sbatch batch_runs/cluster/ur3_jsonl_array.submit
-
-# Just the 20M baseline:
-sbatch --array=2-2 batch_runs/cluster/ur3_jsonl_array.submit
+# Full sweep (both configs, max 2 at a time):
+sbatch batch_runs/cluster/ur3_jsonl_array.submit               # array 1-2%2
 
 # See the active jobs
 squeue -u weissma6
@@ -79,10 +86,10 @@ scancel -u weissma6
 #### -----------------------
 # Sanity checks
 #### -----------------------
-# Sweep file exists and has 3 configs
+# Sweep file exists and has 2 configs
 ls -lh batch_runs/sweeps/UR3Pick_sweep.jsonl
 wc -l batch_runs/sweeps/UR3Pick_sweep.jsonl
 
 # Trained policy artifact is uploaded to W&B project "UR3_pick_ppo".
-# Local outputs land in results/<run_id>/ (e.g. results/ur3pick_smoke/).
-ls -lh results/ur3pick_smoke/ 2>/dev/null
+# Local outputs land in results/<run_id>/ (e.g. results/Pick_un20_env2048/).
+ls -lh results/Pick_un20_env2048/ 2>/dev/null

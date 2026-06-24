@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-3%2
+#SBATCH --array=1-2%2
 
 set -euo pipefail
 
@@ -26,9 +26,8 @@ export EGL_PLATFORM=surfaceless
 unset DISPLAY
 
 # UR3Pick_sweep.jsonl is 1-indexed by the SLURM array task:
-#   1 = ur3pick_smoke     (300k steps, 512 envs)
-#   2 = ur3pick_baseline  (20M steps, 2048 envs)
-#   3 = ur3pick_DR_MFR    (20M, domain randomization)
+#   1 = Pick_un20_env2048  (UR3Pick, 20M steps, 2048 envs)
+#   2 = Pick_un20_env1024  (UR3Pick, 20M steps, 1024 envs)
 python batch_runs/scripts/run_one_ur3.py \
   --jsonl batch_runs/sweeps/UR3Pick_sweep.jsonl \
   --index "${SLURM_ARRAY_TASK_ID}" \

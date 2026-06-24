@@ -17,6 +17,7 @@
 from typing import Any, Dict, Optional, Union
 
 from etils import epath
+import jax
 import jax.numpy as jp
 from ml_collections import config_dict
 import mujoco
@@ -129,7 +130,8 @@ class UR3Base(mjx_env.MjxEnv):
         )
 
         # Finger touch sites on the inner faces of the Hand-E fingers
-        # (mirrors ur10pick; used by ur3_pick reward for finger_touch_dist).
+        # (mirrors ur10pick; used by the UR3PicknPlace / UR3Pick rewards for
+        # finger_touch_dist).
         self._left_finger_touch = self._mj_model.site("left_finger_touch_site").id
         self._right_finger_touch = self._mj_model.site("right_finger_touch_site").id
 
@@ -170,6 +172,27 @@ class UR3Base(mjx_env.MjxEnv):
 
         # Control limits
         self._lowers, self._uppers = self._mj_model.actuator_ctrlrange.T
+
+    def _get_obs(self, data: mjx.Data, info: Dict[str, Any]) -> jax.Array:
+        """Returns 26D obs: [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)].
+
+        Canonical observation contract shared by UR3Pick (simple pick) and
+        UR3PicknPlace (pick-and-place) — the two tasks differ only in
+        reward/termination, never in observation. Hoisted here so it can never
+        drift between the subclasses. Relies on handles set in _post_init
+        (_robot_qposadr, _robot_arm_qveladr, _obj_body, _gripper_site) and on
+        info["target_pos"] (written by each env's reset).
+        """
+        obs = jp.concatenate(
+            [
+                data.qpos[self._robot_qposadr],                                # 8 (6 arm + 2 finger)
+                data.qvel[self._robot_arm_qveladr],                            # 6 arm vel
+                data.xpos[self._obj_body] - data.site_xpos[self._gripper_site],  # 3 box - tcp
+                info["target_pos"] - data.xpos[self._obj_body],                # 3 target - box
+                data.xmat[self._obj_body].ravel()[:6],                         # 6 box orientation (rows 0-1)
+            ]
+        )
+        return obs
 
     @property
     def xml_path(self) -> str:

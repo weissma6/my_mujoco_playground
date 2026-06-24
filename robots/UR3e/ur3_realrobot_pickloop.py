@@ -1,7 +1,7 @@
 """
 UR3 + Hand-E pick loop with a mocap-derived box position.
 
-Mirror of UR10_RealRobot_Reach_ONE.py, adapted for the UR3Pick policy:
+Mirror of UR10_RealRobot_Reach_ONE.py, adapted for the UR3PicknPlace policy:
   - 26D obs [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)]
   - 7D action (6 arm + 1 gripper)
   - the box pose (xyz + orientation) is streamed live from a Nokov rigid body;
@@ -90,7 +90,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(
     SCRIPT_DIR,
     "../../mujoco_playground/_src/manipulation/my_ur3/xmls/"
-    "mjx_single_cube_position_ur3.xml",
+    "mjx_single_cube_position_ur3_picknplace.xml",
 )
 POLICY_PATH = os.path.join(
     SCRIPT_DIR,
@@ -99,7 +99,7 @@ POLICY_PATH = os.path.join(
 
 # W&B policy download (used only if POLICY_PATH does not already exist).
 # Fill WANDB_RUN_ID with the trained run id after the cluster job completes.
-WANDB_RUN_ID = "pickOrient4cm_lr_low_longunroll_20260607_125238_2201"              # e.g. "ur3pick_baseline_20260605_..."
+WANDB_RUN_ID = "ur3pick_DR_MFR_medium_20260603_092056_5305"              # e.g. "ur3pick_baseline_20260605_..."
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
 FOLDER_OUT = os.path.join(SCRIPT_DIR, "results")

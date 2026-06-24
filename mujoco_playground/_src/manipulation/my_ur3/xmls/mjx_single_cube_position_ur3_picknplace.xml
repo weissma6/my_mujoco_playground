@@ -12,9 +12,9 @@
             contype="1" conaffinity="3" solref="0.01 1"/>
     </body>
 
-    <!-- Mocap target (drop location visualization; pose set per-episode by reset) -->
+    <!-- Mocap target: 5 cm box the 4 cm cube must be positioned inside; pose set per-episode by reset -->
     <body mocap="true" name="mocap_target">
-      <geom type="box" size="0.02 0.02 0.02" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
+      <geom type="box" name="mocap_target_geom" size="0.025 0.025 0.025" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
     </body>
   </worldbody>
 

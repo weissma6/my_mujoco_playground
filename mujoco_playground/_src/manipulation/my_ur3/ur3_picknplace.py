@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""UR3 pick task: 6-DOF arm + Hand-E gripper, lift a box to a target point.
+"""UR3 pick-and-place: 6-DOF arm + Hand-E gripper, carry a box to a drop zone.
 
-The mocap target is used as the lift goal (a point in the air above the box).
-The 4x4x4 cm box spawns with a random Y-axis tilt and a rotation-error reward
-encourages bringing it back to the canonical (identity) orientation while lifting.
-Mirrors the commented-out reward scaffolding of ur10pick.py.
+The 4x4x4 cm box spawns on the +Y side (~20 cm from the workspace center) with a
+random Y-axis tilt. The 5x5x5 cm mocap target is a drop zone on the -Y side at
+the same radius, at the box resting height so a released box settles inside it.
+The reward is staged by sticky latches (reached -> grasped -> lifted ->
+delivered): approach, grasp, lift off the floor, carry to the target (gated by a
+real lift so pushing earns nothing), seat the box fully inside the target box
+(all 8 corners), open the fingers, and retract the gripper clear of the box.
 """
 
 from typing import Any, Dict, Optional, Union
@@ -37,26 +40,44 @@ def default_config() -> config_dict.ConfigDict:
     return config_dict.create(
         ctrl_dt=0.02,
         sim_dt=0.005,
-        episode_length=150,
+        episode_length=250,
         action_repeat=1,
         action_scale=0.04,
         reward_config=config_dict.create(
             scales=config_dict.create(
-                ## Reward scaling factors
-                # Box goes to the mocap target (lift point in the air).
+                ## Staged pick-and-place reward (sequenced by sticky latches).
+                # Stage 1 — approach: TCP gets to the box (always on).
+                gripper_box=2.0,
+                # Stage 2 — grasp: close the fingers on the box (fades near the
+                # target so release can take over; no cliff at any latch).
+                grasp=3.0,
+                # Stage 3 — lift: raise the box off the floor. Anti-push lever —
+                # box_target is gated behind a real lift.
+                lift=5.0,
+                # Stage 4 — transport: box approaches the drop target, GATED by
+                # the sticky "lifted" latch (a sliding box earns nothing here).
                 box_target=8.0,
-                # Gripper (TCP) approaches the box.
-                gripper_box=4.0,
-                # Box orientation aligns with the canonical (identity) target —
-                # gated by sticky reached_box (only active once at the box).
-                box_orient=2.0,
-                # Encourage finger opening relative to box distance (ur10pick formula).
-                finger_touch=1.0,
+                # Stage 5a — placement: 4 cm box fully inside the 5 cm target box
+                # (all 8 corners), gated by the sticky "grasped" latch.
+                box_inside=6.0,
+                # Stage 5b — release: open the fingers near the target (only if
+                # the box was actually carried there, i.e. lifted).
+                release=3.0,
+                # Stage 5c — retract: move the gripper up/away after delivery so
+                # the box ends in the zone without the gripper.
+                retract=4.0,
                 # Do not collide the gripper with the floor.
                 no_floor_collision=0.25,
                 # Arm stays close to initial pose.
                 robot_target_qpos=0.3,
             )
+        ),
+        # Curriculum / task knobs (tune locally, ramp difficulty across runs).
+        curriculum=config_dict.create(
+            tilt_deg=15.0,  # spawn box ±tilt about Y; start small, ramp to 45
+            lift_eps=0.03,  # "off the floor" margin (m) for the lifted latch
+            spawn_xy_jitter=0.05,  # shared pick/drop XY radius ("same radius")
+            success_tol=1e-3,  # containment_max threshold for success
         ),
         impl="jax",
         nconmax=24 * 8192,
@@ -65,8 +86,8 @@ def default_config() -> config_dict.ConfigDict:
     )
 
 
-class UR3Pick(ur3_base.UR3Base):
-    """Lift a box to a target point with the UR3 + Hand-E."""
+class UR3PicknPlace(ur3_base.UR3Base):
+    """Pick a box and place it in a drop zone with the UR3 + Hand-E."""
 
     def __init__(
         self,
@@ -78,7 +99,7 @@ class UR3Pick(ur3_base.UR3Base):
             / "manipulation"
             / "my_ur3"
             / "xmls"
-            / "mjx_single_cube_position_ur3.xml"
+            / "mjx_single_cube_position_ur3_picknplace.xml"
         )
 
         super().__init__(xml_path, config, config_overrides)
@@ -96,43 +117,82 @@ class UR3Pick(ur3_base.UR3Base):
             ]
         ]
 
+        # Finger-pad <-> box contact sensors (grasp detection); same data="found"
+        # read pattern as the floor sensors above.
+        self._finger_box_found_sensor = [
+            self._mj_model.sensor(name).id
+            for name in [
+                "left_finger_box_contact",
+                "right_finger_box_contact",
+            ]
+        ]
+
+        # Box resting height (z of the box center at the keyframe) and the margin
+        # a grasped box must clear to count as "lifted" (anti-push latch).
+        self._box_rest_z = float(self._init_obj_pos[2])
+        self._lift_eps = float(self._config.curriculum.lift_eps)
+
         # Canonical (identity) box orientation target, pre-flattened to the first
-        # two rows of the rotation matrix (matches the obs/reward layout).
+        # two rows of the rotation matrix (kept only as a logged diagnostic).
         self._target_xmat_flat = jp.eye(3).ravel()[:6]
+
+        # Box (4 cm) and target (5 cm) half-extents — single source of truth is
+        # the XML; used by the containment reward (box must sit inside target).
+        self._box_half = jp.array(self._mj_model.geom("box").size, dtype=float)
+        self._target_half = jp.array(
+            self._mj_model.geom("mocap_target_geom").size, dtype=float
+        )
+        # 8 corner sign combinations of an axis-aligned box, shape (8, 3).
+        self._box_corner_signs = jp.array(
+            [
+                [sx, sy, sz]
+                for sx in (-1.0, 1.0)
+                for sy in (-1.0, 1.0)
+                for sz in (-1.0, 1.0)
+            ],
+            dtype=float,
+        )
 
     def reset(self, rng: jax.Array) -> State:
         rng, rng_box, rng_quat, rng_target, rng_robot, rng_gripper = (
             jax.random.split(rng, 6)
         )
 
-        # initialize box position (tight jitter around keyframe — UR3 reach ~0.5 m)
+        # initialize box position — spawn ~20 cm to the +Y side of the workspace
+        # center, tight jitter (UR3 reach ~0.5 m). The -Y drop target is kept at
+        # the same radius (symmetric in Y).
+        xy_jitter = self._config.curriculum.spawn_xy_jitter
         box_pos = (
             jax.random.uniform(
                 rng_box,
                 (3,),
-                minval=jp.array([-0.08, -0.08, 0.0]),
-                maxval=jp.array([0.08, 0.08, 0.0]),
+                minval=jp.array([-xy_jitter, -xy_jitter, 0.0]),
+                maxval=jp.array([xy_jitter, xy_jitter, 0.0]),
             )
             + self._init_obj_pos  # Box position from XML keyframe
+            + jp.array([0.0, 0.20, 0.0])  # shift to +Y20cm spawn side
         )
 
-        # initialize box orientation — random rotation around world Y axis, ±45°.
-        theta = jax.random.uniform(
-            rng_quat, (), minval=-jp.pi / 4.0, maxval=jp.pi / 4.0
-        )
+        # initialize box orientation — random rotation around world Y axis. Tilt
+        # magnitude is a curriculum knob (start small, ramp toward ±45°).
+        tilt = jp.deg2rad(self._config.curriculum.tilt_deg)
+        theta = jax.random.uniform(rng_quat, (), minval=-tilt, maxval=tilt)
         box_quat = jp.array(
             [jp.cos(theta / 2.0), 0.0, jp.sin(theta / 2.0), 0.0], dtype=float
         )
 
-        # initialize target position — a lift point in the air above the box
+        # initialize target position — drop zone ~20 cm to the -Y side, at the
+        # box resting height so a released box settles *inside* the zone (the
+        # gripper need not hold it there). Same radius as the +Y spawn.
         target_pos = (
             jax.random.uniform(
                 rng_target,
                 (3,),
-                minval=jp.array([-0.10, -0.10, 0.10]),
-                maxval=jp.array([0.10, 0.10, 0.25]),
+                minval=jp.array([-xy_jitter, -xy_jitter, 0.0]),
+                maxval=jp.array([xy_jitter, xy_jitter, 0.0]),
             )
             + self._init_obj_pos
+            + jp.array([0.0, -0.20, 0.0])  # -Y20cm side, z = box rest (0.02)
         )
 
         # -----------------------------
@@ -195,6 +255,10 @@ class UR3Pick(ur3_base.UR3Base):
             "success": jp.array(0.0, dtype=float),
             "box_target_dist": jp.array(0.0, dtype=float),
             "reached_box": jp.array(0.0, dtype=float),
+            "grasped": jp.array(0.0, dtype=float),
+            "lifted": jp.array(0.0, dtype=float),
+            "delivered": jp.array(0.0, dtype=float),
+            "box_height": jp.array(0.0, dtype=float),
             **{k: jp.array(0.0, dtype=float)
                for k in self._config.reward_config.scales.keys()},
         }
@@ -204,6 +268,9 @@ class UR3Pick(ur3_base.UR3Base):
             "step": jp.array(0, dtype=jp.int32),
             "success_counter": jp.array(0, dtype=jp.int32),
             "reached_box": jp.array(0.0, dtype=float),
+            "grasped": jp.array(0.0, dtype=float),
+            "lifted": jp.array(0.0, dtype=float),
+            "delivered": jp.array(0.0, dtype=float),
         }
 
         obs = self._get_obs(data, info)
@@ -229,7 +296,11 @@ class UR3Pick(ur3_base.UR3Base):
         box_pos = data.xpos[self._obj_body]
         box_target_dist = jp.linalg.norm(info["target_pos"] - box_pos)
 
-        success_now = box_target_dist < 0.03
+        # Success: the whole 4 cm box sits inside the 5 cm target box
+        # (worst corner within success_tol of the bounds).
+        success_now = (
+            raw_signals["containment_max"] <= self._config.curriculum.success_tol
+        )
         info["success_counter"] = jp.where(
             success_now,
             info["success_counter"] + 1,
@@ -253,6 +324,10 @@ class UR3Pick(ur3_base.UR3Base):
             success=success.astype(jp.float32),
             box_target_dist=box_target_dist,
             reached_box=info["reached_box"],
+            grasped=info["grasped"],
+            lifted=info["lifted"],
+            delivered=info["delivered"],
+            box_height=raw_signals["box_height"],
         )
 
         obs = self._get_obs(data, info)
@@ -304,63 +379,125 @@ class UR3Pick(ur3_base.UR3Base):
         # ==============================
         # First two rows of the box world-frame rotation matrix - JAX array (6,) float64
         box_xmat_flat = data.xmat[self._obj_body].ravel()[:6]
-        # Rotation error between box and the canonical (identity) target - scalar float64
+        # Rotation error vs the canonical (identity) target - scalar float64 (diagnostic only)
         rot_err = jp.linalg.norm(self._target_xmat_flat - box_xmat_flat)
 
         # ==============================
-        # --- Reward terms ---
+        # --- Containment: 4 cm box fully inside the 5 cm target box ---
         # ==============================
-        # Reward for box being at target - scalar JAX float64
-        box_target_Reward = 1 - jp.tanh(
-            5 * box_target_dist
+        # World-frame rotation matrix of the box - JAX array (3,3) float64
+        box_mat = data.xmat[self._obj_body].reshape(3, 3)
+        # 8 box corners in world frame: box_pos + R_box @ (signs * box_half) - (8,3)
+        box_corners = box_pos + (self._box_corner_signs * self._box_half) @ box_mat.T
+        # Per-corner, per-axis overshoot beyond the axis-aligned target box - (8,3) m
+        corner_overshoot = jp.maximum(
+            jp.abs(box_corners - target_pos) - self._target_half, 0.0
         )
-        # Reward for gripper being at box - scalar JAX float64
-        gripper_box_Reward = 1 - jp.tanh(
-            5 * gripper_box_dist
+        # Total overshoot (m); zero iff every corner is inside the target box.
+        containment_violation = jp.sum(corner_overshoot)
+        # Worst single-corner overshoot (m) - used for the success criterion.
+        containment_max = jp.max(corner_overshoot)
+
+        # ==============================
+        # --- Sticky stage latches (monotone via jp.maximum) ---
+        # ==============================
+        # reached_box: gripper has been within 2 cm of the box at some point.
+        info["reached_box"] = jp.maximum(
+            info["reached_box"],
+            (gripper_box_dist < 0.02).astype(float),  # Panda threshold was 0.012
         )
-        # Penalty for deviating too far from the initial arm configuration - scalar JAX float64
+        # grasped: at the box AND both finger pads in contact with it.
+        finger_box_contact = [
+            data.sensordata[self._mj_model.sensor_adr[sid]] > 0
+            for sid in self._finger_box_found_sensor
+        ]
+        both_pads_touch = sum(finger_box_contact) >= 2
+        grasp_now = (info["reached_box"] > 0.5) & both_pads_touch
+        info["grasped"] = jp.maximum(info["grasped"], grasp_now.astype(float))
+        # lifted: a grasped box has cleared the floor by lift_eps. The anti-push
+        # latch — box_target only pays once this is set.
+        box_off_floor = box_pos[2] > (self._box_rest_z + self._lift_eps)
+        lift_now = box_off_floor & (info["grasped"] > 0.5)
+        info["lifted"] = jp.maximum(info["lifted"], lift_now.astype(float))
+        # delivered: a carried (lifted) box is essentially inside the target box.
+        deliver_now = (containment_violation < 5e-3) & (info["lifted"] > 0.5)
+        info["delivered"] = jp.maximum(
+            info["delivered"], deliver_now.astype(float)
+        )
+
+        # ==============================
+        # --- Reward terms (staged by the latches above) ---
+        # ==============================
+        reached = info["reached_box"]
+        grasped = info["grasped"]
+        lifted = info["lifted"]
+        delivered = info["delivered"]
+
+        # Proximity to the drop target; gripper open/closed in [0, 1].
+        near_target = 1 - jp.tanh(10.0 * box_target_dist)
+        finger_open = jp.tanh(finger_touch_dist / 0.05)
+        finger_closed = 1 - finger_open
+
+        # Stage 1 — approach (always on).
+        gripper_box_Reward = 1 - jp.tanh(5.0 * gripper_box_dist)
+
+        # Stage 2 — grasp: close the fingers on the box. Active at the box and
+        # faded near the target so it does not fight the release. Not gated by a
+        # latch => no reward cliff when a stage latches.
+        grasp_Reward = finger_closed * reached * (1 - near_target)
+
+        # Stage 3 — lift: raise the box off the floor (saturates ~12 cm). Faded
+        # near the target so lowering the box to place it is not penalized.
+        lift_height = jp.clip(box_pos[2] - self._box_rest_z, 0.0, 0.12)
+        lift_Reward = jp.tanh(lift_height / 0.06) * reached * (1 - near_target)
+
+        # Stage 4 — transport: box approaches the target. GATED by "lifted" so a
+        # box pushed along the floor earns nothing here.
+        box_target_Reward = (1 - jp.tanh(5.0 * box_target_dist)) * lifted
+
+        # Stage 5a — placement: 4 cm box fully inside the 5 cm target box, gated
+        # by "grasped" (only meaningful after a real grasp, never for pushing).
+        box_inside_Reward = (
+            1 - jp.tanh(15.0 * containment_violation)
+        ) * grasped
+
+        # Stage 5b — release: open the fingers near the target, only if the box
+        # was actually carried there (lifted).
+        release_Reward = finger_open * near_target * lifted
+
+        # Stage 5c — retract: once delivered, move the TCP up and away from the
+        # box so it ends in the zone without the gripper.
+        tcp_above_box = jp.clip(gripper_pos[2] - box_pos[2], 0.0, 0.10)
+        tcp_box_xy = jp.linalg.norm(gripper_pos[:2] - box_pos[:2])
+        retract_Reward = (
+            0.5 * jp.tanh(tcp_above_box / 0.05)
+            + 0.5 * jp.tanh(tcp_box_xy / 0.05)
+        ) * delivered
+
+        # Arm stays close to its initial configuration.
         robot_target_qpos_penalty = 1 - jp.tanh(
             jp.linalg.norm(
                 data.qpos[self._robot_arm_qposadr]
                 - self._init_q[self._robot_arm_qposadr]
             )
         )
-        # rewartd for finger distans large, when distance to boy large
-        finger_touch_Reward = jp.tanh(
-            finger_touch_dist / (gripper_box_dist + 1e-6)
-        )
 
-        # Floor collision via touch sensors (same as Panda) - scalar JAX float64
-        # List of booleans indicating if each sensor detects contact with the floor
+        # Floor collision via touch sensors (same pattern as Panda).
         hand_floor_collision = [
             data.sensordata[self._mj_model.sensor_adr[sensor_id]] > 0
             for sensor_id in self._floor_hand_found_sensor
         ]
-        # Boolean indicating if any sensor detects contact with the floor
-        floor_collision = (
-            sum(hand_floor_collision) > 0
-        )
-        # Reward for no floor collision - scalar JAX float64
-        no_floor_collision_Reward = (1 - floor_collision).astype(
-            float
-        )
-        # ==============================
-        # --- Same "reached_box" gate as Panda, but based on fingertip midpoint ---
-        # Binary indicator if the gripper has reached the box - scalar JAX float64
-        info["reached_box"] = 1.0 * jp.maximum(
-            info["reached_box"],
-            (gripper_box_dist < 0.02).astype(float),  # Panda threshold was 0.012
-        )
-
-        # Orientation reward — only active once the gripper has reached the box
-        # (avoids rewarding orientation noise during the free-floating approach).
-        box_orient_Reward = (1 - jp.tanh(2 * rot_err)) * info["reached_box"]
+        floor_collision = sum(hand_floor_collision) > 0
+        no_floor_collision_Reward = (1 - floor_collision).astype(float)
 
         rewards = {
-            "box_target": box_target_Reward,
             "gripper_box": gripper_box_Reward,
-            "box_orient": box_orient_Reward,
-            "finger_touch": finger_touch_Reward,
+            "grasp": grasp_Reward,
+            "lift": lift_Reward,
+            "box_target": box_target_Reward,
+            "box_inside": box_inside_Reward,
+            "release": release_Reward,
+            "retract": retract_Reward,
             "no_floor_collision": no_floor_collision_Reward,
             "robot_target_qpos": robot_target_qpos_penalty,
         }
@@ -378,11 +515,17 @@ class UR3Pick(ur3_base.UR3Base):
             # errors / distances
             "box_target_dist": box_target_dist,
             "rot_err": rot_err,
+            "containment_violation": containment_violation,
+            "containment_max": containment_max,
             "grip_box_dist": gripper_box_dist,
             "finger_touch_dist": finger_touch_dist,
 
             # events
             "reached_box": info["reached_box"],
+            "grasped": info["grasped"],
+            "lifted": info["lifted"],
+            "delivered": info["delivered"],
+            "box_height": box_pos[2],
             "number_floor_collision": floor_collision,
         }
 
