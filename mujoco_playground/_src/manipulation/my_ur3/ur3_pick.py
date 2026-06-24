@@ -325,7 +325,7 @@ class UR3Pick(ur3_base.UR3Base):
                 - self._init_q[self._robot_arm_qposadr]
             )
         )
-        # rewartd for finger distans large, when distance to boy large
+        # reward for finger distans large, when distance to box large
         finger_touch_Reward = jp.tanh(
             finger_touch_dist / (gripper_box_dist + 1e-6)
         )
@@ -349,7 +349,7 @@ class UR3Pick(ur3_base.UR3Base):
         # Binary indicator if the gripper has reached the box - scalar JAX float64
         info["reached_box"] = 1.0 * jp.maximum(
             info["reached_box"],
-            (gripper_box_dist < 0.02).astype(float),  # Panda threshold was 0.012
+            (gripper_box_dist < 0.01).astype(float),  # Panda threshold was 0.012
         )
 
         # Orientation reward — only active once the gripper has reached the box

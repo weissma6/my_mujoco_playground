@@ -78,6 +78,13 @@ def default_config() -> config_dict.ConfigDict:
             lift_eps=0.03,  # "off the floor" margin (m) for the lifted latch
             spawn_xy_jitter=0.05,  # shared pick/drop XY radius ("same radius")
             success_tol=1e-3,  # containment_max threshold for success
+            # Consecutive steps the containment criterion must hold (dwell).
+            success_dwell_steps=3,
+            # Strict mode: also require the box to be upright (rot_err < orient_eps)
+            # for success. The 8-corner containment is already orientation-aware
+            # (a tilted box pokes corners out), so this is an extra explicit gate.
+            success_require_orientation=False,
+            orient_eps=0.2,  # rot_err threshold; only used in strict mode
         ),
         impl="jax",
         nconmax=24 * 8192,
@@ -138,10 +145,19 @@ class UR3PicknPlace(ur3_base.UR3Base):
 
         # Box (4 cm) and target (5 cm) half-extents — single source of truth is
         # the XML; used by the containment reward (box must sit inside target).
-        self._box_half = jp.array(self._mj_model.geom("box").size, dtype=float)
-        self._target_half = jp.array(
-            self._mj_model.geom("mocap_target_geom").size, dtype=float
-        )
+        box_half = self._mj_model.geom("box").size
+        target_half = self._mj_model.geom("mocap_target_geom").size
+        # The target box MUST exceed the cube on every axis, otherwise "fully
+        # inside" has zero/negative slack and success is impossible. Fail loudly.
+        slack = target_half - box_half
+        if not (slack > 0.0).all():
+            raise ValueError(
+                f"mocap_target_geom half-extent {target_half} must exceed the box "
+                f"half-extent {box_half} on every axis (slack={slack}); enlarge "
+                "mocap_target_geom in mjx_single_cube_position_ur3_picknplace.xml."
+            )
+        self._box_half = jp.array(box_half, dtype=float)
+        self._target_half = jp.array(target_half, dtype=float)
         # 8 corner sign combinations of an axis-aligned box, shape (8, 3).
         self._box_corner_signs = jp.array(
             [
@@ -259,6 +275,8 @@ class UR3PicknPlace(ur3_base.UR3Base):
             "lifted": jp.array(0.0, dtype=float),
             "delivered": jp.array(0.0, dtype=float),
             "box_height": jp.array(0.0, dtype=float),
+            "containment_max": jp.array(0.0, dtype=float),
+            "contained": jp.array(0.0, dtype=float),
             **{k: jp.array(0.0, dtype=float)
                for k in self._config.reward_config.scales.keys()},
         }
@@ -297,16 +315,24 @@ class UR3PicknPlace(ur3_base.UR3Base):
         box_target_dist = jp.linalg.norm(info["target_pos"] - box_pos)
 
         # Success: the whole 4 cm box sits inside the 5 cm target box
-        # (worst corner within success_tol of the bounds).
-        success_now = (
+        # (worst corner within success_tol of the bounds). Orientation-aware via
+        # the 8 oriented corners in _get_reward.
+        contained = (
             raw_signals["containment_max"] <= self._config.curriculum.success_tol
         )
+        success_now = contained
+        if self._config.curriculum.success_require_orientation:  # static config flag
+            success_now = success_now & (
+                raw_signals["rot_err"] < self._config.curriculum.orient_eps
+            )
         info["success_counter"] = jp.where(
             success_now,
             info["success_counter"] + 1,
             jp.array(0, dtype=jp.int32),
         )
-        success = info["success_counter"] >= 3
+        success = (
+            info["success_counter"] >= self._config.curriculum.success_dwell_steps
+        )
 
         tcp_pos = data.site_xpos[self._gripper_site]
         out_of_bounds = (
@@ -328,6 +354,8 @@ class UR3PicknPlace(ur3_base.UR3Base):
             lifted=info["lifted"],
             delivered=info["delivered"],
             box_height=raw_signals["box_height"],
+            containment_max=raw_signals["containment_max"],
+            contained=contained.astype(jp.float32),
         )
 
         obs = self._get_obs(data, info)
