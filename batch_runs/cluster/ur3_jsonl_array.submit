@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-2%2
+#SBATCH --array=1-4%2
 
 set -euo pipefail
 
@@ -25,9 +25,12 @@ export PYOPENGL_PLATFORM=egl
 export EGL_PLATFORM=surfaceless
 unset DISPLAY
 
-# UR3Pick_sweep.jsonl is 1-indexed by the SLURM array task:
-#   1 = Pick_un20_env2048  (UR3Pick, 20M steps, 2048 envs)
-#   2 = Pick_un20_env1024  (UR3Pick, 20M steps, 1024 envs)
+# UR3Pick_sweep.jsonl is 1-indexed by the SLURM array task. Keep --array above
+# in sync with the line count (currently 4 configs):
+#   1 = Pick_tiny_10k_un10_env256
+#   2 = Pick_tiny_5k_un10_env256
+#   3 = Pick_tiny_10k_un5_env256
+#   4 = Pick_tiny_10k_un20_env256
 python batch_runs/scripts/run_one_ur3.py \
   --jsonl batch_runs/sweeps/UR3Pick_sweep.jsonl \
   --index "${SLURM_ARRAY_TASK_ID}" \

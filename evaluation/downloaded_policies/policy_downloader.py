@@ -156,3 +156,9 @@ def download_policy(
   print(f"[wandb] downloaded policy -> {out_dir} "
         f"(obs={metadata['obs_dim']}, act={metadata['action_dim']})")
   return out_dir
+
+
+if __name__ == "__main__":
+  # Example: fetch one trained UR3 pick policy into its run-id cache dir.
+  example_run_id = "Pick_tiny_5k_un10_env256_20260625_141404_6311"
+  download_policy(example_run_id, project=DEFAULT_PROJECT)
