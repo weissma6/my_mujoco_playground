@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=UR3Pick_simple
+#SBATCH --job-name=UR3PicknPlace_sweep
 #SBATCH --account=cai_iai
 #SBATCH --partition=gpu
 #SBATCH --output=logs/%x_%A_%a.out
@@ -10,7 +10,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-2
+#SBATCH --array=1-6%2
 
 set -euo pipefail
 
@@ -63,7 +63,7 @@ podman run --rm \
   bash -lc "
     python -c 'import jax; print(\"jax devices:\", jax.devices())' || true
     python batch_runs/scripts/run_one_ur3.py \
-      --jsonl batch_runs/sweeps/UR3Pick_sweep.jsonl \
+      --jsonl batch_runs/sweeps/UR3PicknPlace_sweep.jsonl \
       --index $SLURM_ARRAY_TASK_ID \
       --out_root results
   "
