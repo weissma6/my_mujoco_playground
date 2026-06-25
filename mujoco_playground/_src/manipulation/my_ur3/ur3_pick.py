@@ -62,6 +62,10 @@ def default_config() -> config_dict.ConfigDict:
         nconmax=24 * 8192,
         njmax=128,
         init_keyframe="low_home",
+        # Per-joint per-direction amplitude (rad) for reset randomization: 6 arm
+        # + 1 finger. Applied symmetrically as uniform(-v, +v) on top of the init
+        # keyframe. Default 0.05 reproduces the legacy uniform(-0.05, 0.05) arm noise.
+        init_qpos_noise=(0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.01),
     )
 
 
@@ -136,26 +140,32 @@ class UR3Pick(ur3_base.UR3Base):
         )
 
         # -----------------------------
-        # Randomize robot joint positions (arm only, not gripper)
+        # Randomize robot joint positions (per-joint amplitude from config)
         # -----------------------------
+        # Per-direction amplitude (rad): 6 arm joints + 1 finger. Applied as
+        # uniform(-v, +v) on top of the init keyframe.
+        noise_amp = jp.asarray(self._config.init_qpos_noise, dtype=float)
+        arm_amp = noise_amp[: len(self._robot_arm_qposadr)]  # 6 arm joints
+        finger_amp = noise_amp[-1]
+
         robot_qpos_noise = jax.random.uniform(
             rng_robot,
             (len(self._robot_arm_qposadr),),  # 6 arm joints
-            minval=-0.05,  # ~3 degrees in radians
-            maxval=0.05,
+            minval=-arm_amp,
+            maxval=arm_amp,
         )
         init_arm_qpos = jp.array(self._init_q[self._robot_arm_qposadr])
         noisy_arm_qpos = init_arm_qpos + robot_qpos_noise
 
-        # Gripper noise (small range since finger range is 0-0.025)
+        # Gripper noise — symmetric, clipped to the physical finger range [0, 0.025]
         gripper_noise = jax.random.uniform(
             rng_gripper,
             (2,),  # left and right finger
-            minval=0.0,
-            maxval=0.01,
+            minval=-finger_amp,
+            maxval=finger_amp,
         )
         init_finger_qpos = jp.array(self._init_q[self._robot_qposadr[-2:]])
-        noisy_finger_qpos = init_finger_qpos + gripper_noise
+        noisy_finger_qpos = jp.clip(init_finger_qpos + gripper_noise, 0.0, 0.025)
 
         # -----------------------------
         # Build initial qpos with randomized arm joints

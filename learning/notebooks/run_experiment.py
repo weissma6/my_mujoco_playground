@@ -19,7 +19,7 @@ import json
 import functools
 import random
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from mujoco_playground.config import manipulation_params
 from mujoco_playground import registry, wrapper
 from brax.training.agents.ppo import networks as ppo_networks
@@ -122,6 +122,7 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "algo",
         "notes",
         "init_keyframe",
+        "init_qpos_noise",
         "num_eval_envs",
         "seed",
         "domain_randomization",
@@ -308,10 +309,11 @@ def _rollout_and_log_video_from_make_policy(
     episode_length: int,
     render_every: int,
     camera_kwargs: Dict[str, Any],
+    env_overrides: Optional[Dict[str, Any]] = None,
 ):
     import jax.numpy as jnp
 
-    eval_env = registry.load(env_name)
+    eval_env = registry.load(env_name, config_overrides=env_overrides or {})
     jit_reset = jax.jit(eval_env.reset)
     jit_step = jax.jit(eval_env.step)
     policy = jax.jit(make_policy(params, deterministic=True))
@@ -888,6 +890,10 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         env_overrides = {}
         if "init_keyframe" in cfg:
             env_overrides["init_keyframe"] = cfg["init_keyframe"]
+        if "init_qpos_noise" in cfg:
+            env_overrides["init_qpos_noise"] = tuple(
+                float(x) for x in cfg["init_qpos_noise"]
+            )
 
         env = registry.load(env_name, config_overrides=env_overrides)
         env_cfg = registry.get_default_config(env_name)
@@ -1003,6 +1009,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
                     episode_length=episode_length,
                     render_every=render_every,
                     camera_kwargs=camera_kwargs,
+                    env_overrides=env_overrides,
                 )
 
         # -----------------------------
