@@ -882,6 +882,11 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         mode=wandb_mode,
         dir=out_dir,
     )
+    # Track the PEAK reward/success in the run summary (default is last value),
+    # so the W&B runs table / parallel-coords / param-importance panels rank by
+    # best-over-training rather than the final eval (which can be a post-peak dip).
+    wandb.define_metric("eval/episode_reward", summary="max")
+    wandb.define_metric("eval/episode_success", summary="max")
     print(f"W&B run: {run_id_tag} (mode={wandb_mode})", flush=True)
     try:
         # -----------------------------
