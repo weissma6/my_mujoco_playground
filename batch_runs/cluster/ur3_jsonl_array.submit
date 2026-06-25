@@ -26,11 +26,7 @@ export EGL_PLATFORM=surfaceless
 unset DISPLAY
 
 # UR3Pick_sweep.jsonl is 1-indexed by the SLURM array task. Keep --array above
-# in sync with the line count (currently 4 configs):
-#   1 = Pick_tiny_10k_un10_env256
-#   2 = Pick_tiny_5k_un10_env256
-#   3 = Pick_tiny_10k_un5_env256
-#   4 = Pick_tiny_10k_un20_env256
+# in sync with the line count.
 python batch_runs/scripts/run_one_ur3.py \
   --jsonl batch_runs/sweeps/UR3Pick_sweep.jsonl \
   --index "${SLURM_ARRAY_TASK_ID}" \
