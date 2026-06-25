@@ -882,7 +882,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         mode=wandb_mode,
         dir=out_dir,
     )
-
+    print(f"W&B run: {run_id_tag} (mode={wandb_mode})", flush=True)
     try:
         # -----------------------------
         # Env overrides + env creation
@@ -1078,7 +1078,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         except Exception:
             git_hash = "unknown"
 
-            
+
         # Save inference config — everything needed to reconstruct the policy
         wrapped_env = wrapper.wrap_for_brax_training(env)
         inference_cfg = {
@@ -1102,15 +1102,13 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         # Log everything as a single artifact
         safe_id = re.sub(r"[^a-zA-Z0-9_\-.]", "_", wandb.run.id)
         artifact = wandb.Artifact(f"policy_parameters_{safe_id}", type="model")
-
         artifact.add_file(params_path)
         artifact.add_file(metrics_path)
-        artifact.add_file(inference_cfg_path)   # makes the policy self-describing
+        artifact.add_file(inference_cfg_path)
+        print(f"[DEBUG] Artifact object created: {artifact}", flush=True)
+        print(f"[DEBUG] Calling wandb.log_artifact()...", flush=True)
         wandb.log_artifact(artifact)
-        try:
-            artifact.wait(timeout=300)  # 5 min timeout
-        except Exception as e:
-            print(f"Artifact upload timeout: {e}. Files safe at {out_dir}")
+        print(f"[DEBUG] wandb.log_artifact() returned. Calling artifact.wait()...", flush=True)
         time.sleep(10)  # Let W&B flush
 
     finally:
