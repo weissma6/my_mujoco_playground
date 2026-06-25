@@ -1067,6 +1067,18 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
                 f,
                 indent=2,
             )
+
+        # ← BEFORE artifact: get git hash and build inference config
+        try:
+            git_hash = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], 
+                cwd=os.path.dirname(__file__),
+                stderr=subprocess.DEVNULL
+            ).decode().strip()[:8]  # First 8 chars
+        except Exception:
+            git_hash = "unknown"
+
+            
         # Save inference config — everything needed to reconstruct the policy
         wrapped_env = wrapper.wrap_for_brax_training(env)
         inference_cfg = {
@@ -1076,6 +1088,11 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             "action_size": int(wrapped_env.action_size),
             "network_factory": _wb_jsonify(nf_params),
             "seed": seed,
+            "env_overrides": env_overrides,           # init_keyframe, custom params
+            "domain_randomization": cfg.get("domain_randomization", {}),
+            "git_commit": git_hash,     # Which code version?
+            "training_timestamp": str(datetime.now()),
+            "full_cfg": _wb_jsonify(cfg),             # All training config
         }
         with open(inference_cfg_path, "w", encoding="utf-8") as f:
             json.dump(inference_cfg, f, indent=2)
@@ -1090,7 +1107,11 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         artifact.add_file(metrics_path)
         artifact.add_file(inference_cfg_path)   # makes the policy self-describing
         wandb.log_artifact(artifact)
-        time.sleep(60)
+        try:
+            artifact.wait(timeout=300)  # 5 min timeout
+        except Exception as e:
+            print(f"Artifact upload timeout: {e}. Files safe at {out_dir}")
+        time.sleep(10)  # Let W&B flush
 
     finally:
         run.finish()
