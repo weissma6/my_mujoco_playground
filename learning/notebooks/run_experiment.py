@@ -1090,6 +1090,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         artifact.add_file(metrics_path)
         artifact.add_file(inference_cfg_path)   # makes the policy self-describing
         wandb.log_artifact(artifact)
+        time.sleep(60)
 
     finally:
         run.finish()
