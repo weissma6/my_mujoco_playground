@@ -32,8 +32,11 @@ from ur3_realrobot_dependencies import UR3RealRobotPick
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "../.."))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "../../evaluation/downloaded_policies"))
 from motion_capture.mymocap.vrpn_dependencies import VRPNRigidBodyReader
 from robots.hande.HandE_dependency import HandEGripper
+from policy_downloader import default_policy_dir, download_policy
 
 # ===========================================================================
 # CONFIGURATION
@@ -92,16 +95,21 @@ MODEL_PATH = os.path.join(
     "../../mujoco_playground/_src/manipulation/my_ur3/xmls/"
     "mjx_single_cube_position_ur3_picknplace.xml",
 )
-POLICY_PATH = os.path.join(
-    SCRIPT_DIR,
-    "../../evaluation/downloaded_policies/ur3_pick_policy",
-)
+# Policy registry: friendly name -> W&B run id. Add a trained run here, then
+# point POLICY_NAME at it. Values are bare run ids; a policy trained to a
+# different W&B project (e.g. pick-and-place -> "UR3_PicknDrop") also needs
+# WANDB_PROJECT below adjusted.
+POLICY_REGISTRY = {
+    "pick_un20_env2048": "Pick_un20_env2048_20260624_160023_6311",
+    "pick_dr_medium":    "ur3pick_DR_MFR_medium_20260603_092056_5305",
+}
+POLICY_NAME = "pick_un20_env2048"   # <- select which policy to run
 
-# W&B policy download (used only if POLICY_PATH does not already exist).
-# Fill WANDB_RUN_ID with the trained run id after the cluster job completes.
-WANDB_RUN_ID = "ur3pick_DR_MFR_medium_20260603_092056_5305"              # e.g. "ur3pick_baseline_20260605_..."
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
+WANDB_RUN_ID = POLICY_REGISTRY[POLICY_NAME]
+# Local cache is run-id keyed: evaluation/downloaded_policies/{run_id}/
+POLICY_PATH = default_policy_dir(WANDB_RUN_ID)
 FOLDER_OUT = os.path.join(SCRIPT_DIR, "results")
 VIDEO_OUT = os.path.join(FOLDER_OUT, "ur3_pick_replay.mp4")
 CSV_OUT = os.path.join(FOLDER_OUT, "ur3_pick_states.csv")
@@ -170,17 +178,11 @@ print(f"Starting pick loop at {CONTROL_HZ} Hz ...")
 print(f"\nMoving to start pose {Q_START}")
 robot.send_movej(Q_START, a=1.0, v=0.5, asynchronous=False)  # blocking moveJ
 
-# ── Download policy from W&B if missing ────────────────────────────────
-if not os.path.exists(os.path.join(POLICY_PATH, "params.msgpack")):
-    if WANDB_RUN_ID is None:
-        raise RuntimeError(
-            f"No policy at {POLICY_PATH} and WANDB_RUN_ID is unset. "
-            "Set WANDB_RUN_ID to download the trained policy from W&B."
-        )
-    robot.download_policy_from_wandb(
-        run_id=WANDB_RUN_ID, out_dir=POLICY_PATH,
-        entity=WANDB_ENTITY, project=WANDB_PROJECT,
-    )
+# ── Download policy from W&B if missing (cache-aware, run-id keyed) ─────
+download_policy(
+    WANDB_RUN_ID, out_dir=POLICY_PATH,
+    entity=WANDB_ENTITY, project=WANDB_PROJECT,
+)
 
 # ── Load policy + FK model ─────────────────────────────────────────────
 robot.load_policy_fn(policy_path=POLICY_PATH, deterministic=True)

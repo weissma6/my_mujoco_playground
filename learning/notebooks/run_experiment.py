@@ -15,6 +15,7 @@ re-export `run_experiment` from here for back-compat.
 import os
 import platform
 import subprocess
+import shutil
 import json
 import functools
 import random
@@ -1110,6 +1111,15 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         wandb.log_artifact(artifact)
         print(f"[DEBUG] wandb.log_artifact() returned. Calling artifact.wait()...", flush=True)
         time.sleep(10)  # Let W&B flush
+
+        # Also publish under trained_policy/ in the run's Files tab — browsable
+        # in the W&B UI; the policy downloader prefers it over the artifact.
+        tp_dir = os.path.join(out_dir, "trained_policy")
+        os.makedirs(tp_dir, exist_ok=True)
+        for src in (params_path, metrics_path, inference_cfg_path):
+            dst = os.path.join(tp_dir, os.path.basename(src))
+            shutil.copy(src, dst)
+            wandb.save(dst, base_path=out_dir)
 
     finally:
         run.finish()

@@ -325,80 +325,21 @@ class UR3RealRobotPick:
     ) -> str:
         """Download a trained PPO policy from W&B into a load_policy_fn-ready dir.
 
-        Fetches the run's `model` artifact (params.msgpack) and writes a
-        metadata.json alongside it (env_name + network_factory from run.config,
-        obs_dim/action_dim resolved from the registry so they track the env).
-        Skips the download if out_dir already has both files unless force=True.
-        Returns out_dir.
+        Thin wrapper kept for backward compatibility (notebooks call it). The
+        single implementation lives in the dependency-light
+        evaluation/downloaded_policies/policy_downloader module.
         """
-        import json as _json
-        import shutil
-
-        params_out = os.path.join(out_dir, "params.msgpack")
-        meta_out = os.path.join(out_dir, "metadata.json")
-        if not force and os.path.exists(params_out) and os.path.exists(meta_out):
-            print(f"[wandb] policy already present at {out_dir} (skipping download)")
-            return out_dir
-
-        import wandb
-
-        os.makedirs(out_dir, exist_ok=True)
-        api = wandb.Api()
-        run = api.run(f"{entity}/{project}/{run_id}")
-
-        policy_art = next(
-            (a for a in run.logged_artifacts() if a.type == "model"), None
+        downloader_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "../../evaluation/downloaded_policies",
         )
-        if policy_art is None:
-            raise ValueError(f"No 'model' artifact found for run {run_id}")
-        art_dir = policy_art.download(root=os.path.join(out_dir, "_artifact"))
-        shutil.copyfile(os.path.join(art_dir, "params.msgpack"), params_out)
+        if downloader_dir not in sys.path:
+            sys.path.insert(0, downloader_dir)
+        from policy_downloader import download_policy
 
-        # Prefer the inference_config.json shipped inside the artifact (carries the
-        # real network_factory + obs/action sizes); fall back to run.config + the
-        # registry for older runs that predate self-describing artifacts.
-        inf_cfg_path = os.path.join(art_dir, "inference_config.json")
-        inf_cfg = {}
-        if os.path.exists(inf_cfg_path):
-            with open(inf_cfg_path) as f:
-                inf_cfg = _json.load(f)
-
-        env_name = inf_cfg.get("env_name") or run.config.get("env_name", "UR3PicknPlace")
-        env = registry.load(env_name)
-        reg_obs, reg_act = int(env.observation_size), int(env.action_size)
-
-        if inf_cfg:
-            nf = inf_cfg.get("network_factory", {}) or {}
-            obs_dim = int(inf_cfg.get("observation_size", reg_obs))
-            action_dim = int(inf_cfg.get("action_size", reg_act))
-            if obs_dim != reg_obs or action_dim != reg_act:
-                print(f"[wandb] WARNING: artifact obs/act ({obs_dim},{action_dim}) "
-                      f"!= env {env_name} ({reg_obs},{reg_act}); using artifact dims")
-        else:
-            nf = run.config.get("network_factory", {}) or {}
-            obs_dim, action_dim = reg_obs, reg_act
-            if not nf:
-                print("[wandb] WARNING: no network_factory in artifact or run.config; "
-                      "load may fail with a params shape mismatch")
-        metadata = {
-            "env_name": env_name,
-            "obs_dim": obs_dim,
-            "action_dim": action_dim,
-            "network_factory": nf,
-            "wandb_run_id": run_id,
-            "wandb_entity": entity,
-            "wandb_project": project,
-            "action_scale": inf_cfg.get("action_scale",
-                                        run.config.get("action_scale", 0.04)),
-            "ctrl_dt": inf_cfg.get("ctrl_dt", run.config.get("ctrl_dt", 0.02)),
-            "episode_length": inf_cfg.get("episode_length",
-                                          run.config.get("episode_length")),
-        }
-        with open(meta_out, "w") as f:
-            _json.dump(metadata, f, indent=2)
-        print(f"[wandb] downloaded policy -> {out_dir} "
-              f"(obs={metadata['obs_dim']}, act={metadata['action_dim']})")
-        return out_dir
+        return download_policy(
+            run_id, out_dir, entity=entity, project=project, force=force
+        )
 
     def load_policy_fn(self, policy_path: str, deterministic: bool = True):
         """Load a Brax PPO policy from saved files (metadata.json + params.msgpack).
