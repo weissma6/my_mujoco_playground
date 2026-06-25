@@ -128,7 +128,7 @@ intact.
 - ZHAW SLURM cluster, rootless Podman with image `mujoco:env_EGL` built
   from `mujoco_env_EGL.tar`. Loaded under a `flock` so concurrent array
   tasks don't race.
-- `batch_runs/slurm/run_array_ur3.sbatch` — array job, mounts repo at
+- `batch_runs/slurm/run_array_ur3_pick.sbatch` — array job, mounts repo at
   `/workspace`, calls `scripts/run_one_ur3.py`. W&B key read from
   `~/.secrets/wandb_key`.
 - `batch_runs/sweeps/UR3Pick_sweep.jsonl` — **1-indexed by SLURM array
@@ -191,7 +191,7 @@ learning/
     └── ur3_realrobot_pickloop.py
 
 batch_runs/
-├── slurm/run_array_ur3.sbatch
+├── slurm/run_array_ur3_pick.sbatch
 ├── scripts/run_one_ur3.py
 └── sweeps/UR3Pick_sweep.jsonl          # 3 configs
 

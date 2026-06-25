@@ -13,8 +13,8 @@
 #    they differ ONLY in num_envs 2048 vs 1024 — a throughput comparison.)
 #
 # (Alternative Podman/EGL pipeline for simple pick lives at
-#  batch_runs/slurm/run_array_ur3_simplepick.sbatch;
-#  the pick-and-place Podman job is batch_runs/slurm/run_array_ur3.sbatch.)
+#  batch_runs/slurm/run_array_ur3_pick.sbatch;
+#  the pick-and-place Podman job is batch_runs/slurm/run_array_ur3_picknplace.sbatch.)
 
 # connect to Login node
 ssh weissma6@dallas.zhaw.ch
@@ -51,15 +51,15 @@ python batch_runs/scripts/run_one_ur3.py \
 # ------------------------------------------------
 # Single config (array index = sweep line):
 sbatch --array=1-1 batch_runs/cluster/ur3_jsonl_array.submit   # Pick_un20_env2048
-sbatch --array=2-2 batch_runs/cluster/ur3_jsonl_array.submit   # Pick_un20_env1024
+sbatch --array=3-3 batch_runs/cluster/ur3_jsonl_array.submit   # Pick_short
 
 # Full sweep (both configs, max 2 at a time):
-sbatch batch_runs/cluster/ur3_jsonl_array.submit               # array 1-2%2
+sbatch batch_runs/cluster/ur3_jsonl_array.submit               # array 1-4%2
 
 # See the active jobs
 squeue -u weissma6
 squeue -u weissma6 -o "%.18i %.9P %.20j %.8T %.10M %.10l %.6D %R"
-squeue -j <job_id>
+squeue -j 31119
 
 # Check job history with status
 sacct -u weissma6 \
@@ -68,7 +68,7 @@ sacct -u weissma6 \
 
 # Logs (job-name is UR3Pick_sweep_uv -> logs/UR3Pick_sweep_uv_<jobid>_<arrayidx>.{out,err})
 find . -maxdepth 3 -type f -name "*UR3Pick_sweep_uv*" -print
-tail -f logs/UR3Pick_sweep_uv_23307_1.err
+tail -f logs/UR3Pick_sweep_uv_31226_3.err
 
 # Watch resource usage (CPU / GPU)
 sstat -j <job_id>_1.batch --format=AveCPU,AveRSS,MaxRSS,MaxVMSize,AveDiskRead,AveDiskWrite

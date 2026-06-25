@@ -15,7 +15,6 @@ re-export `run_experiment` from here for back-compat.
 import os
 import platform
 import subprocess
-import shutil
 import json
 import functools
 import random
@@ -33,9 +32,7 @@ import numpy as np
 import jax.numpy as jnp
 from datetime import datetime
 from flax import serialization
-import time
 import mujoco
-import re
 
 
 
@@ -1051,36 +1048,17 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         print_dict_pairs(ppo_params_overwrite)
         print_dict_pairs(dr_kwargs, prefix="[DR] ")
 
-        # Prepare output paths once
-        params_path = os.path.join(out_dir, "params.msgpack")
-        metrics_path = os.path.join(out_dir, "final_metrics.json")
-        inference_cfg_path = os.path.join(out_dir, "inference_config.json")
-
-
-        # Save params (JAX/Flax-safe)
-        with open(params_path, "wb") as f:
-            f.write(serialization.to_bytes(params))
-
-        # Save metrics
-        with open(metrics_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {k: float(v) for k, v in final_metrics.items() if isinstance(v, (int, float))},
-                f,
-                indent=2,
-            )
-
-        # ← BEFORE artifact: get git hash and build inference config
+        # Get git hash and build the inference config (everything needed to
+        # reconstruct the policy at deploy time).
         try:
             git_hash = subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], 
+                ["git", "rev-parse", "HEAD"],
                 cwd=os.path.dirname(__file__),
                 stderr=subprocess.DEVNULL
             ).decode().strip()[:8]  # First 8 chars
         except Exception:
             git_hash = "unknown"
 
-
-        # Save inference config — everything needed to reconstruct the policy
         wrapped_env = wrapper.wrap_for_brax_training(env)
         inference_cfg = {
             "env_name": env_name,
@@ -1095,31 +1073,29 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             "training_timestamp": str(datetime.now()),
             "full_cfg": _wb_jsonify(cfg),             # All training config
         }
-        with open(inference_cfg_path, "w", encoding="utf-8") as f:
-            json.dump(inference_cfg, f, indent=2)
         if "eval/episode_reward" in final_metrics:
             wandb.run.summary["final_eval_return"] = float(final_metrics["eval/episode_reward"])
 
-        # Log everything as a single artifact
-        safe_id = re.sub(r"[^a-zA-Z0-9_\-.]", "_", wandb.run.id)
-        artifact = wandb.Artifact(f"policy_parameters_{safe_id}", type="model")
-        artifact.add_file(params_path)
-        artifact.add_file(metrics_path)
-        artifact.add_file(inference_cfg_path)
-        print(f"[DEBUG] Artifact object created: {artifact}", flush=True)
-        print(f"[DEBUG] Calling wandb.log_artifact()...", flush=True)
-        wandb.log_artifact(artifact)
-        print(f"[DEBUG] wandb.log_artifact() returned. Calling artifact.wait()...", flush=True)
-        time.sleep(10)  # Let W&B flush
-
-        # Also publish under trained_policy/ in the run's Files tab — browsable
-        # in the W&B UI; the policy downloader prefers it over the artifact.
+        # Publish the policy under trained_policy/ in the run's Files tab —
+        # browsable in the W&B UI and read by the policy downloader. Written
+        # directly from the in-memory variables (params, final_metrics,
+        # inference_cfg); no W&B artifact.
         tp_dir = os.path.join(out_dir, "trained_policy")
         os.makedirs(tp_dir, exist_ok=True)
-        for src in (params_path, metrics_path, inference_cfg_path):
-            dst = os.path.join(tp_dir, os.path.basename(src))
-            shutil.copy(src, dst)
-            wandb.save(dst, base_path=out_dir)
+
+        with open(os.path.join(tp_dir, "params.msgpack"), "wb") as f:
+            f.write(serialization.to_bytes(params))
+        with open(os.path.join(tp_dir, "final_metrics.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {k: float(v) for k, v in final_metrics.items() if isinstance(v, (int, float))},
+                f,
+                indent=2,
+            )
+        with open(os.path.join(tp_dir, "inference_config.json"), "w", encoding="utf-8") as f:
+            json.dump(inference_cfg, f, indent=2)
+
+        for name in ("params.msgpack", "final_metrics.json", "inference_config.json"):
+            wandb.save(os.path.join(tp_dir, name), base_path=out_dir)
 
     finally:
         run.finish()

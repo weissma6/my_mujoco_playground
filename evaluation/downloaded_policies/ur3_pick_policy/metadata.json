@@ -1,0 +1,12 @@
+{
+  "env_name": "UR3PicknPlace",
+  "obs_dim": 26,
+  "action_dim": 7,
+  "network_factory": {},
+  "wandb_run_id": "ur3pick_DR_MFR_medium_20260603_092056_5305",
+  "wandb_entity": "weissma6-zhaw-school-of-engineering",
+  "wandb_project": "UR3_pick_ppo",
+  "action_scale": 0.04,
+  "ctrl_dt": 0.02,
+  "episode_length": null
+}
