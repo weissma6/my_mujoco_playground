@@ -9,7 +9,8 @@ Mirror of UR10_RealRobot_Reach_ONE.py, adapted for the UR3PicknPlace policy:
   - the lift target is hardcoded below
 
 Position the robot, place the tracked rigid body in the cameras' view, then run.
-A MuJoCo replay video + diagnostic plots + run metadata are written to results/.
+A MuJoCo replay video + diagnostic plots + run metadata are written to
+real_robot_results/ (git-tracked).
 
 Usage:
     python ur3_realrobot_pickloop.py
@@ -64,6 +65,12 @@ Q_START = [0, -2.0, 1.6, -1.6, -1.5, 0]
 MOCAP_SERVER_IP = "10.1.1.198"
 MOCAP_RIGID_BODY_NAME = "CubeInCube2"  # streamed VRPN tracker name
 MOCAP_RIGID_BODY_ID = None        # kept for run-metadata only (VRPN reads by name)
+# Rigid-body loss guard: if the tracked body has not updated for this many
+# seconds (it left the cameras' view), STOP the loop and report. The mocap
+# streams ~60 Hz, so 0.25 s ~= 15 dropped frames — long enough to ride out a
+# single missed frame, short enough to halt fast. The loop subscribes to ONLY
+# this body so its last-update time is not kept fresh by other trackers.
+MOCAP_STALE_S = 0.25
 
 # Gripper: True drives the real Hand-E via the HandEGripper wrapper (Robotiq URCapX
 # XML-RPC, PolyScope X); False = no-op (URSim dry-run / arm-only test).
@@ -76,44 +83,57 @@ GRIPPER_FORCE_PCT = 50
 # Convergence
 REACH_TOL = 0.03                  # 3 cm (box-to-target)
 DWELL_TIME_S = 2.0
-TIMEOUT_S = 30.0
+TIMEOUT_S = 10.0
 
 # Control (must match training: 50 Hz -> ctrl_dt=0.02, action_scale=0.04)
 CONTROL_HZ = 50.0
-ACTION_SCALE = 0.04
+ACTION_SCALE = 0.04              # MUST match training (UR3Pick default 0.04)
 LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
 SERVOJ_A = 0.2                    # max joint accel [rad/s^2]
 SERVOJ_V = 0.2                    # max joint vel  [rad/s]
-ALPHA = 1.0
+ALPHA = 0.5                      # scales the use of the policy action
 USE_FK_TCP = True                 # compute tcp_pos via MuJoCo FK (matches sim site)
+# Gripper smoothing (deployment only — sim has a real PD finger plant; here we
+# re-create its lag so the policy sees what it trained on and the command stops
+# oscillating). GRIPPER_TAU=0 + GRIPPER_MAX_RATE=inf reproduces the raw behavior.
+GRIPPER_TAU = 0.05               # s; finger-plant low-pass time constant (~2-3 steps)
+GRIPPER_MAX_RATE = 0.125         # m/s; brute-force slew cap (full 25 mm in >=0.2 s)
 
 # Paths (relative to this script)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# This policy trains on UR3Pick (env_name in metadata.json), so render/FK use the
+# UR3Pick scene — NOT the pick-and-place XML (different box size + target).
 MODEL_PATH = os.path.join(
     SCRIPT_DIR,
     "../../mujoco_playground/_src/manipulation/my_ur3/xmls/"
-    "mjx_single_cube_position_ur3_picknplace.xml",
+    "mjx_single_cube_position_ur3.xml",
 )
 # Policy registry: friendly name -> W&B run id. Add a trained run here, then
 # point POLICY_NAME at it. Values are bare run ids; a policy trained to a
 # different W&B project (e.g. pick-and-place -> "UR3_PicknDrop") also needs
-# WANDB_PROJECT below adjusted.
+# WANDB_PROJECT below adjusted. The selected policy is loaded from
+# evaluation/downloaded_policies/{run_id}/ if present, else downloaded from W&B.
 POLICY_REGISTRY = {
-    "pick_un20_env2048": "Pick_un20_env2048_20260624_160023_6311",
-    "pick_dr_medium":    "ur3pick_DR_MFR_medium_20260603_092056_5305",
+    "pick_12M_rand_base85_fin25": "Pick_12M_rand_base85_fin25_20260626_094554_6311",
+    "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
+    "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
 }
-POLICY_NAME = "pick_un20_env2048"   # <- select which policy to run
+POLICY_NAME = "pick_12M_rand_base85_fin25"   # <- select which policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
 WANDB_RUN_ID = POLICY_REGISTRY[POLICY_NAME]
 # Local cache is run-id keyed: evaluation/downloaded_policies/{run_id}/
 POLICY_PATH = default_policy_dir(WANDB_RUN_ID)
-FOLDER_OUT = os.path.join(SCRIPT_DIR, "results")
+# real_robot_results/ (NOT "results/", which is git-ignored) so the run outputs
+# are tracked and uploaded.
+FOLDER_OUT = os.path.join(SCRIPT_DIR, "real_robot_results")
 VIDEO_OUT = os.path.join(FOLDER_OUT, "ur3_pick_replay.mp4")
 CSV_OUT = os.path.join(FOLDER_OUT, "ur3_pick_states.csv")
-PLOTS_OUT = os.path.join(FOLDER_OUT, "ur3_pick_plots.png")
+ROBOT_PLOTS_OUT = os.path.join(FOLDER_OUT, "ur3_pick_robot_plots.png")
+GRIPPER_PLOTS_OUT = os.path.join(FOLDER_OUT, "ur3_pick_gripper_plots.png")
+TIMING_OUT = os.path.join(FOLDER_OUT, "ur3_pick_timing.png")
 META_OUT = os.path.join(FOLDER_OUT, "ur3_pick_meta.json")
 VIDEO_FPS = 50.0
 
@@ -141,15 +161,25 @@ if not robot.is_connected():
 robot.print_feedback()
 
 # ── Connect mocap (VRPN) ───────────────────────────────────────────────
+# Subscribe to ONLY the target body (names=[...]) so its last-update time is the
+# loss signal — with the default "stream all", another tracker would keep the
+# timestamp fresh and mask the box leaving view.
 print(f"\nConnecting to mocap {MOCAP_SERVER_IP} (rigid body {MOCAP_RIGID_BODY_NAME}) ...")
 mocap = VRPNRigidBodyReader(
     MOCAP_SERVER_IP,
     rigid_body_name=MOCAP_RIGID_BODY_NAME,
+    names=[MOCAP_RIGID_BODY_NAME],
 )
 if not mocap.start(timeout=5.0):
     raise RuntimeError(
         "Mocap failed to connect. Check the server IP, that 'SDK Enabled' is "
         "on, and that the rigid body is defined and visible to the cameras."
+    )
+if not mocap.wait_for_data(timeout=5.0):
+    raise RuntimeError(
+        f"Mocap subscribed but rigid body '{MOCAP_RIGID_BODY_NAME}' never "
+        "reported. Check the name (case-sensitive) and that it is visible to "
+        "the cameras."
     )
 box0 = mocap.get_rigid_body_xyz()
 print(f"Initial box (mocap): {None if box0 is None else np.round(box0, 4).tolist()}")
@@ -167,8 +197,12 @@ if ENABLE_GRIPPER:
     gripper.connect()
     gripper.open_gripper()  # start the task with fingers open
     gripper_fn = lambda norm: gripper.command(norm * 0.025)  # noqa: E731
+    # Read the real finger position back (diagnostic only — see run_policy_loop);
+    # polled at the same <=10 Hz cadence as the command, logged as gripper_fb_pos.
+    gripper_state_fn = lambda: gripper.read_state().get("sim_finger", float("nan"))  # noqa: E731
 else:
     gripper_fn = lambda norm: None  # noqa: E731
+    gripper_state_fn = None
 
 target = np.array(DROP_TARGET, dtype=np.float32)
 print(f"\nDrop target : {target.tolist()}")
@@ -204,19 +238,27 @@ df, stats = robot.run_policy_loop(
     servoj_v=SERVOJ_V,
     alpha=ALPHA,
     gripper_fn=gripper_fn,
+    gripper_state_fn=gripper_state_fn,
+    gripper_tau=GRIPPER_TAU,
+    gripper_max_rate=GRIPPER_MAX_RATE,
     use_fk_tcp=USE_FK_TCP,
     reach_tol=REACH_TOL,
     dwell_time_s=DWELL_TIME_S,
+    mocap_stale_s=MOCAP_STALE_S,
 )
 
 # ── Results ────────────────────────────────────────────────────────────
-final_dist = stats["final_box_to_target_dist"]
-print(f"\nFinal box->target: {final_dist * 1000:.1f} mm — "
+stop_reason = stats.get("stopped_reason", "completed")
+final_dist = stats.get("final_box_to_target_dist", float("nan"))
+print(f"\nStopped: {stop_reason}")
+print(f"Final box->target: {final_dist * 1000:.1f} mm — "
       f"{'REACHED' if final_dist < REACH_TOL else 'NOT REACHED'}")
-print(f"Steps: {len(df)}, wall time: {stats['total_wall_time_s']:.2f}s")
+print(f"Steps: {len(df)}, wall time: {stats.get('total_wall_time_s', 0.0):.2f}s")
 
 # ── Success + release ──────────────────────────────────────────────────
-reached = final_dist < REACH_TOL
+# Only treat as success if the loop actually converged — a mocap-loss stop with
+# the box happening to be near target is NOT a real reach.
+reached = stop_reason != "mocap_lost" and final_dist < REACH_TOL
 if reached:
     print("\nSUCCESS")
     time.sleep(3.0)
@@ -229,14 +271,29 @@ if reached:
     robot.send_movej(Q_START, a=1.0, v=0.5, asynchronous=False)  # blocking moveJ
 
 robot.print_stats(stats, keys=[
+    "stopped_reason",
     "true_inferred_frequency_hz",
     "mean_loop_hz_true",
+    "mean_recv_time_s",
+    "mean_mocap_time_s",
+    "mean_policy_time_s",
+    "mean_send_time_s",
     "start_box_to_target_dist",
     "final_box_to_target_dist",
     "min_box_to_target_dist",
     "net_improvement",
     "num_overruns",
 ])
+
+if len(df) == 0:
+    # Loop stopped before logging any step (e.g. mocap lost immediately).
+    print("\nNo steps logged — skipping video/plots. Check mocap + robot.")
+    mocap.stop()
+    if gripper is not None:
+        gripper.disconnect()
+    robot.disconnect()
+    print("Done.")
+    sys.exit(0)
 
 # ── Render video ───────────────────────────────────────────────────────
 print("\nRendering MuJoCo replay ...")
@@ -252,7 +309,18 @@ print(f"Video: {VIDEO_OUT}")
 # ── Save full per-step state + plots + metadata ────────────────────────
 df.to_csv(CSV_OUT, index=False)
 print(f"States: {CSV_OUT}")
-robot.save_plots(df, out_path=PLOTS_OUT)
+# Two split diagnostic figures: the arm control pipeline and the gripper control
+# pipeline (measured -> obs -> action -> ctrl stages -> command), so the gripper
+# oscillation is visible per signal.
+robot.save_robot_plots(df, out_path=ROBOT_PLOTS_OUT)
+print(f"Robot plots: {ROBOT_PLOTS_OUT}")
+robot.save_gripper_plots(df, out_path=GRIPPER_PLOTS_OUT)
+print(f"Gripper plots: {GRIPPER_PLOTS_OUT}")
+# Per-loop-step timing bar graph (receive / mocap / obs / inference / ctrl /
+# send) — where each control tick's compute time goes (the pacing sleep is
+# excluded from the bar chart; still in the CSV).
+robot.save_timing_breakdown(df, out_path=TIMING_OUT)
+print(f"Timing: {TIMING_OUT}")
 robot.save_run_metadata(
     META_OUT,
     robot_ip=ROBOT_IP,
@@ -261,7 +329,9 @@ robot.save_run_metadata(
     mocap_server_ip=MOCAP_SERVER_IP,
     mocap_rigid_body_name=MOCAP_RIGID_BODY_NAME,
     mocap_rigid_body_id=MOCAP_RIGID_BODY_ID,
+    mocap_stale_s=MOCAP_STALE_S,
     enable_gripper=ENABLE_GRIPPER,
+    policy_name=POLICY_NAME,
     reach_tol=REACH_TOL,
     timeout_s=TIMEOUT_S,
     control_hz=CONTROL_HZ,
@@ -271,6 +341,8 @@ robot.save_run_metadata(
     servoj_a=SERVOJ_A,
     servoj_v=SERVOJ_V,
     alpha=ALPHA,
+    gripper_tau=GRIPPER_TAU,
+    gripper_max_rate=GRIPPER_MAX_RATE,
     use_fk_tcp=USE_FK_TCP,
     policy_path=POLICY_PATH,
     model_path=MODEL_PATH,

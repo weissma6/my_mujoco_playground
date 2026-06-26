@@ -46,6 +46,16 @@ from brax.training.acme import running_statistics
 from mujoco_playground import registry
 
 
+class MocapRigidBodyLost(RuntimeError):
+    """Raised when the tracked mocap rigid body stops updating mid-loop.
+
+    The VRPN reader keeps returning the LAST pose after a body leaves the
+    cameras' view (it never reverts to None), so loss is detected by staleness:
+    last_update_time stops advancing. run_policy_loop catches this, stops the
+    arm, and returns the partial log so diagnostics are still saved.
+    """
+
+
 class UR3RealRobotPick:
     """RTDE control loop for the UR3 pick task (6-DOF arm + Hand-E, 26D obs)."""
 
@@ -72,9 +82,24 @@ class UR3RealRobotPick:
         self._ctrl_uppers: Optional[np.ndarray] = None
         # Internal gripper command tracker (the obs does not include gripper
         # state, so we integrate the policy's gripper action ourselves).
+        # _gripper_ctrl lives in the tendon-actuator ctrl space [_gripper_lo,
+        # _gripper_hi] = [0, 0.05] (matches the sim actuator ctrlrange and the
+        # sim integrator in ur3_pick.step). The PHYSICAL per-finger position is
+        # in [0, _finger_hi] = [0, 0.025] (the finger joint range), and the
+        # training obs uses the finger JOINT position there — so obs/command are
+        # projected from ctrl-space into finger-space 1:1 and clipped at
+        # _finger_hi (the tendon coef 0.5 + 1:1 coupling makes ctrl == per-finger
+        # position in the unsaturated regime; ctrl in (0.025, 0.05] just over-
+        # drives against the joint limit, exactly as in sim).
         self._gripper_ctrl: float = 0.0
         self._gripper_lo: float = 0.0
         self._gripper_hi: float = 0.05
+        self._finger_hi: float = 0.025
+        # Deployment-only estimate of the physical per-finger position [0, 0.025],
+        # produced by the finger-plant low-pass in policy_step_ctrl_update (sim has
+        # a real PD finger plant; deployment re-creates its lag so the policy sees
+        # what it trained on). Feeds BOTH the command and the obs. Starts open.
+        self._finger_pos_est: float = 0.0
         # GRIPPER channel. The real Hand-E is driven by robots/hande/HandEGripper
         # (Robotiq URCapX XML-RPC, HTTP :49999, slaveId 9, percent units). ALL
         # gripper logic (incl. the verified sim<->percent mapping) lives there;
@@ -397,8 +422,17 @@ class UR3RealRobotPick:
         self._ctrl_lowers = np.array(lowers, dtype=np.float32)
         self._ctrl_uppers = np.array(uppers, dtype=np.float32)
         # Gripper actuator is the last one (tendon "split", ctrlrange 0..0.05).
+        # This is the INTEGRATOR range, matching the sim ctrl clip.
         self._gripper_lo = float(self._ctrl_lowers[-1])
         self._gripper_hi = float(self._ctrl_uppers[-1])
+        # Physical per-finger close (= the finger joint range max, 0.025). The
+        # obs/command are clipped here, because the training obs uses the finger
+        # JOINT position [0, 0.025], not the tendon ctrl [0, 0.05].
+        self._finger_hi = float(
+            env.mj_model.jnt_range[
+                env.mj_model.joint("hande_left_finger_joint").id
+            ][1]
+        )
 
         # JIT warmup.
         t0 = time.perf_counter()
@@ -474,7 +508,16 @@ class UR3RealRobotPick:
         Returns shape (1, 26) for batched policy input.
         """
         arm_q = np.array(fb["q"], dtype=dtype)
-        finger_q = np.full(2, float(self._gripper_ctrl), dtype=dtype)
+        # Finger obs in the training space: the per-finger JOINT position in
+        # [0, 0.025] m (ur3_base._get_obs feeds data.qpos[finger joints]). Use the
+        # finger-PLANT estimate (policy_step_ctrl_update's low-pass of the tendon
+        # integrator), NOT the raw [0, 0.05] ctrl: sim observes the lagged physical
+        # finger, so feeding the raw command would be out-of-distribution and, after
+        # running_statistics.normalize, drive the policy off the rails (and the
+        # zero-lag feedback was what made the deploy gripper oscillate).
+        finger_q = np.full(
+            2, float(np.clip(self._finger_pos_est, 0.0, self._finger_hi)), dtype=dtype
+        )
         q = np.concatenate([arm_q, finger_q])                       # 8
         qd = np.array(fb["qd"], dtype=dtype)                        # 6 (arm)
         tcp = (np.array(fb["tcp_xyz"], dtype=dtype) if tcp_pos is None
@@ -570,12 +613,22 @@ class UR3RealRobotPick:
         action: np.ndarray,
         action_scale: float = 0.04,
         alpha: float = 1.0,
+        dt: float = 0.02,
+        gripper_tau: float = 0.0,
+        gripper_max_rate: float = float("inf"),
         dtype=np.float32,
-    ) -> Tuple[np.ndarray, float]:
+    ) -> Tuple[np.ndarray, float, dict]:
         """Compute arm servoj target and gripper command from a 7D action.
 
-        Returns (arm_ctrl(6,), gripper_norm) where gripper_norm is in [0,1].
-        The gripper command is integrated internally (obs has no gripper state).
+        Returns (arm_ctrl(6,), gripper_norm, diag) where gripper_norm is in [0,1]
+        and diag carries the pre-smoothing intermediates for the diagnostic plots
+        (arm_ctrl_pre_alpha, gripper_ctrl_raw, finger_pos_est). The gripper command
+        is integrated internally (the obs has no real gripper feedback); the
+        finger-plant low-pass below re-creates the sim finger dynamics the policy
+        was trained against.
+
+        gripper_tau / gripper_max_rate default to the degenerate (no-smoothing)
+        values, so this reduces EXACTLY to the prior behavior when they are unset.
         """
         action = np.asarray(action, dtype=dtype).reshape(-1)
         q = np.asarray(q, dtype=dtype)
@@ -584,10 +637,14 @@ class UR3RealRobotPick:
         arm_ctrl = q + float(action_scale) * action[:6]
         if self._ctrl_lowers is not None and self._ctrl_uppers is not None:
             arm_ctrl = np.clip(arm_ctrl, self._ctrl_lowers[:6], self._ctrl_uppers[:6])
+        arm_ctrl_pre_alpha = arm_ctrl.copy()
         if alpha < 1.0:
             arm_ctrl = alpha * arm_ctrl + (1.0 - alpha) * q
 
-        # --- Gripper: integrate the 7th action, clip to actuator range ---
+        # --- Gripper ---
+        # 1. Raw integrator in tendon-ctrl space [0, 0.05], faithful to the sim
+        # integrator (ur3_pick.step: ctrl += action_scale*action, clipped to the
+        # actuator ctrlrange).
         self._gripper_ctrl = float(
             np.clip(
                 self._gripper_ctrl + float(action_scale) * float(action[6]),
@@ -595,10 +652,34 @@ class UR3RealRobotPick:
                 self._gripper_hi,
             )
         )
-        span = max(self._gripper_hi - self._gripper_lo, 1e-9)
-        gripper_norm = (self._gripper_ctrl - self._gripper_lo) / span
+        # 2. Finger-plant low-pass (ROOT CAUSE of the deploy oscillation): in sim
+        # the policy observes data.qpos[finger] — the PHYSICAL finger, which lags
+        # the command (a PD plant, kp=400/kv=1) and stalls on the box. Deployment
+        # has no finger plant, so re-create it as a first-order lag toward the
+        # projected finger target. tau=0 => beta=1 => instant (the old behavior).
+        # This single estimate feeds BOTH the command (below) and the next obs
+        # (build_obs_from_feedback), mirroring sim's ctrl -> plant -> qpos -> obs.
+        target = float(np.clip(self._gripper_ctrl, 0.0, self._finger_hi))
+        beta = float(dt) / (float(gripper_tau) + float(dt))
+        est = (1.0 - beta) * self._finger_pos_est + beta * target
+        # 3. Brute-force slew clip (SAFETY NET): cap the per-step finger travel
+        # (gripper_max_rate in m/s; inf => disabled).
+        dmax = float(gripper_max_rate) * float(dt)
+        est = float(
+            np.clip(est, self._finger_pos_est - dmax, self._finger_pos_est + dmax)
+        )
+        self._finger_pos_est = float(np.clip(est, 0.0, self._finger_hi))
+        # 4. Command + obs both read this plant estimate. gripper_norm ==
+        # finger_meters / 0.025, so gripper_fn(norm) = command(norm*0.025) hands the
+        # real finger target (meters) to HandEGripper.
+        gripper_norm = self._finger_pos_est / max(self._finger_hi, 1e-9)
 
-        return arm_ctrl, gripper_norm
+        diag = {
+            "arm_ctrl_pre_alpha": arm_ctrl_pre_alpha,
+            "gripper_ctrl_raw": self._gripper_ctrl,
+            "finger_pos_est": self._finger_pos_est,
+        }
+        return arm_ctrl, gripper_norm, diag
 
     # =========================================================================
     # H — Control Loop
@@ -617,9 +698,13 @@ class UR3RealRobotPick:
         servoj_v: float = 1.05,
         alpha: float = 1.0,
         gripper_fn=None,
+        gripper_state_fn=None,
+        gripper_tau: float = 0.0,
+        gripper_max_rate: float = float("inf"),
         use_fk_tcp: bool = False,
         reach_tol: float = None,
         dwell_time_s: float = 0.0,
+        mocap_stale_s: float = None,
         dtype=np.float32,
         debug_print: bool = True,
     ) -> Tuple[pd.DataFrame, dict]:
@@ -627,11 +712,27 @@ class UR3RealRobotPick:
 
         Args:
           drop_target: (3,) world-frame drop location (meters).
-          mocap_reader: NokovRigidBodyReader; get_rigid_body_xyz() -> box pos.
+          mocap_reader: VRPN/Nokov rigid-body reader; get_rigid_body_xyz() -> box.
           gripper_fn: callable(norm_cmd in [0,1]); defaults to self.send_gripper.
+          gripper_state_fn: optional callable() -> real finger position (meters,
+                      [0,0.025]); polled at the same <=10 Hz cadence as the send
+                      (diagnostic only — NOT fed into the obs), logged as
+                      gripper_fb_pos. None / dry-run => logged as NaN.
+          gripper_tau: finger-plant low-pass time constant (s) for the gripper
+                      command/obs; 0 => no smoothing (the old behavior). See
+                      policy_step_ctrl_update.
+          gripper_max_rate: brute-force slew cap (m/s) on the per-step finger
+                      command; inf => disabled.
           use_fk_tcp: if True, tcp_pos is computed via FK from joint angles
                       (requires init_fk_model); else RTDE TCP pose is used.
-        Returns (per-step DataFrame, summary stats dict).
+          mocap_stale_s: if set, the loop STOPS as soon as the tracked rigid body
+                      has not updated for this many seconds (it left the cameras'
+                      view). The reader's pose goes stale, not None, so this
+                      staleness window is the only reliable loss signal — needs a
+                      reader exposing `last_update_time` (VRPNRigidBodyReader does)
+                      subscribed to ONLY the target body. None disables the check.
+        Returns (per-step DataFrame, summary stats dict). On mocap loss the loop
+        breaks early; stats["stopped_reason"] == "mocap_lost".
         """
         if self._policy_fn is None:
             raise RuntimeError("Policy not loaded. Call load_policy_fn() first.")
@@ -640,8 +741,11 @@ class UR3RealRobotPick:
 
         dt = 1.0 / float(control_hz)
         drop_target = np.asarray(drop_target, dtype=np.float32).reshape(3)
-        # Seed the internal gripper tracker from the keyframe ctrl if available.
+        # Seed the internal gripper tracker from the keyframe ctrl if available, and
+        # start the finger-plant estimate open (the pickloop opens the gripper at
+        # the start of the run).
         self._gripper_ctrl = float(getattr(self, "_gripper_ctrl", 0.0))
+        self._finger_pos_est = 0.0
 
         log = []
         step_count = 0
@@ -655,6 +759,9 @@ class UR3RealRobotPick:
         gripper_min_dt = 0.1
         last_gripper_t = -1.0
         last_gripper_norm = None
+        last_gripper_fb = np.nan  # Hand-E finger readback [0,0.025]; NaN until polled
+
+        stopped_reason = "completed"
 
         start_time = time.perf_counter()
         next_tick = start_time
@@ -664,19 +771,38 @@ class UR3RealRobotPick:
                 loop_start = time.perf_counter()
 
                 # 1. RTDE receive
-                t0_obs = time.perf_counter()
+                t0_recv = time.perf_counter()
                 fb = self.receive_feedback()
-                t1_obs = time.perf_counter()
+                t1_recv = time.perf_counter()
 
                 q = np.asarray(fb["q"], dtype=float)
                 qd = np.asarray(fb["qd"], dtype=float)
                 tcp_xyz = np.asarray(fb["tcp_xyz"], dtype=float)
+                # Joint currents (≈ torque proxy), UR control output, and the
+                # 6-axis TCP wrench — fetched by receive_feedback but otherwise
+                # dropped; logged for the diagnostics (currently CSV-only).
+                current = np.asarray(fb["current"], dtype=float)
+                ctrl_output = np.asarray(fb["ctrl_output"], dtype=float)
+                tcp_force = np.asarray(fb["tcp_force"], dtype=float)
                 if use_fk_tcp:
                     tcp_xyz = self.compute_tcp_pos(q)
 
                 # 2. Box pose from mocap, mapped into the policy/base frame via the
-                # base-frame calibration (identity if none loaded). Fall back to the
-                # last good value.
+                # base-frame calibration (identity if none loaded). The reader keeps
+                # returning the LAST pose after the body leaves view, so loss is
+                # detected by staleness (last_update_time), not a None return.
+                t0_mocap = time.perf_counter()
+                if mocap_stale_s is not None:
+                    last_upd = getattr(mocap_reader, "last_update_time", None)
+                    age = None if last_upd is None else time.time() - last_upd
+                    if age is None or age > mocap_stale_s:
+                        raise MocapRigidBodyLost(
+                            f"rigid body '{getattr(mocap_reader, 'rigid_body_name', '?')}' "
+                            f"not updated for "
+                            f"{'never' if age is None else f'{age * 1000:.0f} ms'} "
+                            f"(> {mocap_stale_s * 1000:.0f} ms) at step {step_count} — "
+                            "it left the cameras' view."
+                        )
                 box_pos = mocap_reader.get_rigid_body_xyz()
                 if box_pos is not None:
                     box_pos = self.mocap_pos_to_base(box_pos)   # mocap world -> base
@@ -694,15 +820,18 @@ class UR3RealRobotPick:
                 else:
                     box_quat = self.mocap_quat_to_base(np.asarray(box_quat, dtype=float))
                     last_box_quat = box_quat.copy()
+                t1_mocap = time.perf_counter()
 
                 box_target_dist = float(np.linalg.norm(drop_target - box_pos))
 
                 # 3. Build observation (26D)
+                t0_obs = time.perf_counter()
                 obs_batch = self.build_obs_from_feedback(
                     fb, box_pos, drop_target,
                     tcp_pos=tcp_xyz if use_fk_tcp else None,
                     box_quat=box_quat, dtype=dtype,
                 )
+                t1_obs = time.perf_counter()
 
                 # 4. Policy inference
                 t0_policy = time.perf_counter()
@@ -711,9 +840,13 @@ class UR3RealRobotPick:
                 t1_policy = time.perf_counter()
 
                 # 5. Control update (arm servoj + gripper cmd)
-                arm_ctrl, gripper_norm = self.policy_step_ctrl_update(
-                    q, action, action_scale, alpha=alpha, dtype=dtype,
+                t0_ctrl = time.perf_counter()
+                arm_ctrl, gripper_norm, diag = self.policy_step_ctrl_update(
+                    q, action, action_scale, alpha=alpha, dt=dt,
+                    gripper_tau=gripper_tau, gripper_max_rate=gripper_max_rate,
+                    dtype=dtype,
                 )
+                t1_ctrl = time.perf_counter()
 
                 # 6. Send arm servoj + gripper
                 t0_send = time.perf_counter()
@@ -731,13 +864,20 @@ class UR3RealRobotPick:
                         gripper_fn(gripper_norm)
                         last_gripper_t = loop_start
                         last_gripper_norm = gripper_norm
+                        # Read the real Hand-E finger position back at the same
+                        # <=10 Hz cadence (diagnostic only — NOT fed into the obs).
+                        # Carried forward between polls; NaN in a dry-run.
+                        if gripper_state_fn is not None:
+                            last_gripper_fb = float(gripper_state_fn())
                     except Exception as e:  # noqa: BLE001
                         if step_count == 0 and debug_print:
                             print(f"\n[warn] gripper command failed: {e}; "
                                   "arm runs, gripper ignored.")
                 t1_send = time.perf_counter()
 
-                # 7. Timing control
+                # 7. Timing control. compute_end marks the end of all real work
+                # (receive..send); whatever is left until the next tick is sleep.
+                compute_end = time.perf_counter()
                 next_tick += dt
                 now = time.perf_counter()
                 sleep_time = next_tick - now
@@ -752,24 +892,48 @@ class UR3RealRobotPick:
                 loop_hz_true = 1.0 / loop_dt_true if loop_dt_true > 1e-12 else np.nan
                 elapsed = loop_end - start_time
 
-                # 8. Log
+                # 8. Log. Per-phase timings (seconds) let a post-run bar graph
+                # break each loop tick into receive / mocap / obs / inference /
+                # ctrl / send / sleep — see save_timing_breakdown().
+                recv_t = t1_recv - t0_recv
+                mocap_t = t1_mocap - t0_mocap
+                obs_t = t1_obs - t0_obs
+                policy_t = t1_policy - t0_policy
+                ctrl_t = t1_ctrl - t0_ctrl
+                send_t = t1_send - t0_send
+                compute_t = compute_end - loop_start
+                sleep_t = max(loop_end - compute_end, 0.0)
                 row = {
                     "step": step_count,
                     "time": elapsed,
                     **{f"q{i}": q[i] for i in range(6)},
                     **{f"qd{i}": qd[i] for i in range(6)},
+                    **{f"current{i}": current[i] for i in range(6)},
+                    **{f"ctrl_output{i}": ctrl_output[i] for i in range(6)},
+                    **{f"tcp_force{i}": tcp_force[i] for i in range(6)},
+                    **{f"ctrl_pre_alpha{i}": diag["arm_ctrl_pre_alpha"][i]
+                       for i in range(6)},
                     **{f"ctrl{i}": arm_ctrl[i] for i in range(6)},
+                    **{f"obs_q{i}": float(obs_batch[0, i]) for i in range(6)},
                     **{f"action{i}": action[i] for i in range(7)},
                     "gripper_norm": gripper_norm,
                     "gripper_ctrl": self._gripper_ctrl,
+                    "finger_pos_est": diag["finger_pos_est"],
+                    "gripper_obs": float(obs_batch[0, 6]),
+                    "gripper_fb_pos": last_gripper_fb,
                     "tcp_x": tcp_xyz[0], "tcp_y": tcp_xyz[1], "tcp_z": tcp_xyz[2],
                     "box_x": box_pos[0], "box_y": box_pos[1], "box_z": box_pos[2],
                     "target_x": drop_target[0], "target_y": drop_target[1],
                     "target_z": drop_target[2],
                     "box_to_target_dist": box_target_dist,
-                    "obs_time_s": t1_obs - t0_obs,
-                    "policy_time_s": t1_policy - t0_policy,
-                    "send_time_s": t1_send - t0_send,
+                    "recv_time_s": recv_t,
+                    "mocap_time_s": mocap_t,
+                    "obs_time_s": obs_t,
+                    "policy_time_s": policy_t,
+                    "ctrl_time_s": ctrl_t,
+                    "send_time_s": send_t,
+                    "compute_time_s": compute_t,
+                    "sleep_time_s": sleep_t,
                     "loop_dt_true_s": loop_dt_true,
                     "loop_hz_true": loop_hz_true,
                     "overrun_count": overrun_count,
@@ -795,9 +959,18 @@ class UR3RealRobotPick:
                     in_tol_since = None
 
                 if elapsed >= timeout_s:
+                    stopped_reason = "timeout"
                     break
 
                 step_count += 1
+        except MocapRigidBodyLost as e:
+            # Tracked rigid body lost: stop immediately and report loudly. The
+            # arm is halted in `finally`; partial data is still returned/saved.
+            stopped_reason = "mocap_lost"
+            print("\n" + "!" * 70)
+            print("MOCAP RIGID BODY LOST — STOPPING PICK LOOP")
+            print(f"  {type(e).__name__}: {e}")
+            print("!" * 70)
         finally:
             if self._control is not None:
                 try:
@@ -808,8 +981,9 @@ class UR3RealRobotPick:
         total_wall = time.perf_counter() - start_time
         df = pd.DataFrame(log)
         stats = self.summarize_policy_loop(df, control_hz, timeout_s, total_wall)
+        stats["stopped_reason"] = stopped_reason
         if debug_print:
-            print("\nPolicy loop finished.")
+            print(f"\nPolicy loop finished (reason: {stopped_reason}).")
         return df, stats
 
     def summarize_policy_loop(self, df, requested_control_hz, timeout_s,
@@ -818,7 +992,12 @@ class UR3RealRobotPick:
             return {"num_samples": 0}
         n = len(df) - 1
         true_hz = n / total_wall_time_s if total_wall_time_s > 0 else None
+        phase_means = {
+            f"mean_{c}": float(df[c].mean())
+            for c, _ in self.TIMING_PHASES if c in df.columns
+        }
         return {
+            **phase_means,
             "requested_control_hz": round(float(requested_control_hz), 1),
             "timeout_s": float(timeout_s),
             "num_samples": int(len(df)),
@@ -939,53 +1118,237 @@ class UR3RealRobotPick:
 
     JOINT_NAMES = ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"]
 
-    def save_plots(self, df: pd.DataFrame, out_path: str) -> str:
-        """Save a stacked diagnostic plot (PNG)."""
+    def save_robot_plots(self, df: pd.DataFrame, out_path: str) -> str:
+        """Save the ROBOT (arm) diagnostic plot (PNG): the per-signal control
+        pipeline top-to-bottom — measured state, the state sent to the policy, the
+        raw action, then the command after each processing stage.
+
+        Panels: box→target distance (context), joint positions (RTDE receive),
+        joint velocities (RTDE receive), joint positions in the obs sent to the
+        policy, policy action before scaling (arm), arm ctrl before alpha
+        smoothing, actual command sent to servoj. Panels whose columns are absent
+        (an older log) are skipped. House style mirrors the UR10 sibling.
+        """
         import matplotlib.pyplot as plt
 
         joint_names = self.JOINT_NAMES
         t = df["time"]
-        fig, axes = plt.subplots(5, 1, figsize=(14, 16), sharex=True)
 
+        def _has(prefix):
+            return all(f"{prefix}{i}" in df.columns for i in range(6))
+
+        def _per_joint(ax, prefix):
+            for i, name in enumerate(joint_names):
+                ax.plot(t, df[f"{prefix}{i}"], label=name)
+            ax.legend(loc="upper right", ncol=3, fontsize=8)
+
+        # (key, kind, ylabel, title). "box" is a single-line context strip.
+        specs = []
+        if "box_to_target_dist" in df.columns:
+            specs.append(("box", "scalar", "distance (cm)",
+                          "Box to drop-target distance"))
+        if _has("q"):
+            specs.append(("q", "joint", "position (rad)",
+                          "Joint positions (RTDE receive)"))
+        if _has("qd"):
+            specs.append(("qd", "joint", "velocity (rad/s)",
+                          "Joint velocities (RTDE receive)"))
+        if _has("obs_q"):
+            specs.append(("obs_q", "joint", "position (rad)",
+                          "Joint positions in state sent to policy"))
+        if _has("action"):
+            specs.append(("action", "joint", "action [-1,1]",
+                          "Policy action before scaling (arm)"))
+        if _has("ctrl_pre_alpha"):
+            specs.append(("ctrl_pre_alpha", "joint", "ctrl (rad)",
+                          "Arm ctrl before alpha smoothing"))
+        if _has("ctrl"):
+            specs.append(("ctrl", "joint", "ctrl (rad)",
+                          "Actual command sent to servoj"))
+
+        n = len(specs)
+        fig, axes = plt.subplots(n, 1, figsize=(14, 3.2 * n), sharex=True)
+        if n == 1:
+            axes = [axes]
+        for ax, (key, kind, ylabel, title) in zip(axes, specs):
+            if kind == "scalar":
+                ax.plot(t, df["box_to_target_dist"] * 100)
+            else:
+                _per_joint(ax, key)
+            ax.set_ylabel(ylabel)
+            ax.set_title(title)
+            ax.grid(True, alpha=0.3)
+
+        axes[-1].set_xlabel("time (s)")
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        print(f"[save_robot_plots] Saved to {out_path}")
+        return out_path
+
+    def save_gripper_plots(self, df: pd.DataFrame, out_path: str) -> str:
+        """Save the GRIPPER diagnostic plot (PNG): the finger control pipeline,
+        mirroring save_robot_plots for the single gripper DOF — so the oscillation
+        is visible per signal.
+
+        Panels: measured finger position (Hand-E readback) vs the plant estimate,
+        finger velocity (numeric d/dt), finger position in the obs sent to the
+        policy, policy gripper action before scaling, raw integrator [0,0.05] vs
+        the plant estimate (the low-pass + slew that tames the command), and the
+        gripper command actually sent. Panels are skipped when columns are absent;
+        the readback line is empty in a dry-run (gripper_fb_pos all NaN).
+        """
+        import matplotlib.pyplot as plt
+
+        t = df["time"]
+        t_np = t.to_numpy()
+
+        def has(c):
+            return c in df.columns
+
+        def _deriv(col):
+            return np.gradient(df[col].to_numpy(dtype=float), t_np)
+
+        kinds = []
+        if has("finger_pos_est") or has("gripper_fb_pos"):
+            kinds += ["pos", "vel"]
+        if has("gripper_obs"):
+            kinds.append("obs")
+        if has("action6"):
+            kinds.append("action")
+        if has("gripper_ctrl"):
+            kinds.append("ctrl")
+        if has("gripper_norm"):
+            kinds.append("cmd")
+
+        n = len(kinds)
+        fig, axes = plt.subplots(n, 1, figsize=(14, 3.2 * n), sharex=True)
+        if n == 1:
+            axes = [axes]
+        for ax, kind in zip(axes, kinds):
+            if kind == "pos":
+                if has("finger_pos_est"):
+                    ax.plot(t, df["finger_pos_est"] * 1000, label="plant estimate")
+                if has("gripper_fb_pos"):
+                    ax.plot(t, df["gripper_fb_pos"] * 1000, label="Hand-E readback",
+                            color="k", ls="--", lw=1.2)
+                ax.set_ylabel("finger (mm)")
+                ax.set_title("Finger position: plant estimate vs Hand-E readback "
+                             "(0 open, 25 closed)")
+                ax.legend(loc="upper right", fontsize=8)
+            elif kind == "vel":
+                if has("finger_pos_est"):
+                    ax.plot(t, _deriv("finger_pos_est") * 1000, label="plant estimate")
+                if has("gripper_fb_pos"):
+                    ax.plot(t, _deriv("gripper_fb_pos") * 1000, color="k", ls="--",
+                            lw=1.0, alpha=0.7, label="Hand-E readback")
+                ax.set_ylabel("finger vel (mm/s)")
+                ax.set_title("Finger velocity (numeric d/dt)")
+                ax.legend(loc="upper right", fontsize=8)
+            elif kind == "obs":
+                ax.plot(t, df["gripper_obs"] * 1000)
+                ax.set_ylabel("finger (mm)")
+                ax.set_title("Finger position in state sent to policy")
+            elif kind == "action":
+                ax.plot(t, df["action6"])
+                ax.set_ylabel("action [-1,1]")
+                ax.set_title("Policy gripper action before scaling (action6)")
+            elif kind == "ctrl":
+                ax.plot(t, df["gripper_ctrl"] * 1000, label="raw integrator [0,50]")
+                if has("finger_pos_est"):
+                    ax.plot(t, df["finger_pos_est"] * 1000,
+                            label="plant estimate (low-pass + slew)")
+                ax.set_ylabel("finger (mm)")
+                ax.set_title("Gripper ctrl before vs after smoothing")
+                ax.legend(loc="upper right", fontsize=8)
+            elif kind == "cmd":
+                ax.plot(t, df["gripper_norm"], drawstyle="steps-post")
+                ax.set_ylabel("gripper [0,1]")
+                ax.set_title("Gripper command actually sent (0 open, 1 closed)")
+            ax.grid(True, alpha=0.3)
+
+        axes[-1].set_xlabel("time (s)")
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        print(f"[save_gripper_plots] Saved to {out_path}")
+        return out_path
+
+    # Per-phase timing columns logged each loop tick, in execution order, with
+    # the bar labels used by save_timing_breakdown().
+    TIMING_PHASES = [
+        ("recv_time_s", "RTDE receive"),
+        ("mocap_time_s", "mocap read"),
+        ("obs_time_s", "build obs"),
+        ("policy_time_s", "inference"),
+        ("ctrl_time_s", "ctrl update"),
+        ("send_time_s", "servoj+gripper"),
+        ("sleep_time_s", "sleep (idle)"),
+    ]
+
+    def save_timing_breakdown(self, df: pd.DataFrame, out_path: str) -> str:
+        """Save a per-loop-step timing bar graph (PNG).
+
+        Two panels:
+          * top — mean COMPUTE time per phase (ms) across the run, with std-dev
+            error bars: where each 1/control_hz tick's real work goes. The
+            "sleep (idle)" phase is excluded — it is the pacing wait that fills
+            the tick out to the control period, not work (still kept in the CSV
+            and in summarize_policy_loop's mean_sleep_time_s).
+          * bottom — a stacked bar PER STEP (the compute phases only) so spikes
+            and overruns are visible against the control-period budget line.
+        """
+        import matplotlib.pyplot as plt
+
+        phases = [
+            (c, lbl)
+            for c, lbl in self.TIMING_PHASES
+            if c in df.columns and c != "sleep_time_s"
+        ]
+        cols = [c for c, _ in phases]
+        labels = [lbl for _, lbl in phases]
+        means_ms = [df[c].mean() * 1e3 for c in cols]
+        stds_ms = [df[c].std() * 1e3 for c in cols]
+
+        fig, axes = plt.subplots(2, 1, figsize=(14, 11))
+
+        # Panel 1: mean per-phase time (ms).
         ax = axes[0]
-        ax.plot(t, df["box_to_target_dist"] * 100)
-        ax.set_ylabel("distance (cm)")
-        ax.set_title("Box to drop-target distance")
-        ax.grid(True, alpha=0.3)
+        bars = ax.bar(labels, means_ms, yerr=stds_ms, capsize=4,
+                      color="tab:blue", alpha=0.8)
+        for rect, m in zip(bars, means_ms):
+            ax.text(rect.get_x() + rect.get_width() / 2, rect.get_height(),
+                    f"{m:.2f}", ha="center", va="bottom", fontsize=8)
+        ax.set_ylabel("mean time per step (ms)")
+        ax.set_title("Loop compute timing — mean ± std per control step "
+                     "(sleep/idle excluded)")
+        ax.grid(True, axis="y", alpha=0.3)
 
+        # Panel 2: stacked compute phases per step (exclude sleep), plus the
+        # control-period budget line.
         ax = axes[1]
-        for i, name in enumerate(joint_names):
-            ax.plot(t, df[f"q{i}"], label=name)
-        ax.set_ylabel("position (rad)")
-        ax.set_title("Joint positions")
+        compute_cols = [c for c in cols if c != "sleep_time_s"]
+        compute_lbls = [lbl for c, lbl in phases if c != "sleep_time_s"]
+        steps = df["step"].to_numpy()
+        bottom = np.zeros(len(df))
+        for c, lbl in zip(compute_cols, compute_lbls):
+            vals = df[c].to_numpy() * 1e3
+            ax.bar(steps, vals, bottom=bottom, label=lbl, width=1.0)
+            bottom += vals
+        if "loop_dt_true_s" in df.columns:
+            mean_period_ms = df["loop_dt_true_s"].mean() * 1e3
+            ax.axhline(mean_period_ms, color="k", ls="--", lw=1,
+                       label=f"mean loop period ({mean_period_ms:.1f} ms)")
+        ax.set_xlabel("step")
+        ax.set_ylabel("compute time (ms)")
+        ax.set_title("Per-step compute breakdown (stacked, sleep excluded)")
         ax.legend(loc="upper right", ncol=3, fontsize=8)
-        ax.grid(True, alpha=0.3)
-
-        ax = axes[2]
-        for i, name in enumerate(joint_names):
-            ax.plot(t, df[f"qd{i}"], label=name)
-        ax.set_ylabel("velocity (rad/s)")
-        ax.set_title("Joint velocities")
-        ax.legend(loc="upper right", ncol=3, fontsize=8)
-        ax.grid(True, alpha=0.3)
-
-        ax = axes[3]
-        ax.plot(t, df["gripper_norm"])
-        ax.set_ylabel("gripper [0,1]")
-        ax.set_title("Gripper command (0=open, 1=closed)")
-        ax.grid(True, alpha=0.3)
-
-        ax = axes[4]
-        ax.plot(t, df["loop_hz_true"], alpha=0.7)
-        ax.set_ylabel("Hz")
-        ax.set_title("Loop frequency")
-        ax.set_xlabel("time (s)")
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, axis="y", alpha=0.3)
 
         fig.tight_layout()
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
-        print(f"[save_plots] Saved to {out_path}")
+        print(f"[save_timing_breakdown] Saved to {out_path}")
         return out_path
 
     @staticmethod
