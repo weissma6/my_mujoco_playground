@@ -35,8 +35,7 @@ FINISHED_ONLY = True
 # FOOTGUN: the "last 4 finished" set shifts as new runs finish — re-check the
 # printed index->run_id mapping before trusting these. (A {run_id: seconds}
 # dict would be more robust if you ever want it.)
-SLURMTIME = [7, 17, 8, 15]  # minutes
-SLURMTIME = SLURMTIME*60    # Seconds
+SLURMTIME = np.array([7, 7, 8, 10]) * 60     # → array([420, 420, 480, 600])
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PNG_OUT = os.path.join(HERE, "timeanalysis.png")

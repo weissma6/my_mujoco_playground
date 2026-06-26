@@ -32,17 +32,23 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "downloaded_policies"))
 from policy_downloader import download_policy  # noqa: E402
 
 # ── Config ────────────────────────────────────────────────────────────────
-WANDB_RUN_ID = "Pick_un20_env2048_20260624_160023_6311"
+WANDB_RUN_ID = "Pick_12M_rand_base85_fin25_20260626_094554_6311"
+# good basic try, far target, too close init box "Pick_12M_env1024_20260625_193041_6311"
+# FAR target, strong init Random, box init in good  range: "Pick_12M_rand_base85_fin25_20260626_094554_6311"
+# good target, strong init Random, box init in good  range: "Pick_12M_rand_base85_fin25_20260626_094554_6311"
+
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
 
 CAMERA = "box_detail"
 N_EPISODES = 1
-SEED = 0
+# Random per-run seed (never 0 — seed 0 gave the same "far" target every render).
+SEED = int.from_bytes(os.urandom(4), "little") or 1
 HEIGHT, WIDTH = 480, 640
 
-# ── 1. Download + unpack the policy (cache-aware, run-id keyed) ────────────
-print(f"Downloading policy {WANDB_RUN_ID}")
+# ── 1. Resolve the policy (cache-aware: reuses downloaded_policies/{run_id}/
+#       if present, only hits W&B on a cache miss) ──────────────────────────
+print(f"Resolving policy {WANDB_RUN_ID}")
 POLICY_DIR = download_policy(
     WANDB_RUN_ID,
     entity=WANDB_ENTITY,
@@ -90,6 +96,7 @@ print(f"Rolling out {N_EPISODES} episode(s) x {episode_length} steps ...")
 jit_reset = jax.jit(env.reset)
 jit_step = jax.jit(env.step)
 
+print(f"Using random seed {SEED}")
 rng = jax.random.PRNGKey(SEED)
 rollout = []
 rewards = []

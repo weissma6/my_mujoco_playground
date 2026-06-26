@@ -135,12 +135,14 @@ class UR3Pick(ur3_base.UR3Base):
         # initialize target position — a lift point in the air above the box.
         # Envelope kept tight so every target stays within reach (worst-case 3D
         # reach ≈0.54 m); required for the 5 mm success criterion to be feasible.
-        # Y pulled in (±0.03) so the lift stays near the robot's sagittal plane.
+        # X biased forward (+0.01‥+0.06) so the lift pulls the box toward the
+        # robot's reachable front; Y pulled in (±0.03) so the lift stays near
+        # the robot's sagittal plane.
         target_pos = (
             jax.random.uniform(
                 rng_target,
                 (3,),
-                minval=jp.array([-0.06, -0.03, 0.08]),
+                minval=jp.array([0.01, -0.03, 0.08]),
                 maxval=jp.array([0.06, 0.03, 0.15]),
             )
             + self._init_obj_pos
