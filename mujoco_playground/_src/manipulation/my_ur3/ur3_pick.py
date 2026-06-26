@@ -66,6 +66,9 @@ def default_config() -> config_dict.ConfigDict:
         # + 1 finger. Applied symmetrically as uniform(-v, +v) on top of the init
         # keyframe. Default 0.05 reproduces the legacy uniform(-0.05, 0.05) arm noise.
         init_qpos_noise=(0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.01),
+        # Box-center distance (m) to the lift target counted as success (3
+        # consecutive steps). Tight 5 mm — the box must end up inside the target.
+        success_tol=0.005,
     )
 
 
@@ -109,13 +112,14 @@ class UR3Pick(ur3_base.UR3Base):
             jax.random.split(rng, 6)
         )
 
-        # initialize box position (tight jitter around keyframe — UR3 reach ~0.5 m)
+        # initialize box position — wide jitter, X-heavy, so the box spawns
+        # anywhere in X∈[0.30,0.60] (all graspable; 0.60 was the old nominal).
         box_pos = (
             jax.random.uniform(
                 rng_box,
                 (3,),
-                minval=jp.array([-0.08, -0.08, 0.0]),
-                maxval=jp.array([0.08, 0.08, 0.0]),
+                minval=jp.array([-0.15, -0.10, 0.0]),
+                maxval=jp.array([0.15, 0.10, 0.0]),
             )
             + self._init_obj_pos  # Box position from XML keyframe
         )
@@ -128,13 +132,15 @@ class UR3Pick(ur3_base.UR3Base):
             [jp.cos(theta / 2.0), 0.0, jp.sin(theta / 2.0), 0.0], dtype=float
         )
 
-        # initialize target position — a lift point in the air above the box
+        # initialize target position — a lift point in the air above the box.
+        # Envelope kept tight so every target stays within reach (worst-case 3D
+        # reach ≈0.54 m); required for the 5 mm success criterion to be feasible.
         target_pos = (
             jax.random.uniform(
                 rng_target,
                 (3,),
-                minval=jp.array([-0.10, -0.10, 0.10]),
-                maxval=jp.array([0.10, 0.10, 0.25]),
+                minval=jp.array([-0.06, -0.06, 0.08]),
+                maxval=jp.array([0.06, 0.06, 0.15]),
             )
             + self._init_obj_pos
         )
@@ -239,7 +245,7 @@ class UR3Pick(ur3_base.UR3Base):
         box_pos = data.xpos[self._obj_body]
         box_target_dist = jp.linalg.norm(info["target_pos"] - box_pos)
 
-        success_now = box_target_dist < 0.03
+        success_now = box_target_dist < self._config.success_tol
         info["success_counter"] = jp.where(
             success_now,
             info["success_counter"] + 1,
@@ -320,9 +326,13 @@ class UR3Pick(ur3_base.UR3Base):
         # ==============================
         # --- Reward terms ---
         # ==============================
-        # Reward for box being at target - scalar JAX float64
-        box_target_Reward = 1 - jp.tanh(
-            5 * box_target_dist
+        # Reward for box being at target - scalar JAX float64.
+        # Two-scale: a coarse term (tanh*5) keeps a long-range lift pull, a fine
+        # term (tanh*30) adds a steep gradient near the goal so the policy is
+        # actually pulled the last ~10 mm (plain tanh*5 is flat near zero, which
+        # is why the box plateaued ~13 mm short).
+        box_target_Reward = 0.5 * (1 - jp.tanh(5 * box_target_dist)) + 0.5 * (
+            1 - jp.tanh(30 * box_target_dist)
         )
         # Reward for gripper being at box - scalar JAX float64
         gripper_box_Reward = 1 - jp.tanh(

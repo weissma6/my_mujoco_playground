@@ -12,9 +12,11 @@
             contype="1" conaffinity="3" solref="0.01 1"/>
     </body>
 
-    <!-- Mocap target (drop location visualization; pose set per-episode by reset) -->
+    <!-- Mocap target (lift-point visualization; pose set per-episode by reset).
+         Sphere r=0.04 fully contains the 4 cm cube (corner radius 0.0346) so a
+         lifted box visibly sits inside it; visual only. -->
     <body mocap="true" name="mocap_target">
-      <geom type="box" size="0.02 0.02 0.02" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
+      <geom type="sphere" size="0.04" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
     </body>
   </worldbody>
 
@@ -22,7 +24,7 @@
   <keyframe>
     <key name="task_home"
       qpos="0 -2.0 1.6 -1.6 -1.5 0 0.0125 0.0125
-            0.6 0 0.02
+            0.45 0 0.02
             1 0 0 0"
       ctrl="0 -2.0 1.6 -1.6 -1.5 0  0.025"/>
 
