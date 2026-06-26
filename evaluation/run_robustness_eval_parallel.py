@@ -37,6 +37,10 @@ from mujoco_playground import registry
 USER = "weissma6-zhaw-school-of-engineering"
 PROJECT = "UR10_pick_ppo"
 ENV_NAME = "UR10PickCube"
+# Env-config overrides applied when the eval env is (re)built — MUST match what the
+# policies in POLICY_RUNS were trained with (e.g. {"init_keyframe": "task_home"} for a
+# UR3Pick policy). Empty = use the env's default keyframe (correct for these UR10 runs).
+ENV_OVERRIDES = {}
 
 POLICY_RUNS = {
     "No DR":    "Damp=2_kp400kv1_DR_off_20260208_174610_5184",
@@ -97,7 +101,7 @@ def get_box_info(env):
 
 def load_env_with_shift(env_name, box_info, mass_scale=1.0, friction_scale=1.0):
     with contextlib.redirect_stdout(io.StringIO()):
-        env = registry.load(env_name)
+        env = registry.load(env_name, config_overrides=ENV_OVERRIDES)
 
     if mass_scale == 1.0 and friction_scale == 1.0:
         return env
@@ -318,7 +322,7 @@ if __name__ == "__main__":
     print(f"Rollouts per cell: {NUM_ROLLOUTS}, Episode length: {EPISODE_LENGTH}\n")
 
     # Load reference env + box info
-    ref_env = registry.load(ENV_NAME)
+    ref_env = registry.load(ENV_NAME, config_overrides=ENV_OVERRIDES)
     box_info = get_box_info(ref_env)
     print(f"Box body id: {box_info['box_body_id']}, "
           f"nominal mass: {box_info['nominal_mass']:.4f}, "

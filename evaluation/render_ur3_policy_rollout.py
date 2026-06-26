@@ -8,7 +8,7 @@ evaluation/downloaded_policies/{run_id}/, then drives the registry env with the
 loaded inference function and renders with env.render().
 
 Usage:
-    python evaluation/render_ur3_policy_rollout.py
+    python evaluation/render_ur3_policy_rollout.py  
 """
 
 import os
@@ -43,7 +43,8 @@ WANDB_PROJECT = "UR3_pick_ppo"
 CAMERA = "box_detail"
 N_EPISODES = 1
 # Random per-run seed (never 0 — seed 0 gave the same "far" target every render).
-SEED = int.from_bytes(os.urandom(4), "little") or 1
+#SEED = int.from_bytes(os.urandom(4), "little") or 1
+SEED = 9
 HEIGHT, WIDTH = 480, 640
 
 # ── 1. Resolve the policy (cache-aware: reuses downloaded_policies/{run_id}/
@@ -89,14 +90,16 @@ raw_policy = ppo_networks.make_inference_fn(ppo_net)(
 inference_fn = jax.jit(raw_policy)
 
 # ── 3. Roll out in the sim env ────────────────────────────────────────────
-env = registry.load(meta["env_name"])
+env_overrides = meta.get("env_overrides", {})
+env = registry.load(meta["env_name"], config_overrides=env_overrides)
+print(f"env_overrides applied: {env_overrides}")
 episode_length = int(env._config.episode_length)
 print(f"Rolling out {N_EPISODES} episode(s) x {episode_length} steps ...")
 
 jit_reset = jax.jit(env.reset)
 jit_step = jax.jit(env.step)
 
-print(f"Using random seed {SEED}")
+print(f"Using seed {SEED}")
 rng = jax.random.PRNGKey(SEED)
 rollout = []
 rewards = []

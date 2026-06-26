@@ -150,6 +150,7 @@ def download_policy(
       "ctrl_dt": inf_cfg.get("ctrl_dt", run.config.get("ctrl_dt", 0.02)),
       "episode_length": inf_cfg.get("episode_length",
                                     run.config.get("episode_length")),
+      "env_overrides": inf_cfg.get("env_overrides", {}),
   }
   with open(os.path.join(out_dir, "metadata.json"), "w") as f:
     json.dump(metadata, f, indent=2)
