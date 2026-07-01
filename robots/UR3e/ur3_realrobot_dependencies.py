@@ -714,10 +714,13 @@ class UR3RealRobotPick:
           drop_target: (3,) world-frame drop location (meters).
           mocap_reader: VRPN/Nokov rigid-body reader; get_rigid_body_xyz() -> box.
           gripper_fn: callable(norm_cmd in [0,1]); defaults to self.send_gripper.
-          gripper_state_fn: optional callable() -> real finger position (meters,
-                      [0,0.025]); polled at the same <=10 Hz cadence as the send
+          gripper_state_fn: optional callable() -> real gripper readback; either a
+                      read_state() dict (sim_finger metres [0,0.025] + pos_pct raw
+                      native percent [0,100]) or, for back-compat, a plain float
+                      sim_finger. Polled at the same <=10 Hz cadence as the send
                       (diagnostic only — NOT fed into the obs), logged as
-                      gripper_fb_pos. None / dry-run => logged as NaN.
+                      gripper_fb_pos (metres) + gripper_fb_pct (percent). None /
+                      dry-run => both logged as NaN.
           gripper_tau: finger-plant low-pass time constant (s) for the gripper
                       command/obs; 0 => no smoothing (the old behavior). See
                       policy_step_ctrl_update.
@@ -760,6 +763,7 @@ class UR3RealRobotPick:
         last_gripper_t = -1.0
         last_gripper_norm = None
         last_gripper_fb = np.nan  # Hand-E finger readback [0,0.025]; NaN until polled
+        last_gripper_fb_pct = float("nan")  # raw native percent [0,100]; NaN until polled
 
         stopped_reason = "completed"
 
@@ -868,7 +872,19 @@ class UR3RealRobotPick:
                         # <=10 Hz cadence (diagnostic only — NOT fed into the obs).
                         # Carried forward between polls; NaN in a dry-run.
                         if gripper_state_fn is not None:
-                            last_gripper_fb = float(gripper_state_fn())
+                            fb = gripper_state_fn()
+                            if isinstance(fb, dict):
+                                # Full read_state() dict: sim_finger metres +
+                                # raw native percent.
+                                last_gripper_fb = float(
+                                    fb.get("sim_finger", np.nan))
+                                last_gripper_fb_pct = float(
+                                    fb.get("pos_pct", np.nan))
+                            else:
+                                # Back-compat: a plain float is the sim_finger
+                                # value; percent is unavailable.
+                                last_gripper_fb = float(fb)
+                                last_gripper_fb_pct = float("nan")
                     except Exception as e:  # noqa: BLE001
                         if step_count == 0 and debug_print:
                             print(f"\n[warn] gripper command failed: {e}; "
@@ -921,6 +937,7 @@ class UR3RealRobotPick:
                     "finger_pos_est": diag["finger_pos_est"],
                     "gripper_obs": float(obs_batch[0, 6]),
                     "gripper_fb_pos": last_gripper_fb,
+                    "gripper_fb_pct": last_gripper_fb_pct,
                     "tcp_x": tcp_xyz[0], "tcp_y": tcp_xyz[1], "tcp_z": tcp_xyz[2],
                     "box_x": box_pos[0], "box_y": box_pos[1], "box_z": box_pos[2],
                     "target_x": drop_target[0], "target_y": drop_target[1],

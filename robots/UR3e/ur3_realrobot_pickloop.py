@@ -55,7 +55,7 @@ USE_EXT_URCAP = True
 UR_CAP_PORT = 50002
 
 # Drop target (where to bring the box). UR3-reachable workspace.
-DROP_TARGET = [0.45, -0.10, 0.10]
+DROP_TARGET = [0.3, -0.20, 0.30]
 
 # Start pose — UR3 "task_home" keyframe arm angles from mjx_single_cube_position_ur3.xml
 # (gripper is opened separately below, since servoJ/moveJ only covers the 6 arm joints)
@@ -91,8 +91,8 @@ ACTION_SCALE = 0.04              # MUST match training (UR3Pick default 0.04)
 LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
 SERVOJ_A = 0.2                    # max joint accel [rad/s^2]
-SERVOJ_V = 0.2                    # max joint vel  [rad/s]
-ALPHA = 0.5                      # scales the use of the policy action
+SERVOJ_V = 0.3                    # max joint vel  [rad/s]
+ALPHA = 0.7                      # scales the use of the policy action
 USE_FK_TCP = True                 # compute tcp_pos via MuJoCo FK (matches sim site)
 # Gripper smoothing (deployment only — sim has a real PD finger plant; here we
 # re-create its lag so the policy sees what it trained on and the command stops
@@ -115,6 +115,7 @@ MODEL_PATH = os.path.join(
 # WANDB_PROJECT below adjusted. The selected policy is loaded from
 # evaluation/downloaded_policies/{run_id}/ if present, else downloaded from W&B.
 POLICY_REGISTRY = {
+    "reasonable starting positions": "Reso_Pos_lr6e-4_20260626_110022_7585",
     "pick_12M_rand_base85_fin25": "Pick_12M_rand_base85_fin25_20260626_094554_6311",
     "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
     "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
@@ -198,8 +199,10 @@ if ENABLE_GRIPPER:
     gripper.open_gripper()  # start the task with fingers open
     gripper_fn = lambda norm: gripper.command(norm * 0.025)  # noqa: E731
     # Read the real finger position back (diagnostic only — see run_policy_loop);
-    # polled at the same <=10 Hz cadence as the command, logged as gripper_fb_pos.
-    gripper_state_fn = lambda: gripper.read_state().get("sim_finger", float("nan"))  # noqa: E731
+    # polled at the same <=10 Hz cadence as the command, logged as gripper_fb_pos
+    # (sim_finger metres) + gripper_fb_pct (raw native percent). Return the full
+    # state dict so no readback field (pos_pct, sim_finger, ...) is lost.
+    gripper_state_fn = lambda: gripper.read_state()  # noqa: E731
 else:
     gripper_fn = lambda norm: None  # noqa: E731
     gripper_state_fn = None
