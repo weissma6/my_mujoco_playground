@@ -15,9 +15,13 @@
 """UR3 pick task: 6-DOF arm + Hand-E gripper, lift a box to a target point.
 
 The mocap target is used as the lift goal (a point in the air above the box).
-The 4x4x4 cm box spawns with a random Y-axis tilt and a rotation-error reward
-encourages bringing it back to the canonical (identity) orientation while lifting.
-Mirrors the commented-out reward scaffolding of ur10pick.py.
+The 4x4x4 cm box spawns with a random Z-axis yaw (range set by box_z_rot_range)
+and a rotation-error reward encourages bringing it back to the canonical
+(identity) orientation while lifting. Optionally the box spawns on a
+variable-height "lifter" plate (lifter_height_max) so the policy learns to grasp
+boxes at different heights, and the arm start pose can be drawn from a library of
+hand-collected real-robot poses (init_start_random). Mirrors the commented-out
+reward scaffolding of ur10pick.py.
 """
 
 from typing import Any, Dict, Optional, Union
@@ -29,7 +33,16 @@ from mujoco import mjx
 
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.manipulation.my_ur3 import ur3_base
+from mujoco_playground._src.manipulation.my_ur3.init_poses import load_init_poses
 from mujoco_playground._src.mjx_env import State  # pylint: disable=g-importing-member
+
+# Lifter (box-riser) geometry. A thin static plate placed under the box at reset;
+# its top surface sets the box's starting height so the policy learns to grasp
+# boxes at different heights. Min height keeps the plate bottom above the floor
+# plane (z=0) so it never overlaps the floor (masks alone can't separate them).
+_LIFTER_HALF_THICKNESS = 0.0005  # 1 mm plate -> half-extent
+_LIFTER_HEIGHT_MIN = 0.003
+_BOX_HALF_EXTENT = 0.02  # 4 cm cube -> half-extent
 
 
 def default_config() -> config_dict.ConfigDict:
@@ -66,6 +79,17 @@ def default_config() -> config_dict.ConfigDict:
         # + 1 finger. Applied symmetrically as uniform(-v, +v) on top of the init
         # keyframe. Default 0.05 reproduces the legacy uniform(-0.05, 0.05) arm noise.
         init_qpos_noise=(0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.01),
+        # Arm/finger start-pose source. "none" = literal keyframe start (then +
+        # init_qpos_noise jitter); "light"/"mid"/"hard" = randomly pick one
+        # hand-collected pose from init_poses/train/<level>.json each reset.
+        init_start_random="none",
+        # Per-episode box-riser height (m). 0.0 disables the lifter (box on the
+        # floor, legacy). >0 => h ~ uniform(_LIFTER_HEIGHT_MIN, lifter_height_max)
+        # and the box spawns resting on the plate; the lift target is raised by h.
+        lifter_height_max=0.0,
+        # Box spawn yaw about world Z (rad); yaw ~ uniform(-r, +r). 0.0 =
+        # axis-aligned. Replaces the old ±45° Y-axis tilt.
+        box_z_rot_range=0.0,
         # Box-center distance (m) to the lift target counted as success (3
         # consecutive steps). Tight 5 mm — the box must end up inside the target.
         success_tol=0.005,
@@ -107,29 +131,74 @@ class UR3Pick(ur3_base.UR3Base):
         # two rows of the rotation matrix (matches the obs/reward layout).
         self._target_xmat_flat = jp.eye(3).ravel()[:6]
 
-    def reset(self, rng: jax.Array) -> State:
-        rng, rng_box, rng_quat, rng_target, rng_robot, rng_gripper = (
-            jax.random.split(rng, 6)
-        )
+        # Init-pose library. Loaded once (stdlib+numpy I/O) and stored as a jnp
+        # constant so the jitted reset() can index it; "none" keeps the legacy
+        # keyframe start. Python-level branch -> resolved at trace time.
+        level = getattr(self._config, "init_start_random", "none")
+        if level != "none":
+            self._init_pose_lib = jp.asarray(load_init_poses(level, "train"))
+            self._n_init_poses = int(self._init_pose_lib.shape[0])
+        else:
+            self._init_pose_lib = None
+            self._n_init_poses = 0
 
-        # initialize box position — wide jitter, X-heavy, so the box spawns
-        # anywhere in X∈[0.30,0.60] (all graspable; 0.60 was the old nominal).
-        box_pos = (
+        # Variable-height lifter plate. Resolved here (not in the shared
+        # ur3_base._post_init) because the picknplace sibling loads a scene
+        # without a lifter body. Disabled (parked at its XML default pose) when
+        # lifter_height_max <= 0.
+        self._lifter_enabled = float(self._config.lifter_height_max) > 0.0
+        self._lifter_mocap = self._mj_model.body("lifter").mocapid
+
+    def reset(self, rng: jax.Array) -> State:
+        (
+            rng,
+            rng_box,
+            rng_quat,
+            rng_target,
+            rng_robot,
+            rng_gripper,
+            rng_pose,
+            rng_lift,
+        ) = jax.random.split(rng, 8)
+
+        # initialize box XY — wide jitter, X-heavy, so the box spawns anywhere
+        # in X∈[0.30,0.60] (all graspable; 0.60 was the old nominal).
+        box_xy = (
             jax.random.uniform(
                 rng_box,
-                (3,),
-                minval=jp.array([-0.15, -0.10, 0.0]),
-                maxval=jp.array([0.15, 0.10, 0.0]),
+                (2,),
+                minval=jp.array([-0.15, -0.10]),
+                maxval=jp.array([0.15, 0.10]),
             )
-            + self._init_obj_pos  # Box position from XML keyframe
+            + self._init_obj_pos[:2]  # Box XY from XML keyframe
         )
 
-        # initialize box orientation — random rotation around world Y axis, ±45°.
+        # lifter height + box resting Z. When enabled, sample a per-episode plate
+        # height and rest the box on the plate top; else keep the legacy on-floor
+        # Z from the keyframe.
+        if self._lifter_enabled:
+            lifter_h = jax.random.uniform(
+                rng_lift,
+                (),
+                minval=_LIFTER_HEIGHT_MIN,
+                maxval=float(self._config.lifter_height_max),
+            )
+            box_z = lifter_h + _LIFTER_HALF_THICKNESS + _BOX_HALF_EXTENT
+        else:
+            lifter_h = jp.array(0.0, dtype=float)
+            box_z = self._init_obj_pos[2]  # legacy on-floor (0.02)
+        box_pos = jp.array([box_xy[0], box_xy[1], box_z])
+
+        # initialize box orientation — random yaw about world Z, ±box_z_rot_range.
+        # (A symmetric cube just topples under an X/Y tilt, so only yaw is physical.)
         theta = jax.random.uniform(
-            rng_quat, (), minval=-jp.pi / 4.0, maxval=jp.pi / 4.0
+            rng_quat,
+            (),
+            minval=-self._config.box_z_rot_range,
+            maxval=self._config.box_z_rot_range,
         )
         box_quat = jp.array(
-            [jp.cos(theta / 2.0), 0.0, jp.sin(theta / 2.0), 0.0], dtype=float
+            [jp.cos(theta / 2.0), 0.0, 0.0, jp.sin(theta / 2.0)], dtype=float
         )
 
         # initialize target position — a lift point in the air above the box.
@@ -137,7 +206,8 @@ class UR3Pick(ur3_base.UR3Base):
         # reach ≈0.54 m); required for the 5 mm success criterion to be feasible.
         # X biased forward (+0.01‥+0.06) so the lift pulls the box toward the
         # robot's reachable front; Y pulled in (±0.03) so the lift stays near
-        # the robot's sagittal plane.
+        # the robot's sagittal plane. Raised by the lifter height so the lift
+        # target stays above the (possibly raised) box.
         target_pos = (
             jax.random.uniform(
                 rng_target,
@@ -147,12 +217,25 @@ class UR3Pick(ur3_base.UR3Base):
             )
             + self._init_obj_pos
         )
+        target_pos = target_pos.at[2].add(lifter_h)
 
         # -----------------------------
-        # Randomize robot joint positions (per-joint amplitude from config)
+        # Randomize robot joint positions
         # -----------------------------
-        # Per-direction amplitude (rad): 6 arm joints + 1 finger. Applied as
-        # uniform(-v, +v) on top of the init keyframe.
+        # Base arm/finger pose: a random hand-collected library pose when a
+        # difficulty level is set, else the literal keyframe start. init_qpos_noise
+        # then jitters it uniform(-v, +v) per direction (6 arm + 1 finger); set the
+        # noise to 0 in a sweep to use the library/keyframe pose verbatim.
+        if self._init_pose_lib is not None:
+            pose = self._init_pose_lib[
+                jax.random.randint(rng_pose, (), 0, self._n_init_poses)
+            ]
+            base_arm_qpos = pose[:6]
+            base_finger_qpos = jp.array([pose[6], pose[6]])  # one finger -> both
+        else:
+            base_arm_qpos = jp.array(self._init_q[self._robot_arm_qposadr])
+            base_finger_qpos = jp.array(self._init_q[self._robot_qposadr[-2:]])
+
         noise_amp = jp.asarray(self._config.init_qpos_noise, dtype=float)
         arm_amp = noise_amp[: len(self._robot_arm_qposadr)]  # 6 arm joints
         finger_amp = noise_amp[-1]
@@ -163,8 +246,7 @@ class UR3Pick(ur3_base.UR3Base):
             minval=-arm_amp,
             maxval=arm_amp,
         )
-        init_arm_qpos = jp.array(self._init_q[self._robot_arm_qposadr])
-        noisy_arm_qpos = init_arm_qpos + robot_qpos_noise
+        noisy_arm_qpos = base_arm_qpos + robot_qpos_noise
 
         # Gripper noise — symmetric, clipped to the physical finger range [0, 0.025]
         gripper_noise = jax.random.uniform(
@@ -173,8 +255,7 @@ class UR3Pick(ur3_base.UR3Base):
             minval=-finger_amp,
             maxval=finger_amp,
         )
-        init_finger_qpos = jp.array(self._init_q[self._robot_qposadr[-2:]])
-        noisy_finger_qpos = jp.clip(init_finger_qpos + gripper_noise, 0.0, 0.025)
+        noisy_finger_qpos = jp.clip(base_finger_qpos + gripper_noise, 0.0, 0.025)
 
         # -----------------------------
         # Build initial qpos with randomized arm joints
@@ -203,10 +284,16 @@ class UR3Pick(ur3_base.UR3Base):
             njmax=self._config.njmax,
         )
 
-        # set target mocap position (lift goal marker)
+        # set target mocap position (lift goal marker); place the lifter plate
+        # under the box when enabled (else it stays parked at its XML default).
         data = data.replace(
             mocap_pos=data.mocap_pos.at[self._mocap_target, :].set(target_pos),
         )
+        if self._lifter_enabled:
+            lifter_pos = jp.array([box_xy[0], box_xy[1], lifter_h])
+            data = data.replace(
+                mocap_pos=data.mocap_pos.at[self._lifter_mocap, :].set(lifter_pos),
+            )
 
         # initialize env state and info
         metrics = {

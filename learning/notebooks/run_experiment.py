@@ -123,6 +123,9 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "notes",
         "init_keyframe",
         "init_qpos_noise",
+        "init_start_random",
+        "lifter_height_max",
+        "box_z_rot_range",
         "num_eval_envs",
         "seed",
         "domain_randomization",
@@ -899,6 +902,12 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_overrides["init_qpos_noise"] = tuple(
                 float(x) for x in cfg["init_qpos_noise"]
             )
+        if "init_start_random" in cfg:
+            env_overrides["init_start_random"] = str(cfg["init_start_random"])
+        if "lifter_height_max" in cfg:
+            env_overrides["lifter_height_max"] = float(cfg["lifter_height_max"])
+        if "box_z_rot_range" in cfg:
+            env_overrides["box_z_rot_range"] = float(cfg["box_z_rot_range"])
 
         env = registry.load(env_name, config_overrides=env_overrides)
         env_cfg = registry.get_default_config(env_name)
