@@ -1,0 +1,40 @@
+{
+  "env_name": "UR3Pick",
+  "obs_dim": 26,
+  "action_dim": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "wandb_run_id": "Reso_Pos_lr6e-4_20260626_110022_7585",
+  "wandb_entity": "weissma6-zhaw-school-of-engineering",
+  "wandb_project": "UR3_pick_ppo",
+  "action_scale": 0.04,
+  "ctrl_dt": 0.02,
+  "episode_length": 150,
+  "env_overrides": {
+    "init_keyframe": "task_home",
+    "init_qpos_noise": [
+      0.9,
+      0.1,
+      0.1,
+      0.1,
+      0.1,
+      0.1,
+      0.025
+    ]
+  }
+}

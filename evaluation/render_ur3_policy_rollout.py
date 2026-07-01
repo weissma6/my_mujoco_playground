@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "downloaded_policies"))
 from policy_downloader import download_policy  # noqa: E402
 
 # ── Config ────────────────────────────────────────────────────────────────
-WANDB_RUN_ID = "Pick_12M_rand_base85_fin25_20260626_094554_6311"
+WANDB_RUN_ID = "Pick_12M_env1024_20260625_193041_6311"
 # good basic try, far target, too close init box "Pick_12M_env1024_20260625_193041_6311"
 # FAR target, strong init Random, box init in good  range: "Pick_12M_rand_base85_fin25_20260626_094554_6311"
 # good target, strong init Random, box init in good  range: "Pick_12M_rand_base85_fin25_20260626_094554_6311"

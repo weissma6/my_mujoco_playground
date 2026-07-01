@@ -957,14 +957,6 @@ class UR3RealRobotPick:
                 }
                 log.append(row)
 
-                if debug_print:
-                    print(
-                        f"\r[{step_count:4d}] box->tgt={box_target_dist:.4f}m "
-                        f"| grip={gripper_norm:.2f} | hz={loop_hz_true:.1f} "
-                        f"| box={np.round(box_pos, 3)}",
-                        end="", flush=True,
-                    )
-
                 if reach_tol is not None and box_target_dist < reach_tol:
                     if in_tol_since is None:
                         in_tol_since = time.perf_counter()
@@ -1163,7 +1155,7 @@ class UR3RealRobotPick:
         specs = []
         if "box_to_target_dist" in df.columns:
             specs.append(("box", "scalar", "distance (cm)",
-                          "Box to drop-target distance"))
+                          "Box→target and gripper→box distance"))
         if _has("q"):
             specs.append(("q", "joint", "position (rad)",
                           "Joint positions (RTDE receive)"))
@@ -1189,7 +1181,17 @@ class UR3RealRobotPick:
             axes = [axes]
         for ax, (key, kind, ylabel, title) in zip(axes, specs):
             if kind == "scalar":
-                ax.plot(t, df["box_to_target_dist"] * 100)
+                ax.plot(t, df["box_to_target_dist"] * 100, label="box → target")
+                tcp_box_cols = ("tcp_x", "tcp_y", "tcp_z",
+                                "box_x", "box_y", "box_z")
+                if all(c in df.columns for c in tcp_box_cols):
+                    finger_box = np.sqrt(
+                        (df["box_x"] - df["tcp_x"]) ** 2
+                        + (df["box_y"] - df["tcp_y"]) ** 2
+                        + (df["box_z"] - df["tcp_z"]) ** 2
+                    )
+                    ax.plot(t, finger_box * 100, label="gripper → box (tcp)")
+                    ax.legend(loc="upper right", fontsize=8)
             else:
                 _per_joint(ax, key)
             ax.set_ylabel(ylabel)

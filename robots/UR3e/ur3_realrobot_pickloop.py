@@ -77,7 +77,7 @@ MOCAP_STALE_S = 0.25
 ENABLE_GRIPPER = True
 GRIPPER_PORT = 49999              # Robotiq URCapX XML-RPC server (PolyScope X)
 GRIPPER_SLAVE_ID = 9             # this Hand-E = slaveId 9 ("Gripper ID 1")
-GRIPPER_SPEED_PCT = 100
+GRIPPER_SPEED_PCT = 30           # low = gentle physical gripper motion (see below)
 GRIPPER_FORCE_PCT = 50
 
 # Convergence
@@ -91,14 +91,14 @@ ACTION_SCALE = 0.04              # MUST match training (UR3Pick default 0.04)
 LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
 SERVOJ_A = 0.2                    # max joint accel [rad/s^2]
-SERVOJ_V = 0.3                    # max joint vel  [rad/s]
-ALPHA = 0.7                      # scales the use of the policy action
+SERVOJ_V = 0.2                    # max joint vel  [rad/s]
+ALPHA = 0.5                      # 1.0 = send the policy's full action (no blend; matches training)
 USE_FK_TCP = True                 # compute tcp_pos via MuJoCo FK (matches sim site)
-# Gripper smoothing (deployment only — sim has a real PD finger plant; here we
-# re-create its lag so the policy sees what it trained on and the command stops
-# oscillating). GRIPPER_TAU=0 + GRIPPER_MAX_RATE=inf reproduces the raw behavior.
-GRIPPER_TAU = 0.05               # s; finger-plant low-pass time constant (~2-3 steps)
-GRIPPER_MAX_RATE = 0.125         # m/s; brute-force slew cap (full 25 mm in >=0.2 s)
+# Gripper smoothing disabled: the raw integrator target goes straight to the
+# hardware/obs. Physical smoothing now comes from the low GRIPPER_SPEED_PCT above,
+# not a software low-pass (which double-lagged the real Hand-E's own dynamics).
+GRIPPER_TAU = 0.0                # s; 0 = no finger-plant low-pass
+GRIPPER_MAX_RATE = float("inf")  # m/s; inf = no slew cap
 
 # Paths (relative to this script)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -115,12 +115,14 @@ MODEL_PATH = os.path.join(
 # WANDB_PROJECT below adjusted. The selected policy is loaded from
 # evaluation/downloaded_policies/{run_id}/ if present, else downloaded from W&B.
 POLICY_REGISTRY = {
+    "old_version_pick": "Pick_12M_env1024_20260625_193041_6311",
+    "base90_lr4e-10": "base90_j10_fin25_20M_lr4e-4_20260626_101918_6311",
     "reasonable starting positions": "Reso_Pos_lr6e-4_20260626_110022_7585",
     "pick_12M_rand_base85_fin25": "Pick_12M_rand_base85_fin25_20260626_094554_6311",
     "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
     "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
 }
-POLICY_NAME = "pick_12M_rand_base85_fin25"   # <- select which policy to run
+POLICY_NAME = "reasonable starting positions"  # <- select which policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
