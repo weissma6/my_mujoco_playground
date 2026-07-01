@@ -50,7 +50,7 @@ def default_config() -> config_dict.ConfigDict:
         sim_dt=0.005,
         episode_length=150,
         action_repeat=1,
-        action_scale=0.04,
+        action_scale=0.01,
         reward_config=config_dict.create(
             scales=config_dict.create(
                 ## Staged reward scaling factors (sequenced by sticky latches).
@@ -90,8 +90,8 @@ def default_config() -> config_dict.ConfigDict:
         # axis-aligned. Replaces the old ±45° Y-axis tilt.
         box_z_rot_range=0.0,
         # Box-center distance (m) to the lift target counted as success (3
-        # consecutive steps). Tight 5 mm — the box must end up inside the target.
-        success_tol=0.005,
+        # consecutive steps). Tight 3 mm — the box must end up inside the target.
+        success_tol=0.003,
         # "Off the resting height" margin (m) a grasped box must clear to set the
         # sticky "lifted" latch that unlocks box_target (anti-push lever).
         lift_eps=0.03,
