@@ -192,8 +192,8 @@ class UR3Pick(ur3_base.UR3Base):
             jax.random.uniform(
                 rng_box,
                 (2,),
-                minval=jp.array([-0.15, -0.10]),
-                maxval=jp.array([0.15, 0.10]),
+                minval=jp.array([-0.15, -0.2]),
+                maxval=jp.array([0.15, 0.2]),
             )
             + self._init_obj_pos[:2]  # Box XY from XML keyframe
         )
