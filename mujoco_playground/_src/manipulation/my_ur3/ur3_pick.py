@@ -69,6 +69,10 @@ def default_config() -> config_dict.ConfigDict:
                 # Box orientation aligns with the canonical (identity) target —
                 # gated by sticky reached_box (only active once at the box).
                 box_orient=2.0,
+                # Gripper jaw axis aligns (about world Z) with a box face so the
+                # parallel fingers can close on it. Weighted by approach proximity;
+                # 90°-periodic (square cross-section => 4 equivalent faces).
+                gripper_align=2.0,
                 # Do not collide the gripper with the floor.
                 no_floor_collision=0.25,
                 # Arm stays close to initial pose.
@@ -78,7 +82,7 @@ def default_config() -> config_dict.ConfigDict:
         impl="jax",
         nconmax=24 * 8192,
         njmax=128,
-        init_keyframe="low_home",
+        init_keyframe="task_home",
         # Per-joint per-direction amplitude (rad) for reset randomization: 6 arm
         # + 1 finger. Applied symmetrically as uniform(-v, +v) on top of the init
         # keyframe. Default 0.05 reproduces the legacy uniform(-0.05, 0.05) arm noise.
@@ -90,7 +94,7 @@ def default_config() -> config_dict.ConfigDict:
         # Per-episode box-riser height (m). 0.0 disables the lifter (box on the
         # floor, legacy). >0 => h ~ uniform(_LIFTER_HEIGHT_MIN, lifter_height_max)
         # and the box spawns resting on the plate; the lift target is raised by h.
-        lifter_height_max=0.0,
+        lifter_height_max=0.03,
         # Box spawn yaw about world Z (rad); yaw ~ uniform(-r, +r). 0.0 =
         # axis-aligned. Replaces the old ±45° Y-axis tilt.
         box_z_rot_range=0.0,
@@ -237,7 +241,7 @@ class UR3Pick(ur3_base.UR3Base):
             jax.random.uniform(
                 rng_target,
                 (3,),
-                minval=jp.array([0.01, -0.03, 0.12]),
+                minval=jp.array([0.02, -0.03, 0.12]),
                 maxval=jp.array([0.06, 0.03, 0.15]),
             )
             + self._init_obj_pos
@@ -505,6 +509,25 @@ class UR3Pick(ur3_base.UR3Base):
         # (avoids rewarding orientation noise during the free-floating approach).
         box_orient_Reward = (1 - jp.tanh(2 * rot_err)) * reached
 
+        # Gripper-jaw yaw alignment — the parallel fingers can only close on the
+        # box when their horizontal jaw axis lines up with a box face. Jaw axis =
+        # the (horizontal) vector between the two finger touch sites; box face
+        # axis = the box world-frame X column. cos(4·Δ) is 90°-periodic so all
+        # four faces of the square cross-section score maximally (1) and a
+        # corner-on approach (Δ=45°) scores 0. Weighted by approach proximity so
+        # it shapes the final approach rather than latching.
+        jaw_xy = (right_finger_touch_pos - left_finger_touch_pos)[:2]
+        jaw_xy = jaw_xy / (jp.linalg.norm(jaw_xy) + 1e-6)
+        box_x_xy = data.xmat[self._obj_body].reshape(3, 3)[:2, 0]
+        box_x_xy = box_x_xy / (jp.linalg.norm(box_x_xy) + 1e-6)
+        cos_d = jp.dot(jaw_xy, box_x_xy)
+        sin_d = jaw_xy[0] * box_x_xy[1] - jaw_xy[1] * box_x_xy[0]
+        cos_2d = cos_d * cos_d - sin_d * sin_d
+        cos_4d = 2 * cos_2d * cos_2d - 1  # = cos(4·Δyaw)
+        gripper_align_Reward = (
+            0.5 * (1 + cos_4d) * (1 - jp.tanh(5 * gripper_box_dist))
+        )
+
         # Penalty for deviating too far from the initial arm configuration.
         robot_target_qpos_penalty = 1 - jp.tanh(
             jp.linalg.norm(
@@ -527,6 +550,7 @@ class UR3Pick(ur3_base.UR3Base):
             "lift": lift_Reward,
             "box_target": box_target_Reward,
             "box_orient": box_orient_Reward,
+            "gripper_align": gripper_align_Reward,
             "no_floor_collision": no_floor_collision_Reward,
             "robot_target_qpos": robot_target_qpos_penalty,
         }
@@ -544,6 +568,7 @@ class UR3Pick(ur3_base.UR3Base):
             # errors / distances
             "box_target_dist": box_target_dist,
             "rot_err": rot_err,
+            "jaw_align_cos4d": cos_4d,
             "grip_box_dist": gripper_box_dist,
             "finger_touch_dist": finger_touch_dist,
 
