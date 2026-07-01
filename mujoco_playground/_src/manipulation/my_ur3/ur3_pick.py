@@ -462,7 +462,7 @@ class UR3Pick(ur3_base.UR3Base):
         # reached_box: gripper has been within 2 cm of the box at some point.
         info["reached_box"] = jp.maximum(
             info["reached_box"],
-            (gripper_box_dist < 0.02).astype(float),
+            (gripper_box_dist < 0.01).astype(float),
         )
         # grasped: at the box AND both finger pads in contact with it.
         finger_box_contact = [
