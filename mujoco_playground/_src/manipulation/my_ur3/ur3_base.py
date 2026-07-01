@@ -170,21 +170,26 @@ class UR3Base(mjx_env.MjxEnv):
         self._lowers, self._uppers = self._mj_model.actuator_ctrlrange.T
 
     def _get_obs(self, data: mjx.Data, info: Dict[str, Any]) -> jax.Array:
-        """Returns 20D obs: [q(8), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)].
+        """Returns 13D obs: [arm_q(6), gripper(1), (box-tcp)(3), (target-box)(3)].
 
         Canonical observation contract shared by UR3Pick (simple pick) and
         UR3PicknPlace (pick-and-place) — the two tasks differ only in
         reward/termination, never in observation. Hoisted here so it can never
         drift between the subclasses. Relies on handles set in _post_init
-        (_robot_qposadr, _obj_body, _gripper_site) and on
+        (_robot_arm_qposadr, _robot_qposadr, _obj_body, _gripper_site) and on
         info["target_pos"] (written by each env's reset).
+
+        The gripper is a single combined-opening value = sum of the two finger
+        joint positions (each in [0, 0.025] -> total in [0, 0.05]); no
+        orientation is exposed, keeping the obs to state the real robot knows.
         """
+        gripper = data.qpos[self._robot_qposadr[-2:]].sum()                    # 1 (0-0.05)
         obs = jp.concatenate(
             [
-                data.qpos[self._robot_qposadr],                                # 8 (6 arm + 2 finger)
+                data.qpos[self._robot_arm_qposadr],                            # 6 arm joints
+                gripper.reshape(1),                                            # 1 combined gripper
                 data.xpos[self._obj_body] - data.site_xpos[self._gripper_site],  # 3 box - tcp
                 info["target_pos"] - data.xpos[self._obj_body],                # 3 target - box
-                data.xmat[self._obj_body].ravel()[:6],                         # 6 box orientation (rows 0-1)
             ]
         )
         return obs

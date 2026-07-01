@@ -4,12 +4,12 @@ RTDE dependencies for the UR3 + Hand-E pick task.
 Mirrors robots/URSim/URSim_RTDE_dependencies.py (the UR10 reach backbone)
 but adapted for the UR3PicknPlace policy:
 
-- 20D observation  [q(8), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)]
-                   q = 6 arm joints + 2 finger positions; box_xmat[:6] = first
-                   two rows of the box rotation matrix (from the mocap quaternion)
+- 13D observation  [arm_q(6), gripper(1), (box-tcp)(3), (target-box)(3)]
+                   arm_q = 6 arm joints; gripper = combined finger opening in
+                   [0, 0.05] (no orientation is exposed to the policy)
 - 7D action        6 arm joint deltas + 1 Hand-E gripper delta
 - box pose comes from a Nokov rigid body (motion_capture.mymocap.mocap_dependencies):
-  xyz via get_rigid_body_xyz(), orientation via get_rigid_body_quat()
+  xyz via get_rigid_body_xyz() (orientation is no longer needed by the policy)
 - the lift target is supplied by the caller (hardcoded in the pick-loop script)
 - the ARM and the GRIPPER connect on two separate, independent channels:
     * connect_arm()     — RTDE receive + the External Control URCap (PolyScope X,
@@ -459,30 +459,8 @@ class UR3RealRobotPick:
         return self._fk_data.site_xpos[self._fk_tcp_id].copy()
 
     # =========================================================================
-    # F — Observation Building (26D)
+    # F — Observation Building (13D)
     # =========================================================================
-
-    @staticmethod
-    def quat_to_xmat_flat(quat: Optional[np.ndarray]) -> np.ndarray:
-        """Convert a (w, x, y, z) quaternion to the first two rows of its 3x3
-        rotation matrix, flattened to (6,). Returns identity rows if quat is None.
-        """
-        if quat is None:
-            return np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float64)
-        w, x, y, z = (float(v) for v in quat)
-        n = (w * w + x * x + y * y + z * z) ** 0.5
-        if n < 1e-9:
-            return np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float64)
-        w, x, y, z = w / n, x / n, y / n, z / n
-        mat = np.array(
-            [
-                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-            ],
-            dtype=np.float64,
-        )
-        return mat.ravel()[:6]
 
     def build_obs_from_feedback(
         self,
@@ -490,41 +468,37 @@ class UR3RealRobotPick:
         box_pos: np.ndarray,
         target_pos: np.ndarray,
         tcp_pos: Optional[np.ndarray] = None,
-        box_quat: Optional[np.ndarray] = None,
         dtype=np.float32,
     ) -> np.ndarray:
-        """Build 20D obs to match the canonical UR3Base._get_obs (shared by
+        """Build 13D obs to match the canonical UR3Base._get_obs (shared by
         UR3PicknPlace, the deployment target, and UR3Pick):
-        [q(8), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)].
+        [arm_q(6), gripper(1), (box-tcp)(3), (target-box)(3)].
 
-        q(8) = 6 arm joints (RTDE) + 2 finger positions (from the internal gripper
-        tracker; the real robot has no finger encoder).
+        arm_q = 6 arm joints (RTDE). gripper = combined finger opening in
+        [0, 0.05] m: sim feeds the SUM of the two finger joint positions, so the
+        single-finger plant estimate is doubled here. Uses the finger-PLANT
+        estimate (policy_step_ctrl_update's low-pass of the tendon integrator),
+        NOT the raw ctrl: sim observes the lagged physical finger, so feeding the
+        raw command would be out-of-distribution and, after
+        running_statistics.normalize, drive the policy off the rails (and the
+        zero-lag feedback was what made the deploy gripper oscillate).
         tcp_pos defaults to RTDE getActualTCPPose()[:3] (X/Y already negated in
-        receive_feedback); pass an FK-computed tcp_pos to override. box_xmat[:6]
-        is derived from the mocap quaternion (identity rows when box_quat is None).
-        Returns shape (1, 20) for batched policy input.
+        receive_feedback); pass an FK-computed tcp_pos to override.
+        Returns shape (1, 13) for batched policy input.
         """
-        arm_q = np.array(fb["q"], dtype=dtype)
-        # Finger obs in the training space: the per-finger JOINT position in
-        # [0, 0.025] m (ur3_base._get_obs feeds data.qpos[finger joints]). Use the
-        # finger-PLANT estimate (policy_step_ctrl_update's low-pass of the tendon
-        # integrator), NOT the raw [0, 0.05] ctrl: sim observes the lagged physical
-        # finger, so feeding the raw command would be out-of-distribution and, after
-        # running_statistics.normalize, drive the policy off the rails (and the
-        # zero-lag feedback was what made the deploy gripper oscillate).
-        finger_q = np.full(
-            2, float(np.clip(self._finger_pos_est, 0.0, self._finger_hi)), dtype=dtype
-        )
-        q = np.concatenate([arm_q, finger_q])                       # 8
+        arm_q = np.array(fb["q"], dtype=dtype)                      # 6
+        gripper = np.array(
+            [2.0 * float(np.clip(self._finger_pos_est, 0.0, self._finger_hi))],
+            dtype=dtype,
+        )                                                           # 1 (0-0.05)
         tcp = (np.array(fb["tcp_xyz"], dtype=dtype) if tcp_pos is None
                else np.array(tcp_pos, dtype=dtype))
         box = np.array(box_pos, dtype=dtype)
         tgt = np.array(target_pos, dtype=dtype)
         box_to_tcp = box - tcp                                      # 3
         target_to_box = tgt - box                                  # 3
-        box_xmat_flat = self.quat_to_xmat_flat(box_quat).astype(dtype)  # 6
-        obs = np.concatenate([q, box_to_tcp, target_to_box, box_xmat_flat])
-        return obs[None, :]  # (1, 20)
+        obs = np.concatenate([arm_q, gripper, box_to_tcp, target_to_box])
+        return obs[None, :]  # (1, 13)
 
     # =========================================================================
     # F2 — Mocap base-frame calibration (mocap world -> policy/base frame)
@@ -751,7 +725,6 @@ class UR3RealRobotPick:
         overrun_count = 0
         in_tol_since = None
         last_box_pos = None
-        last_box_quat = None
         # The URCapX XML-RPC server must not be commanded above ~10 Hz, so the
         # gripper is sent at most every gripper_min_dt seconds even though the
         # arm loop runs at control_hz (e.g. 50 Hz).
@@ -810,25 +783,16 @@ class UR3RealRobotPick:
                                else drop_target.copy())
                 box_pos = np.asarray(box_pos, dtype=float)
                 last_box_pos = box_pos.copy()
-
-                # Box orientation (quaternion w,x,y,z), also mapped to the base
-                # frame. Identity fallback if unavailable.
-                box_quat = mocap_reader.get_rigid_body_quat()
-                if box_quat is None:
-                    box_quat = last_box_quat
-                else:
-                    box_quat = self.mocap_quat_to_base(np.asarray(box_quat, dtype=float))
-                    last_box_quat = box_quat.copy()
                 t1_mocap = time.perf_counter()
 
                 box_target_dist = float(np.linalg.norm(drop_target - box_pos))
 
-                # 3. Build observation (26D)
+                # 3. Build observation (13D — no box orientation)
                 t0_obs = time.perf_counter()
                 obs_batch = self.build_obs_from_feedback(
                     fb, box_pos, drop_target,
                     tcp_pos=tcp_xyz if use_fk_tcp else None,
-                    box_quat=box_quat, dtype=dtype,
+                    dtype=dtype,
                 )
                 t1_obs = time.perf_counter()
 

@@ -2,10 +2,10 @@
 UR3 + Hand-E pick loop with a mocap-derived box position.
 
 Mirror of UR10_RealRobot_Reach_ONE.py, adapted for the UR3PicknPlace policy:
-  - 20D obs [q(8), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)]
+  - 13D obs [arm_q(6), gripper(1), (box-tcp)(3), (target-box)(3)]
   - 7D action (6 arm + 1 gripper)
-  - the box pose (xyz + orientation) is streamed live from a Nokov rigid body;
-    you only place the box, the loop reads its pose every tick
+  - the box xyz is streamed live from a Nokov rigid body (orientation no longer
+    used); you only place the box, the loop reads its position every tick
   - the lift target is hardcoded below
 
 Position the robot, place the tracked rigid body in the cameras' view, then run.
@@ -81,7 +81,7 @@ GRIPPER_SPEED_PCT = 30           # low = gentle physical gripper motion (see bel
 GRIPPER_FORCE_PCT = 50
 
 # Convergence
-REACH_TOL = 0.03                  # 3 cm (box-to-target)
+REACH_TOL = 0.02                  # 2 cm (box-to-target)
 DWELL_TIME_S = 2.0
 TIMEOUT_S = 10.0
 
@@ -91,7 +91,7 @@ ACTION_SCALE = 0.04              # MUST match training (UR3Pick default 0.04)
 LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
 SERVOJ_A = 0.3                    # max joint accel [rad/s^2]
-SERVOJ_V = 1.4                    # max joint vel  [rad/s]
+SERVOJ_V = 1.0                    # max joint vel  [rad/s]
 ALPHA = 1                      # 1.0 = send the policy's full action (no blend; matches training)
 USE_FK_TCP = True                 # compute tcp_pos via MuJoCo FK (matches sim site)
 # Gripper smoothing disabled: the raw integrator target goes straight to the
@@ -115,14 +115,15 @@ MODEL_PATH = os.path.join(
 # WANDB_PROJECT below adjusted. The selected policy is loaded from
 # evaluation/downloaded_policies/{run_id}/ if present, else downloaded from W&B.
 POLICY_REGISTRY = {
-    "Random-init_bod-lifted": "cur_light_lift8rot_20260701_145023_3898",
+    "NoVelocity_mid_ea1ffd26f79c25db5c62af8e68022f6677b5aff6": "cur_mid_base_20260701_164529_3867",
+    "NoVelocity_ea1ffd26f79c25db5c62af8e68022f6677b5aff6": "cur_light_lift8rot_20260701_163113_3867",
     "base90_lr4e-10": "base90_j10_fin25_20M_lr4e-4_20260626_101918_6311",
     "reasonable starting positions": "Reso_Pos_lr6e-4_20260626_110022_7585",
     "pick_12M_rand_base85_fin25": "Pick_12M_rand_base85_fin25_20260626_094554_6311",
     "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
     "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
 }
-POLICY_NAME = "Random-init_bod-lifted"  # <- select which policy to run
+POLICY_NAME = "NoVelocity_mid_ea1ffd26f79c25db5c62af8e68022f6677b5aff6"  # <- select which policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"

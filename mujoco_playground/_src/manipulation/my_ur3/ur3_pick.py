@@ -15,13 +15,11 @@
 """UR3 pick task: 6-DOF arm + Hand-E gripper, lift a box to a target point.
 
 The mocap target is used as the lift goal (a point in the air above the box).
-The 4x4x4 cm box spawns with a random Z-axis yaw (range set by box_z_rot_range)
-and a rotation-error reward encourages bringing it back to the canonical
-(identity) orientation while lifting. Optionally the box spawns on a
-variable-height "lifter" plate (lifter_height_max) so the policy learns to grasp
-boxes at different heights, and the arm start pose can be drawn from a library of
-hand-collected real-robot poses (init_start_random). Mirrors the commented-out
-reward scaffolding of ur10pick.py.
+The 4x4x4 cm box spawns with a random Z-axis yaw (range set by box_z_rot_range).
+Optionally the box spawns on a variable-height "lifter" plate (lifter_height_max)
+so the policy learns to grasp boxes at different heights, and the arm start pose
+can be drawn from a library of hand-collected real-robot poses (init_start_random).
+Mirrors the commented-out reward scaffolding of ur10pick.py.
 """
 
 from typing import Any, Dict, Optional, Union
@@ -66,13 +64,6 @@ def default_config() -> config_dict.ConfigDict:
                 # Box goes to the mocap target (lift point in the air); gated by
                 # the sticky "lifted" latch so a sliding box earns nothing.
                 box_target=8.0,
-                # Box orientation aligns with the canonical (identity) target —
-                # gated by sticky reached_box (only active once at the box).
-                box_orient=2.0,
-                # Gripper jaw axis aligns (about world Z) with a box face so the
-                # parallel fingers can close on it. Weighted by approach proximity;
-                # 90°-periodic (square cross-section => 4 equivalent faces).
-                gripper_align=2.0,
                 # Do not collide the gripper with the floor.
                 no_floor_collision=0.25,
                 # Arm stays close to initial pose.
@@ -151,10 +142,6 @@ class UR3Pick(ur3_base.UR3Base):
         # Margin (m) a grasped box must clear above its per-episode resting height
         # to count as "lifted" (anti-push latch; rest height stored in reset()).
         self._lift_eps = float(self._config.lift_eps)
-
-        # Canonical (identity) box orientation target, pre-flattened to the first
-        # two rows of the rotation matrix (matches the obs/reward layout).
-        self._target_xmat_flat = jp.eye(3).ravel()[:6]
 
         # Init-pose library. Loaded once (stdlib+numpy I/O) and stored as a jnp
         # constant so the jitted reset() can index it; "none" keeps the legacy
@@ -449,14 +436,6 @@ class UR3Pick(ur3_base.UR3Base):
         )
 
         # ==============================
-        # --- Rotation related computations ---
-        # ==============================
-        # First two rows of the box world-frame rotation matrix - JAX array (6,) float64
-        box_xmat_flat = data.xmat[self._obj_body].ravel()[:6]
-        # Rotation error between box and the canonical (identity) target - scalar float64
-        rot_err = jp.linalg.norm(self._target_xmat_flat - box_xmat_flat)
-
-        # ==============================
         # --- Sticky stage latches (monotone via jp.maximum) ---
         # ==============================
         # reached_box: gripper has been within 2 cm of the box at some point.
@@ -510,29 +489,6 @@ class UR3Pick(ur3_base.UR3Base):
             + 0.5 * (1 - jp.tanh(30 * box_target_dist))
         ) * lifted
 
-        # Orientation reward — only active once the gripper has reached the box
-        # (avoids rewarding orientation noise during the free-floating approach).
-        box_orient_Reward = (1 - jp.tanh(2 * rot_err)) * reached
-
-        # Gripper-jaw yaw alignment — the parallel fingers can only close on the
-        # box when their horizontal jaw axis lines up with a box face. Jaw axis =
-        # the (horizontal) vector between the two finger touch sites; box face
-        # axis = the box world-frame X column. cos(4·Δ) is 90°-periodic so all
-        # four faces of the square cross-section score maximally (1) and a
-        # corner-on approach (Δ=45°) scores 0. Weighted by approach proximity so
-        # it shapes the final approach rather than latching.
-        jaw_xy = (right_finger_touch_pos - left_finger_touch_pos)[:2]
-        jaw_xy = jaw_xy / (jp.linalg.norm(jaw_xy) + 1e-6)
-        box_x_xy = data.xmat[self._obj_body].reshape(3, 3)[:2, 0]
-        box_x_xy = box_x_xy / (jp.linalg.norm(box_x_xy) + 1e-6)
-        cos_d = jp.dot(jaw_xy, box_x_xy)
-        sin_d = jaw_xy[0] * box_x_xy[1] - jaw_xy[1] * box_x_xy[0]
-        cos_2d = cos_d * cos_d - sin_d * sin_d
-        cos_4d = 2 * cos_2d * cos_2d - 1  # = cos(4·Δyaw)
-        gripper_align_Reward = (
-            0.5 * (1 + cos_4d) * (1 - jp.tanh(5 * gripper_box_dist))
-        )
-
         # Penalty for deviating too far from the initial arm configuration.
         robot_target_qpos_penalty = 1 - jp.tanh(
             jp.linalg.norm(
@@ -554,8 +510,6 @@ class UR3Pick(ur3_base.UR3Base):
             "grasp": grasp_Reward,
             "lift": lift_Reward,
             "box_target": box_target_Reward,
-            "box_orient": box_orient_Reward,
-            "gripper_align": gripper_align_Reward,
             "no_floor_collision": no_floor_collision_Reward,
             "robot_target_qpos": robot_target_qpos_penalty,
         }
@@ -572,8 +526,6 @@ class UR3Pick(ur3_base.UR3Base):
 
             # errors / distances
             "box_target_dist": box_target_dist,
-            "rot_err": rot_err,
-            "jaw_align_cos4d": cos_4d,
             "grip_box_dist": gripper_box_dist,
             "finger_touch_dist": finger_touch_dist,
 
