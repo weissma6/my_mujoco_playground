@@ -32,14 +32,20 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "downloaded_policies"))
 from policy_downloader import download_policy  # noqa: E402
 
 # ── Config ────────────────────────────────────────────────────────────────
-WANDB_RUN_ID = "Pick_12M_env1024_20260625_193041_6311"
-# good basic try, far target, too close init box "Pick_12M_env1024_20260625_193041_6311"
-# FAR target, strong init Random, box init in good  range: "Pick_12M_rand_base85_fin25_20260626_094554_6311"
-# good target, strong init Random, box init in good  range: "Pick_12M_rand_base85_fin25_20260626_094554_6311"
+POLICY_REGISTRY = {
+    "NoVelocity_ea1ffd26f79c25db5c62af8e68022f6677b5aff6": "cur_light_lift8rot_20260701_163113_3867",
+    "base90_lr4e-10": "base90_j10_fin25_20M_lr4e-4_20260626_101918_6311",
+    "reasonable starting positions": "Reso_Pos_lr6e-4_20260626_110022_7585",
+    "pick_12M_rand_base85_fin25": "Pick_12M_rand_base85_fin25_20260626_094554_6311",
+    "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
+    "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
+}
+
+POLICY_NAME = "NoVelocity_ea1ffd26f79c25db5c62af8e68022f6677b5aff6"  # <- select which policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
-
+WANDB_RUN_ID = POLICY_REGISTRY[POLICY_NAME]
 CAMERA = "box_detail"
 N_EPISODES = 1
 # Random per-run seed (never 0 — seed 0 gave the same "far" target every render).

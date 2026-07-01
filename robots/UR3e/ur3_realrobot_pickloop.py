@@ -115,6 +115,7 @@ MODEL_PATH = os.path.join(
 # WANDB_PROJECT below adjusted. The selected policy is loaded from
 # evaluation/downloaded_policies/{run_id}/ if present, else downloaded from W&B.
 POLICY_REGISTRY = {
+    "Simplified_9cd87e0bef819dcca2d86ea25451eaa98bf78eb5": "Simplified_lightRandom_lr1e-3_20260701_173930_3867",
     "NoVelocity_mid_ea1ffd26f79c25db5c62af8e68022f6677b5aff6": "cur_mid_base_20260701_164529_3867",
     "NoVelocity_ea1ffd26f79c25db5c62af8e68022f6677b5aff6": "cur_light_lift8rot_20260701_163113_3867",
     "base90_lr4e-10": "base90_j10_fin25_20M_lr4e-4_20260626_101918_6311",
@@ -123,7 +124,7 @@ POLICY_REGISTRY = {
     "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
     "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
 }
-POLICY_NAME = "NoVelocity_mid_ea1ffd26f79c25db5c62af8e68022f6677b5aff6"  # <- select which policy to run
+POLICY_NAME = "Simplified_9cd87e0bef819dcca2d86ea25451eaa98bf78eb5"  # <- select which policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"

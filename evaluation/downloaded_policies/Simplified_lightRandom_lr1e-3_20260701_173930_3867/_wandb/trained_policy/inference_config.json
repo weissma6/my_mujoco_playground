@@ -1,0 +1,79 @@
+{
+  "env_name": "UR3Pick",
+  "episode_length": 150,
+  "observation_size": 13,
+  "action_size": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "seed": 4,
+  "env_overrides": {
+    "init_keyframe": "task_home",
+    "init_qpos_noise": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "init_start_random": "light",
+    "lifter_height_max": 0.02,
+    "box_z_rot_range": 0.0
+  },
+  "domain_randomization": {},
+  "git_commit": "9cd87e0b",
+  "training_timestamp": "2026-07-01 17:50:28.501296",
+  "full_cfg": {
+    "run_id": "Simplified_lightRandom_lr1e-3",
+    "env_name": "UR3Pick",
+    "init_keyframe": "task_home",
+    "num_timesteps": 8000000,
+    "num_evals": 15,
+    "num_resets_per_eval": 1,
+    "init_qpos_noise": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "init_start_random": "light",
+    "lifter_height_max": 0.02,
+    "box_z_rot_range": 0.0,
+    "unroll_length": 10,
+    "num_envs": 1024,
+    "batch_size": 128,
+    "num_minibatches": 64,
+    "num_updates_per_batch": 8,
+    "video_every_evals": 5,
+    "render_every": 1,
+    "learning_rate": 0.001,
+    "seed": 4,
+    "wandb_project": "UR3_pick_ppo",
+    "wandb_tags": [
+      "curriculum",
+      "8M",
+      "lr1e-3",
+      "light",
+      "lift2"
+    ]
+  }
+}

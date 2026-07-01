@@ -1,0 +1,43 @@
+{
+  "env_name": "UR3Pick",
+  "obs_dim": 26,
+  "action_dim": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "wandb_run_id": "cur_light_lift8rot_20260701_145023_3898",
+  "wandb_entity": "weissma6-zhaw-school-of-engineering",
+  "wandb_project": "UR3_pick_ppo",
+  "action_scale": 0.04,
+  "ctrl_dt": 0.02,
+  "episode_length": 150,
+  "env_overrides": {
+    "init_keyframe": "task_home",
+    "init_qpos_noise": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "init_start_random": "light",
+    "lifter_height_max": 0.08,
+    "box_z_rot_range": 0.7853981633974483
+  }
+}

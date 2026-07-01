@@ -151,6 +151,7 @@ def download_policy(
       "episode_length": inf_cfg.get("episode_length",
                                     run.config.get("episode_length")),
       "env_overrides": inf_cfg.get("env_overrides", {}),
+      "git_commit": inf_cfg.get("git_commit", run.config.get("git_commit")),
   }
   with open(os.path.join(out_dir, "metadata.json"), "w") as f:
     json.dump(metadata, f, indent=2)
