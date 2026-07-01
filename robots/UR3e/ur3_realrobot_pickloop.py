@@ -87,7 +87,7 @@ TIMEOUT_S = 10.0
 
 # Control (must match training: 50 Hz -> ctrl_dt=0.02, action_scale=0.04)
 CONTROL_HZ = 50.0
-ACTION_SCALE = 0.01              # MUST match training 0.01 also in training for lass shakeyness
+ACTION_SCALE = 0.04              # MUST match training 0.01 also in training for lass shakeyness
 LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
 SERVOJ_A = 0.3                    # max joint accel [rad/s^2]

@@ -58,7 +58,7 @@ def default_config() -> config_dict.ConfigDict:
         sim_dt=0.005,
         episode_length=150,
         action_repeat=1,
-        action_scale=0.02,
+        action_scale=0.03,
         impl="jax",
         nconmax=12 * 8192,
         njmax=44,
