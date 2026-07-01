@@ -238,23 +238,21 @@ class UR3Pick(ur3_base.UR3Base):
         # -----------------------------
         # Randomize robot joint positions
         # -----------------------------
-        # Base arm/finger pose: a random hand-collected library pose when a
-        # difficulty level is set, else the literal keyframe start. init_qpos_noise
-        # then jitters it uniform(-v, +v) per direction (6 arm + 1 finger); set the
-        # noise to 0 in a sweep to use the library/keyframe pose verbatim.
+        # Base arm pose: a random hand-collected library pose when a difficulty
+        # level is set, else the literal keyframe start. init_qpos_noise then
+        # jitters the 6 arm joints uniform(-v, +v); set the noise to 0 in a sweep
+        # to use the library/keyframe arm pose verbatim. The gripper is handled
+        # separately below (randomized full open<->closed, ignoring init_qpos_noise).
         if self._init_pose_lib is not None:
             pose = self._init_pose_lib[
                 jax.random.randint(rng_pose, (), 0, self._n_init_poses)
             ]
             base_arm_qpos = pose[:6]
-            base_finger_qpos = jp.array([pose[6], pose[6]])  # one finger -> both
         else:
             base_arm_qpos = jp.array(self._init_q[self._robot_arm_qposadr])
-            base_finger_qpos = jp.array(self._init_q[self._robot_qposadr[-2:]])
 
         noise_amp = jp.asarray(self._config.init_qpos_noise, dtype=float)
         arm_amp = noise_amp[: len(self._robot_arm_qposadr)]  # 6 arm joints
-        finger_amp = noise_amp[-1]
 
         robot_qpos_noise = jax.random.uniform(
             rng_robot,
@@ -264,14 +262,15 @@ class UR3Pick(ur3_base.UR3Base):
         )
         noisy_arm_qpos = base_arm_qpos + robot_qpos_noise
 
-        # Gripper noise — symmetric, clipped to the physical finger range [0, 0.025]
-        gripper_noise = jax.random.uniform(
-            rng_gripper,
-            (2,),  # left and right finger
-            minval=-finger_amp,
-            maxval=finger_amp,
+        # Gripper: the two fingers are coupled into one combined opening, so
+        # randomize it as a single value uniformly across the full physical
+        # per-finger range [0, 0.025] m (0 = open, 0.025 = closed) and apply it to
+        # both fingers. This starts the policy anywhere between fully open and
+        # fully closed, independent of the base pose and init_qpos_noise.
+        finger_sample = jax.random.uniform(
+            rng_gripper, (), minval=0.0, maxval=0.025
         )
-        noisy_finger_qpos = jp.clip(base_finger_qpos + gripper_noise, 0.0, 0.025)
+        noisy_finger_qpos = jp.full((2,), finger_sample)
 
         # -----------------------------
         # Build initial qpos with randomized arm joints
