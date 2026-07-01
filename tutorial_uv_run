@@ -50,8 +50,8 @@ python batch_runs/scripts/run_one_ur3.py \
 # Step 3  Submit via SLURM
 # ------------------------------------------------
 # Single config (array index = sweep line):
-sbatch --array=1-1 batch_runs/cluster/ur3_jsonl_array.submit   # Pick_un20_env2048
-sbatch --array=3-3 batch_runs/cluster/ur3_jsonl_array.submit   # Pick_short
+sbatch --array=6-6 batch_runs/cluster/ur3_jsonl_array.submit   # Pick_un20_env2048
+sbatch --array=9-9 batch_runs/cluster/ur3_jsonl_array.submit   # Pick_short
 
 # Full sweep (both configs, max 2 at a time):
 sbatch batch_runs/cluster/ur3_jsonl_array.submit               # array 1-4%2

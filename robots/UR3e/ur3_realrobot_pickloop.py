@@ -90,9 +90,16 @@ CONTROL_HZ = 50.0
 ACTION_SCALE = 0.04              # MUST match training (UR3Pick default 0.04)
 LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
-SERVOJ_A = 0.2                    # max joint accel [rad/s^2]
-SERVOJ_V = 0.2                    # max joint vel  [rad/s]
-ALPHA = 0.5                      # 1.0 = send the policy's full action (no blend; matches training)
+SERVOJ_A = 0.3                    # max joint accel [rad/s^2]
+SERVOJ_V = 1                    # max joint vel  [rad/s]
+ALPHA = 1                      # 1.0 = send the policy's full action (no blend; matches training)
+# Reverse-engineered joint-velocity obs scaling. The real arm is throttled by
+# SERVOJ_V (+ ALPHA blend) far below sim's ACTION_SCALE/ctrl_dt, so measured qd
+# is out-of-distribution. Scale the obs qd(6) up by sim/real max-joint-vel.
+_CTRL_DT = 1.0 / CONTROL_HZ
+_SIM_MAX_JOINT_VEL = ACTION_SCALE / _CTRL_DT                    # 2.0 rad/s
+_REAL_MAX_JOINT_VEL = min(SERVOJ_V, ALPHA * _SIM_MAX_JOINT_VEL) # 0.2 rad/s
+QD_OBS_SCALE = _SIM_MAX_JOINT_VEL / _REAL_MAX_JOINT_VEL         # ~10x; tune here
 USE_FK_TCP = True                 # compute tcp_pos via MuJoCo FK (matches sim site)
 # Gripper smoothing disabled: the raw integrator target goes straight to the
 # hardware/obs. Physical smoothing now comes from the low GRIPPER_SPEED_PCT above,
@@ -115,7 +122,7 @@ MODEL_PATH = os.path.join(
 # WANDB_PROJECT below adjusted. The selected policy is loaded from
 # evaluation/downloaded_policies/{run_id}/ if present, else downloaded from W&B.
 POLICY_REGISTRY = {
-    "old_version_pick": "Pick_12M_env1024_20260625_193041_6311",
+    "oRandom-init_bod-lifted": " ",
     "base90_lr4e-10": "base90_j10_fin25_20M_lr4e-4_20260626_101918_6311",
     "reasonable starting positions": "Reso_Pos_lr6e-4_20260626_110022_7585",
     "pick_12M_rand_base85_fin25": "Pick_12M_rand_base85_fin25_20260626_094554_6311",
@@ -211,6 +218,8 @@ else:
 
 target = np.array(DROP_TARGET, dtype=np.float32)
 print(f"\nDrop target : {target.tolist()}")
+print(f"qd obs scale: {QD_OBS_SCALE:.2f}x  "
+      f"(sim {_SIM_MAX_JOINT_VEL:.2f} / real {_REAL_MAX_JOINT_VEL:.2f} rad/s)")
 print(f"Starting pick loop at {CONTROL_HZ} Hz ...")
 
 # ── Move to start ──────────────────────────────────────────────────────
@@ -242,6 +251,7 @@ df, stats = robot.run_policy_loop(
     servoj_a=SERVOJ_A,
     servoj_v=SERVOJ_V,
     alpha=ALPHA,
+    qd_scale=QD_OBS_SCALE,
     gripper_fn=gripper_fn,
     gripper_state_fn=gripper_state_fn,
     gripper_tau=GRIPPER_TAU,

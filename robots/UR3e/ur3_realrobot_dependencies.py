@@ -495,13 +495,19 @@ class UR3RealRobotPick:
         tcp_pos: Optional[np.ndarray] = None,
         box_quat: Optional[np.ndarray] = None,
         dtype=np.float32,
+        qd_scale: float = 1.0,
     ) -> np.ndarray:
         """Build 26D obs to match the canonical UR3Base._get_obs (shared by
         UR3PicknPlace, the deployment target, and UR3Pick):
         [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)].
 
         q(8) = 6 arm joints (RTDE) + 2 finger positions (from the internal gripper
-        tracker; the real robot has no finger encoder). qd(6) = arm velocities.
+        tracker; the real robot has no finger encoder). qd(6) = arm velocities,
+        multiplied by qd_scale to compensate the real arm's throttled speed
+        (servoJ velocity cap + alpha blend) so the velocity slice matches the
+        training distribution — in sim qd is fed raw, but the slow real arm
+        reports qd far below training, which is out-of-distribution after
+        running_statistics.normalize (default 1.0 = no scaling).
         tcp_pos defaults to RTDE getActualTCPPose()[:3] (X/Y already negated in
         receive_feedback); pass an FK-computed tcp_pos to override. box_xmat[:6]
         is derived from the mocap quaternion (identity rows when box_quat is None).
@@ -519,7 +525,7 @@ class UR3RealRobotPick:
             2, float(np.clip(self._finger_pos_est, 0.0, self._finger_hi)), dtype=dtype
         )
         q = np.concatenate([arm_q, finger_q])                       # 8
-        qd = np.array(fb["qd"], dtype=dtype)                        # 6 (arm)
+        qd = np.array(fb["qd"], dtype=dtype) * qd_scale             # 6 (arm)
         tcp = (np.array(fb["tcp_xyz"], dtype=dtype) if tcp_pos is None
                else np.array(tcp_pos, dtype=dtype))
         box = np.array(box_pos, dtype=dtype)
@@ -697,6 +703,7 @@ class UR3RealRobotPick:
         servoj_a: float = 1.4,
         servoj_v: float = 1.05,
         alpha: float = 1.0,
+        qd_scale: float = 1.0,
         gripper_fn=None,
         gripper_state_fn=None,
         gripper_tau: float = 0.0,
@@ -833,7 +840,7 @@ class UR3RealRobotPick:
                 obs_batch = self.build_obs_from_feedback(
                     fb, box_pos, drop_target,
                     tcp_pos=tcp_xyz if use_fk_tcp else None,
-                    box_quat=box_quat, dtype=dtype,
+                    box_quat=box_quat, dtype=dtype, qd_scale=qd_scale,
                 )
                 t1_obs = time.perf_counter()
 
