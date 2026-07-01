@@ -40,7 +40,7 @@ from mujoco_playground._src.mjx_env import State  # pylint: disable=g-importing-
 # its top surface sets the box's starting height so the policy learns to grasp
 # boxes at different heights. Min height keeps the plate bottom above the floor
 # plane (z=0) so it never overlaps the floor (masks alone can't separate them).
-_LIFTER_HALF_THICKNESS = 0.0005  # 1 mm plate -> half-extent
+_LIFTER_HALF_THICKNESS = 0.0025  # 5 mm plate -> half-extent
 _LIFTER_HEIGHT_MIN = 0.003
 _BOX_HALF_EXTENT = 0.02  # 4 cm cube -> half-extent
 
@@ -313,13 +313,18 @@ class UR3Pick(ur3_base.UR3Base):
             njmax=self._config.njmax,
         )
 
-        # set target mocap position (lift goal marker); place the lifter plate
-        # under the box when enabled (else it stays parked at its XML default).
+        # set target mocap (lift-goal marker); pin the lifter plate at the
+        # nominal box XY when enabled so the 40 cm plate covers the jittered
+        # box yet keeps its near edge 10 cm off the base (else parked at XML).
         data = data.replace(
             mocap_pos=data.mocap_pos.at[self._mocap_target, :].set(target_pos),
         )
         if self._lifter_enabled:
-            lifter_pos = jp.array([box_xy[0], box_xy[1], lifter_h])
+            # XY pinned to the nominal box pos (not the jittered box_xy) so the
+            # plate never reaches the base; only the height varies per episode.
+            lifter_pos = jp.array(
+                [self._init_obj_pos[0], self._init_obj_pos[1], lifter_h]
+            )
             data = data.replace(
                 mocap_pos=data.mocap_pos.at[self._lifter_mocap, :].set(lifter_pos),
             )

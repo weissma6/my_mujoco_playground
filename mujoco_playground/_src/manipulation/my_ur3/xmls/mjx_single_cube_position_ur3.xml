@@ -19,15 +19,18 @@
       <geom type="sphere" size="0.04" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
     </body>
 
-    <!-- Variable-height "lifter" plate (20x20 cm, 1 mm thin). A mocap body (zero
-         DOF, kinematic) so its height can be set per-episode by reset(); the box
-         rests on its top. contype=2/conaffinity=3 collides the box+robot but is a
-         distinct category from box/floor. It MUST stay AFTER mocap_target so the
-         target keeps mocapid 0 (the deployment render writes mocap_pos[0]).
-         Default pose keeps it flat on the floor for un-reset (deploy) renders. -->
-    <body mocap="true" name="lifter" pos="0.3 0 0.0005">
-      <geom type="box" name="lifter" size="0.20 0.20 0.0005"
-            contype="2" conaffinity="3" friction="1 .03 .003" rgba="0.6 0.6 0.6 1"/>
+    <!-- Variable-height "lifter" plate (40x40 cm, 5 mm; red so it's visible in
+         rollout videos). A mocap body (zero DOF, kinematic) so its height can be
+         set per-episode by reset(); the box rests on its top. reset() pins its XY
+         at the nominal box pos (0.3, 0) so the 40 cm plate covers the whole box
+         spawn region yet keeps its near edge 10 cm off the base (no base overlap).
+         contype=2/conaffinity=3 collides the box+robot but is a distinct category
+         from box/floor. It MUST stay AFTER mocap_target so the target keeps mocapid
+         0 (the deployment render writes mocap_pos[0]). Default pose keeps it flat
+         on the floor for un-reset (deploy) renders. -->
+    <body mocap="true" name="lifter" pos="0.3 0 0.0025">
+      <geom type="box" name="lifter" size="0.20 0.20 0.0025"
+            contype="2" conaffinity="3" friction="1 .03 .003" rgba="1 0 0 1"/>
     </body>
   </worldbody>
 
