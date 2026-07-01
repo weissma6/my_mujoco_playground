@@ -30,7 +30,7 @@
          on the floor for un-reset (deploy) renders. -->
     <body mocap="true" name="lifter" pos="0.3 0 0.0025">
       <geom type="box" name="lifter" size="0.20 0.20 0.0025"
-            contype="2" conaffinity="3" friction="1 .03 .003" rgba="1 0 0 1"/>
+            contype="2" conaffinity="3" friction="1 .03 .003" rgba="0.8 0.6 1 1"/>
     </body>
   </worldbody>
 
@@ -38,7 +38,7 @@
   <keyframe>
     <key name="task_home"
       qpos="0 -2.0 1.6 -1.6 -1.5 0 0.0125 0.0125
-            0.3 0 0.02
+            0.4 0 0.02
             1 0 0 0"
       ctrl="0 -2.0 1.6 -1.6 -1.5 0  0.025"/>
 
