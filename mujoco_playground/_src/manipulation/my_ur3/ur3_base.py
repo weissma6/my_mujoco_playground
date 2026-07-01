@@ -106,10 +106,6 @@ class UR3Base(mjx_env.MjxEnv):
         self._robot_qposadr = np.array(
             [self._mj_model.jnt_qposadr[self._mj_model.joint(j).id] for j in all_joints]
         )
-        # Velocity addresses for arm joints (used in _get_obs for data.qvel indexing)
-        self._robot_arm_qveladr = np.array(
-            [self._mj_model.jnt_dofadr[self._mj_model.joint(j).id] for j in _ARM_JOINTS]
-        )
         # ------------------------------------------------------------------------------------
         # The end-effector site (TCP)
         geom_names = [self._mj_model.geom(i).name for i in range(self._mj_model.ngeom)]
@@ -174,19 +170,18 @@ class UR3Base(mjx_env.MjxEnv):
         self._lowers, self._uppers = self._mj_model.actuator_ctrlrange.T
 
     def _get_obs(self, data: mjx.Data, info: Dict[str, Any]) -> jax.Array:
-        """Returns 26D obs: [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)].
+        """Returns 20D obs: [q(8), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)].
 
         Canonical observation contract shared by UR3Pick (simple pick) and
         UR3PicknPlace (pick-and-place) — the two tasks differ only in
         reward/termination, never in observation. Hoisted here so it can never
         drift between the subclasses. Relies on handles set in _post_init
-        (_robot_qposadr, _robot_arm_qveladr, _obj_body, _gripper_site) and on
+        (_robot_qposadr, _obj_body, _gripper_site) and on
         info["target_pos"] (written by each env's reset).
         """
         obs = jp.concatenate(
             [
                 data.qpos[self._robot_qposadr],                                # 8 (6 arm + 2 finger)
-                data.qvel[self._robot_arm_qveladr],                            # 6 arm vel
                 data.xpos[self._obj_body] - data.site_xpos[self._gripper_site],  # 3 box - tcp
                 info["target_pos"] - data.xpos[self._obj_body],                # 3 target - box
                 data.xmat[self._obj_body].ravel()[:6],                         # 6 box orientation (rows 0-1)

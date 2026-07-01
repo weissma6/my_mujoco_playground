@@ -4,7 +4,7 @@ RTDE dependencies for the UR3 + Hand-E pick task.
 Mirrors robots/URSim/URSim_RTDE_dependencies.py (the UR10 reach backbone)
 but adapted for the UR3PicknPlace policy:
 
-- 26D observation  [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)]
+- 20D observation  [q(8), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)]
                    q = 6 arm joints + 2 finger positions; box_xmat[:6] = first
                    two rows of the box rotation matrix (from the mocap quaternion)
 - 7D action        6 arm joint deltas + 1 Hand-E gripper delta
@@ -176,7 +176,6 @@ class UR3RealRobotPick:
         """Returns dict with joint state, TCP, currents, control output, force."""
         r = self.connect()
         q = r.getActualQ()
-        qd = r.getActualQd()
         tcp_pose = r.getActualTCPPose()
         # X/Y negated to match the MuJoCo base-frame orientation (same
         # convention as the UR10 reach loop).
@@ -187,7 +186,6 @@ class UR3RealRobotPick:
         tcp_force = r.getActualTCPForce()
         return {
             "q": list(q),
-            "qd": list(qd),
             "tcp_xyz": list(tcp_pose[:3]),
             "tcp_pose": list(tcp_pose),
             "current": list(current),
@@ -198,7 +196,6 @@ class UR3RealRobotPick:
     def print_feedback(self, digits: int = 4):
         fb = self.receive_feedback()
         print("q      =", [round(v, digits) for v in fb["q"]])
-        print("qd     =", [round(v, digits) for v in fb["qd"]])
         print("tcp_xyz=", [round(v, digits) for v in fb["tcp_xyz"]])
 
     # =========================================================================
@@ -495,23 +492,17 @@ class UR3RealRobotPick:
         tcp_pos: Optional[np.ndarray] = None,
         box_quat: Optional[np.ndarray] = None,
         dtype=np.float32,
-        qd_scale: float = 1.0,
     ) -> np.ndarray:
-        """Build 26D obs to match the canonical UR3Base._get_obs (shared by
+        """Build 20D obs to match the canonical UR3Base._get_obs (shared by
         UR3PicknPlace, the deployment target, and UR3Pick):
-        [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)].
+        [q(8), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)].
 
         q(8) = 6 arm joints (RTDE) + 2 finger positions (from the internal gripper
-        tracker; the real robot has no finger encoder). qd(6) = arm velocities,
-        multiplied by qd_scale to compensate the real arm's throttled speed
-        (servoJ velocity cap + alpha blend) so the velocity slice matches the
-        training distribution — in sim qd is fed raw, but the slow real arm
-        reports qd far below training, which is out-of-distribution after
-        running_statistics.normalize (default 1.0 = no scaling).
+        tracker; the real robot has no finger encoder).
         tcp_pos defaults to RTDE getActualTCPPose()[:3] (X/Y already negated in
         receive_feedback); pass an FK-computed tcp_pos to override. box_xmat[:6]
         is derived from the mocap quaternion (identity rows when box_quat is None).
-        Returns shape (1, 26) for batched policy input.
+        Returns shape (1, 20) for batched policy input.
         """
         arm_q = np.array(fb["q"], dtype=dtype)
         # Finger obs in the training space: the per-finger JOINT position in
@@ -525,7 +516,6 @@ class UR3RealRobotPick:
             2, float(np.clip(self._finger_pos_est, 0.0, self._finger_hi)), dtype=dtype
         )
         q = np.concatenate([arm_q, finger_q])                       # 8
-        qd = np.array(fb["qd"], dtype=dtype) * qd_scale             # 6 (arm)
         tcp = (np.array(fb["tcp_xyz"], dtype=dtype) if tcp_pos is None
                else np.array(tcp_pos, dtype=dtype))
         box = np.array(box_pos, dtype=dtype)
@@ -533,8 +523,8 @@ class UR3RealRobotPick:
         box_to_tcp = box - tcp                                      # 3
         target_to_box = tgt - box                                  # 3
         box_xmat_flat = self.quat_to_xmat_flat(box_quat).astype(dtype)  # 6
-        obs = np.concatenate([q, qd, box_to_tcp, target_to_box, box_xmat_flat])
-        return obs[None, :]  # (1, 26)
+        obs = np.concatenate([q, box_to_tcp, target_to_box, box_xmat_flat])
+        return obs[None, :]  # (1, 20)
 
     # =========================================================================
     # F2 — Mocap base-frame calibration (mocap world -> policy/base frame)
@@ -703,7 +693,6 @@ class UR3RealRobotPick:
         servoj_a: float = 1.4,
         servoj_v: float = 1.05,
         alpha: float = 1.0,
-        qd_scale: float = 1.0,
         gripper_fn=None,
         gripper_state_fn=None,
         gripper_tau: float = 0.0,
@@ -787,7 +776,6 @@ class UR3RealRobotPick:
                 t1_recv = time.perf_counter()
 
                 q = np.asarray(fb["q"], dtype=float)
-                qd = np.asarray(fb["qd"], dtype=float)
                 tcp_xyz = np.asarray(fb["tcp_xyz"], dtype=float)
                 # Joint currents (≈ torque proxy), UR control output, and the
                 # 6-axis TCP wrench — fetched by receive_feedback but otherwise
@@ -840,7 +828,7 @@ class UR3RealRobotPick:
                 obs_batch = self.build_obs_from_feedback(
                     fb, box_pos, drop_target,
                     tcp_pos=tcp_xyz if use_fk_tcp else None,
-                    box_quat=box_quat, dtype=dtype, qd_scale=qd_scale,
+                    box_quat=box_quat, dtype=dtype,
                 )
                 t1_obs = time.perf_counter()
 
@@ -930,7 +918,6 @@ class UR3RealRobotPick:
                     "step": step_count,
                     "time": elapsed,
                     **{f"q{i}": q[i] for i in range(6)},
-                    **{f"qd{i}": qd[i] for i in range(6)},
                     **{f"current{i}": current[i] for i in range(6)},
                     **{f"ctrl_output{i}": ctrl_output[i] for i in range(6)},
                     **{f"tcp_force{i}": tcp_force[i] for i in range(6)},
@@ -1166,9 +1153,6 @@ class UR3RealRobotPick:
         if _has("q"):
             specs.append(("q", "joint", "position (rad)",
                           "Joint positions (RTDE receive)"))
-        if _has("qd"):
-            specs.append(("qd", "joint", "velocity (rad/s)",
-                          "Joint velocities (RTDE receive)"))
         if _has("obs_q"):
             specs.append(("obs_q", "joint", "position (rad)",
                           "Joint positions in state sent to policy"))

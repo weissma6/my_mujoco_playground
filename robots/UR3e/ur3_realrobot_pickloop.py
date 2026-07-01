@@ -2,7 +2,7 @@
 UR3 + Hand-E pick loop with a mocap-derived box position.
 
 Mirror of UR10_RealRobot_Reach_ONE.py, adapted for the UR3PicknPlace policy:
-  - 26D obs [q(8), qd(6), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)]
+  - 20D obs [q(8), (box-tcp)(3), (target-box)(3), box_xmat[:6](6)]
   - 7D action (6 arm + 1 gripper)
   - the box pose (xyz + orientation) is streamed live from a Nokov rigid body;
     you only place the box, the loop reads its pose every tick
@@ -91,15 +91,8 @@ ACTION_SCALE = 0.04              # MUST match training (UR3Pick default 0.04)
 LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
 SERVOJ_A = 0.3                    # max joint accel [rad/s^2]
-SERVOJ_V = 1                    # max joint vel  [rad/s]
+SERVOJ_V = 1.4                    # max joint vel  [rad/s]
 ALPHA = 1                      # 1.0 = send the policy's full action (no blend; matches training)
-# Reverse-engineered joint-velocity obs scaling. The real arm is throttled by
-# SERVOJ_V (+ ALPHA blend) far below sim's ACTION_SCALE/ctrl_dt, so measured qd
-# is out-of-distribution. Scale the obs qd(6) up by sim/real max-joint-vel.
-_CTRL_DT = 1.0 / CONTROL_HZ
-_SIM_MAX_JOINT_VEL = ACTION_SCALE / _CTRL_DT                    # 2.0 rad/s
-_REAL_MAX_JOINT_VEL = min(SERVOJ_V, ALPHA * _SIM_MAX_JOINT_VEL) # 0.2 rad/s
-QD_OBS_SCALE = _SIM_MAX_JOINT_VEL / _REAL_MAX_JOINT_VEL         # ~10x; tune here
 USE_FK_TCP = True                 # compute tcp_pos via MuJoCo FK (matches sim site)
 # Gripper smoothing disabled: the raw integrator target goes straight to the
 # hardware/obs. Physical smoothing now comes from the low GRIPPER_SPEED_PCT above,
@@ -122,14 +115,14 @@ MODEL_PATH = os.path.join(
 # WANDB_PROJECT below adjusted. The selected policy is loaded from
 # evaluation/downloaded_policies/{run_id}/ if present, else downloaded from W&B.
 POLICY_REGISTRY = {
-    "oRandom-init_bod-lifted": " ",
+    "Random-init_bod-lifted": "cur_light_lift8rot_20260701_145023_3898",
     "base90_lr4e-10": "base90_j10_fin25_20M_lr4e-4_20260626_101918_6311",
     "reasonable starting positions": "Reso_Pos_lr6e-4_20260626_110022_7585",
     "pick_12M_rand_base85_fin25": "Pick_12M_rand_base85_fin25_20260626_094554_6311",
     "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
     "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
 }
-POLICY_NAME = "reasonable starting positions"  # <- select which policy to run
+POLICY_NAME = "Random-init_bod-lifted"  # <- select which policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
@@ -218,8 +211,6 @@ else:
 
 target = np.array(DROP_TARGET, dtype=np.float32)
 print(f"\nDrop target : {target.tolist()}")
-print(f"qd obs scale: {QD_OBS_SCALE:.2f}x  "
-      f"(sim {_SIM_MAX_JOINT_VEL:.2f} / real {_REAL_MAX_JOINT_VEL:.2f} rad/s)")
 print(f"Starting pick loop at {CONTROL_HZ} Hz ...")
 
 # ── Move to start ──────────────────────────────────────────────────────
@@ -251,7 +242,6 @@ df, stats = robot.run_policy_loop(
     servoj_a=SERVOJ_A,
     servoj_v=SERVOJ_V,
     alpha=ALPHA,
-    qd_scale=QD_OBS_SCALE,
     gripper_fn=gripper_fn,
     gripper_state_fn=gripper_state_fn,
     gripper_tau=GRIPPER_TAU,
