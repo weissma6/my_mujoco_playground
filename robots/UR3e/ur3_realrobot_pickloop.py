@@ -77,8 +77,8 @@ MOCAP_STALE_S = 0.25
 ENABLE_GRIPPER = True
 GRIPPER_PORT = 49999              # Robotiq URCapX XML-RPC server (PolyScope X)
 GRIPPER_SLAVE_ID = 9             # this Hand-E = slaveId 9 ("Gripper ID 1")
-GRIPPER_SPEED_PCT = 30           # low = gentle physical gripper motion (see below)
-GRIPPER_FORCE_PCT = 50
+GRIPPER_SPEED_PCT = 60           # 30 to 60 low = gentle physical gripper motion (see below)
+GRIPPER_FORCE_PCT = 80           # from 50 to 80 = gentle physical gripper motion (see below)
 
 # Convergence
 REACH_TOL = 0.02                  # 2 cm (box-to-target)
