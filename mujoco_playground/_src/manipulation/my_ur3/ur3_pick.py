@@ -58,10 +58,13 @@ def default_config() -> config_dict.ConfigDict:
                 gripper_box=4.0,
                 # Keep the gripper OPEN while approaching, until the box is
                 # reached (complement of `grasp`, which rewards closing after
-                # reached). Trains the arm to arrive ready to grasp. Two-sided
-                # (open +1 / closed -1) and boosted 2.0 -> 6.0 so it can stand up
-                # to the closing-dependent grasp(3)+lift(5)+box_target(8) chain.
-                approach_open=6.0,
+                # reached). One-sided finger_open*(1-reached), V1 shape. Kept
+                # SMALL (1.0, < grasp=3.0): the v2 two-sided @6.0 experiment
+                # reward-hacked — W&B showed reached_box collapsing to ~0 while
+                # the policy hovered open just outside the box to farm this bonus
+                # (861/1197 of the return). The open bonus must never out-pay
+                # actually reaching and grasping.
+                approach_open=1.0,
                 # Close the fingers on the box once the gripper has reached it.
                 grasp=3.0,
                 # Raise the box off its resting height — anti-push lever that
@@ -468,14 +471,9 @@ class UR3Pick(ur3_base.UR3Base):
         grasped = info["grasped"]
         lifted = info["lifted"]
 
-        # Gripper open/closed in [0, 1] from the finger-tip separation,
-        # NORMALIZED so fully open (touch_dist = 0.05 m) = 1.0 and fully closed
-        # = 0.0. The old raw tanh(1) saturated at 0.76, so "open" was ~24%
-        # under-scored vs "closed" (which hit a clean 1.0); dividing by tanh(1)
-        # rescales the ceiling to a true 1.0 and also cleans up `grasp` (open now
-        # scores finger_closed = 0.0 instead of a spurious 0.24).
-        finger_open = jp.clip(jp.tanh(finger_touch_dist / 0.05) / 0.7616, 0.0, 1.0)
-        finger_closed = 1.0 - finger_open
+        # Gripper open/closed in [0, 1] from the finger-tip separation.
+        finger_open = jp.tanh(finger_touch_dist / 0.05)
+        finger_closed = 1 - finger_open
 
         # Stage 1 — approach (always on): gripper moves onto the box.
         gripper_box_Reward = 1 - jp.tanh(5 * gripper_box_dist)
@@ -485,14 +483,14 @@ class UR3Pick(ur3_base.UR3Base):
         # air target rather than releasing it, so the grasp must stay rewarded.
         grasp_Reward = finger_closed * reached
 
-        # Stage 1b — approach OPEN: reward an open hand AND penalize a closed one
-        # while approaching, so the arm arrives ready to grasp instead of bumping
-        # the box with a closed hand. Two-sided (open = +1, closed = -1) so
-        # arriving closed now COSTS reward rather than merely forgoing a bonus —
-        # the previous one-sided bonus was too weak against the closing-dependent
-        # grasp+lift+box_target chain. Gated by (1 - reached) so it switches off
-        # exactly when `grasp` switches on.
-        approach_open_Reward = (finger_open - finger_closed) * (1 - reached)
+        # Stage 1b — approach OPEN: reward open fingers until the box is reached,
+        # so the arm arrives ready to grasp instead of bumping the box with a
+        # closed hand. Gated by (1 - reached) so it switches off exactly when
+        # `grasp` switches on. One-sided V1 form (scale 1.0). NOTE: do NOT boost
+        # this above grasp(3.0) — the two-sided @6.0 v2 variant reward-hacked by
+        # hovering open just outside the 1 cm reach latch (W&B: reached_box → ~0,
+        # lifted = 0), because not-reaching kept the fat open bonus alive.
+        approach_open_Reward = finger_open * (1 - reached)
 
         # Stage 3 — lift: raise the box off its resting height (saturates ~12 cm).
         lift_height = jp.clip(box_pos[2] - info["box_rest_z"], 0.0, 0.12)
