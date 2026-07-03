@@ -58,7 +58,10 @@ def default_config() -> config_dict.ConfigDict:
         sim_dt=0.005,
         episode_length=150,
         action_repeat=1,
-        action_scale=0.03,
+        # Unused by UR3Pick/UR3PicknPlace (the registry uses each task's own
+        # default_config, e.g. ur3_pick.default_config). Kept in sync with the
+        # live pick value so this base default is never mistaken for the knob.
+        action_scale=0.01,
         impl="jax",
         nconmax=12 * 8192,
         njmax=44,

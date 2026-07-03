@@ -126,6 +126,8 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "init_start_random",
         "lifter_height_max",
         "box_z_rot_range",
+        "action_scale",
+        "success_tol",
         "num_eval_envs",
         "seed",
         "domain_randomization",
@@ -908,6 +910,10 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_overrides["lifter_height_max"] = float(cfg["lifter_height_max"])
         if "box_z_rot_range" in cfg:
             env_overrides["box_z_rot_range"] = float(cfg["box_z_rot_range"])
+        if "action_scale" in cfg:
+            env_overrides["action_scale"] = float(cfg["action_scale"])
+        if "success_tol" in cfg:
+            env_overrides["success_tol"] = float(cfg["success_tol"])
 
         env = registry.load(env_name, config_overrides=env_overrides)
         env_cfg = registry.get_default_config(env_name)
