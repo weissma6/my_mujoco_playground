@@ -597,8 +597,17 @@ class UR3Pick(ur3_base.UR3Base):
         finger_open = jp.tanh(finger_touch_dist / 0.05)
         finger_closed = 1 - finger_open
 
-        # Stage 1 — approach (always on): gripper moves onto the box.
-        gripper_box_Reward = 1 - jp.tanh(5 * gripper_box_dist)
+        # Stage 1 — approach (always on): gripper moves onto the box. Two-scale
+        # (coarse tanh*5 for a long-range pull + fine tanh*30 for a steep
+        # near-goal gradient) so the policy is rewarded for closing the LAST few
+        # mm, not just getting within ~1 cm. The old single tanh*5 was nearly flat
+        # inside 1 cm (reward ~0.95 at 10 mm), so the TCP settled off-center and a
+        # 4 cm cube (5 mm finger clearance per side) got one-fingered. Mirrors the
+        # box_target shaping.
+        gripper_box_Reward = (
+            0.5 * (1 - jp.tanh(5 * gripper_box_dist))
+            + 0.5 * (1 - jp.tanh(30 * gripper_box_dist))
+        )
 
         # Stage 2 — grasp: close the fingers on the box once reached. No
         # near-target fade (unlike picknplace) — this task holds the box AT the
