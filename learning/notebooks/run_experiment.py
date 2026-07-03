@@ -908,6 +908,8 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_overrides["init_start_random"] = str(cfg["init_start_random"])
         if "lifter_height_max" in cfg:
             env_overrides["lifter_height_max"] = float(cfg["lifter_height_max"])
+        if "lifter_tilt_max" in cfg:
+            env_overrides["lifter_tilt_max"] = float(cfg["lifter_tilt_max"])
         if "box_z_rot_range" in cfg:
             env_overrides["box_z_rot_range"] = float(cfg["box_z_rot_range"])
         if "action_scale" in cfg:

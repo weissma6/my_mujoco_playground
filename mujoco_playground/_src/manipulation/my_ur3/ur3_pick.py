@@ -43,6 +43,20 @@ _LIFTER_HEIGHT_MIN = 0.003
 _BOX_HALF_EXTENT = 0.02  # 4 cm cube -> half-extent
 
 
+def _quat_mul(a: jax.Array, b: jax.Array) -> jax.Array:
+    """Hamilton product of two [w, x, y, z] quaternions (MuJoCo convention)."""
+    aw, ax, ay, az = a[0], a[1], a[2], a[3]
+    bw, bx, by, bz = b[0], b[1], b[2], b[3]
+    return jp.array(
+        [
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ]
+    )
+
+
 def default_config() -> config_dict.ConfigDict:
     """Default config for the UR3 pick task."""
     return config_dict.create(
@@ -81,6 +95,13 @@ def default_config() -> config_dict.ConfigDict:
                 # Box goes to the mocap target (lift point in the air); gated by
                 # the sticky "lifted" latch so a sliding box earns nothing.
                 box_target=8.0,
+                # Grasp-frame alignment: the jaw axis AND the approach axis each
+                # line up with a box face-normal (2 of 3 gripper axes -> the 3rd
+                # is forced). Shapes the final approach so a parallel-jaw hand can
+                # actually close on the (rotated + tilted) cube. Kept modest and
+                # proximity-gated so it can't out-pay grasp/lift or be farmed in
+                # free space (the reward-hacking lesson from earlier open bonuses).
+                gripper_align=2.0,
                 # Do not collide the gripper with the floor.
                 no_floor_collision=0.25,
                 # Arm stays close to initial pose.
@@ -103,9 +124,17 @@ def default_config() -> config_dict.ConfigDict:
         # floor, legacy). >0 => h ~ uniform(_LIFTER_HEIGHT_MIN, lifter_height_max)
         # and the box spawns resting on the plate; the lift target is raised by h.
         lifter_height_max=0.03,
-        # Box spawn yaw about world Z (rad); yaw ~ uniform(-r, +r). 0.0 =
-        # axis-aligned. Replaces the old ±45° Y-axis tilt.
-        box_z_rot_range=0.0,
+        # Per-episode SLIGHT plate tilt (rad). roll,pitch ~ uniform(-t, +t) about
+        # world X and Y; the box rests FLUSH on the tilted plate, so it starts
+        # both at a variable height and slightly tilted. This is what makes the
+        # out-of-plane (approach-axis) component of the 2-of-3-axis grasp
+        # alignment matter. 0.0 => flat plate (legacy). Only active with the
+        # lifter enabled. Keep small (< ~0.12 rad) so the cube can't slide/tip.
+        lifter_tilt_max=0.08,  # ~4.6 deg
+        # Box spawn yaw about world Z (rad); yaw ~ uniform(-r, +r). pi/4 covers
+        # all yaw thanks to the cube's 4-fold symmetry, so the policy must learn
+        # to match the jaw axis to a face rather than getting a free alignment.
+        box_z_rot_range=0.7853981633974483,  # pi/4
         # Box-center distance (m) to the lift target counted as success (3
         # consecutive steps). Tight 3 mm — the box must end up inside the target.
         success_tol=0.003,
@@ -202,7 +231,8 @@ class UR3Pick(ur3_base.UR3Base):
             rng_gripper,
             rng_pose,
             rng_lift,
-        ) = jax.random.split(rng, 8)
+            rng_tilt,
+        ) = jax.random.split(rng, 9)
 
         # initialize box XY — wide jitter, X-heavy, so the box spawns anywhere
         # in X∈[0.30,0.60] (all graspable; 0.60 was the old nominal).
@@ -216,9 +246,26 @@ class UR3Pick(ur3_base.UR3Base):
             + self._init_obj_pos[:2]  # Box XY from XML keyframe
         )
 
-        # lifter height + box resting Z. When enabled, sample a per-episode plate
-        # height and rest the box on the plate top; else keep the legacy on-floor
-        # Z from the keyframe.
+        # Box yaw about world Z (±box_z_rot_range). The cube is symmetric so this
+        # is the dominant spawn DOF; the slight plate tilt below adds the
+        # out-of-plane component that makes the full 2-of-3-axis grasp alignment
+        # (not just yaw) matter.
+        theta = jax.random.uniform(
+            rng_quat,
+            (),
+            minval=-self._config.box_z_rot_range,
+            maxval=self._config.box_z_rot_range,
+        )
+        q_yaw = jp.array(
+            [jp.cos(theta / 2.0), 0.0, 0.0, jp.sin(theta / 2.0)], dtype=float
+        )
+
+        # lifter height + tilt + box resting pose. When enabled, sample a
+        # per-episode plate height AND a slight roll/pitch tilt, then rest the box
+        # FLUSH on the tilted plate top (bottom face parallel to the plate). The
+        # box therefore starts at a variable height and slightly tilted, so the
+        # policy must reorient the gripper (not just yaw) to grasp it. Disabled ->
+        # legacy flat on-floor spawn (yaw only).
         if self._lifter_enabled:
             lifter_h = jax.random.uniform(
                 rng_lift,
@@ -226,23 +273,45 @@ class UR3Pick(ur3_base.UR3Base):
                 minval=_LIFTER_HEIGHT_MIN,
                 maxval=float(self._config.lifter_height_max),
             )
-            box_z = lifter_h + _LIFTER_HALF_THICKNESS + _BOX_HALF_EXTENT
+            tilt = jax.random.uniform(
+                rng_tilt,
+                (2,),
+                minval=-float(self._config.lifter_tilt_max),
+                maxval=float(self._config.lifter_tilt_max),
+            )
+            roll, pitch = tilt[0], tilt[1]
+            q_roll = jp.array([jp.cos(roll / 2.0), jp.sin(roll / 2.0), 0.0, 0.0])
+            q_pitch = jp.array([jp.cos(pitch / 2.0), 0.0, jp.sin(pitch / 2.0), 0.0])
+            q_tilt = _quat_mul(q_pitch, q_roll)
+            # Plate top-surface normal = 3rd column of R(q_tilt).
+            tw, tx, ty, tz = q_tilt[0], q_tilt[1], q_tilt[2], q_tilt[3]
+            n = jp.array(
+                [
+                    2 * (tx * tz + tw * ty),
+                    2 * (ty * tz - tw * tx),
+                    1 - 2 * (tx * tx + ty * ty),
+                ]
+            )
+            # The plate is pinned at the nominal box XY (below); its top plane is
+            # raised by the half-thickness. Solve the plane height under the
+            # (jittered) box XY, then lift the box center a half-extent along the
+            # plate normal so the cube sits flush.
+            p_top_z = lifter_h + _LIFTER_HALF_THICKNESS
+            z_plane = p_top_z - (
+                n[0] * (box_xy[0] - self._init_obj_pos[0])
+                + n[1] * (box_xy[1] - self._init_obj_pos[1])
+            ) / n[2]
+            box_z = z_plane + _BOX_HALF_EXTENT * n[2]
         else:
             lifter_h = jp.array(0.0, dtype=float)
+            q_tilt = jp.array([1.0, 0.0, 0.0, 0.0])
             box_z = self._init_obj_pos[2]  # legacy on-floor (0.02)
-        box_pos = jp.array([box_xy[0], box_xy[1], box_z])
 
-        # initialize box orientation — random yaw about world Z, ±box_z_rot_range.
-        # (A symmetric cube just topples under an X/Y tilt, so only yaw is physical.)
-        theta = jax.random.uniform(
-            rng_quat,
-            (),
-            minval=-self._config.box_z_rot_range,
-            maxval=self._config.box_z_rot_range,
-        )
-        box_quat = jp.array(
-            [jp.cos(theta / 2.0), 0.0, 0.0, jp.sin(theta / 2.0)], dtype=float
-        )
+        box_pos = jp.array([box_xy[0], box_xy[1], box_z])
+        # Box orientation: plate tilt composed with the yaw spin about the plate
+        # normal, so the cube rests flush on the (possibly tilted) plate.
+        box_quat = _quat_mul(q_tilt, q_yaw)
+        lifter_quat = q_tilt
 
         # initialize target position — a lift point in the air above the box.
         # X biased forward (+0.01‥+0.06) so the lift pulls the box toward the
@@ -343,6 +412,7 @@ class UR3Pick(ur3_base.UR3Base):
             )
             data = data.replace(
                 mocap_pos=data.mocap_pos.at[self._lifter_mocap, :].set(lifter_pos),
+                mocap_quat=data.mocap_quat.at[self._lifter_mocap, :].set(lifter_quat),
             )
 
         # initialize env state and info
@@ -353,6 +423,8 @@ class UR3Pick(ur3_base.UR3Base):
             "reached_box": jp.array(0.0, dtype=float),
             "grasped": jp.array(0.0, dtype=float),
             "lifted": jp.array(0.0, dtype=float),
+            "align_jaw": jp.array(0.0, dtype=float),
+            "align_app": jp.array(0.0, dtype=float),
             **{k: jp.array(0.0, dtype=float)
                for k in self._config.reward_config.scales.keys()},
         }
@@ -418,10 +490,38 @@ class UR3Pick(ur3_base.UR3Base):
             reached_box=info["reached_box"],
             grasped=info["grasped"],
             lifted=info["lifted"],
+            align_jaw=raw_signals["a_jaw"],
+            align_app=raw_signals["a_app"],
         )
 
         obs = self._get_obs(data, info)
         return State(data, obs, reward, done, metrics, info)
+
+    def _get_obs(self, data: mjx.Data, info: Dict[str, Any]) -> jax.Array:
+        """13D base obs + 6D gripper<->box orientation features (19D total).
+
+        Appends where the two grasp-relevant gripper axes point IN THE BOX FRAME:
+        the jaw axis (finger-separation) and the approach axis (palm->fingertips),
+        each projected onto the three box axes. This is the state the policy needs
+        to align its frame with the (rotated + tilted) cube, and it is
+        reproducible on the real robot: jaw/approach axes come from arm FK, the box
+        axes from the mocap-streamed box quaternion. NOTE: when deploying a policy
+        trained with this obs, `build_obs_from_feedback` on the real robot must
+        append the same 6 numbers (re-enable the mocap orientation it currently
+        drops), or sim and real observations will not match.
+        """
+        base_obs = super()._get_obs(data, info)
+        l_pos = data.site_xpos[self._left_finger_touch]
+        r_pos = data.site_xpos[self._right_finger_touch]
+        g_pos = data.site_xpos[self._gripper_site]
+        jaw_axis = r_pos - l_pos
+        jaw_axis = jaw_axis / (jp.linalg.norm(jaw_axis) + 1e-6)
+        app_axis = 0.5 * (l_pos + r_pos) - g_pos
+        app_axis = app_axis / (jp.linalg.norm(app_axis) + 1e-6)
+        box_axes = data.xmat[self._obj_body].reshape(3, 3)  # columns = box axes
+        jaw_proj = jaw_axis @ box_axes  # [jaw·b0, jaw·b1, jaw·b2]
+        app_proj = app_axis @ box_axes  # [app·b0, app·b1, app·b2]
+        return jp.concatenate([base_obs, jaw_proj, app_proj])
 
     def _get_reward(self, data: mjx.Data, info: Dict[str, Any]) -> Dict[str, Any]:
         # ==============================
@@ -527,6 +627,36 @@ class UR3Pick(ur3_base.UR3Base):
             + 0.5 * (1 - jp.tanh(30 * box_target_dist))
         ) * lifted
 
+        # Stage 1c — grasp-frame alignment (2 of 3 axes). A parallel-jaw gripper
+        # can close on a cube only when its frame lines up with the cube's frame:
+        # the jaw axis (finger separation) and the approach axis (palm ->
+        # fingertips) must EACH line up with a box face-normal. If those two
+        # align, the third gripper axis is forced by orthonormality — so "2 of 3
+        # axes aligned" == fully aligned. Both axes are built from world-frame
+        # site positions (no frame/column assumptions); max over the 3 box axes +
+        # abs makes the score invariant to the cube's 24-fold (octahedral)
+        # symmetry, so every equivalent grasp scores the same.
+        jaw_axis = right_finger_touch_pos - left_finger_touch_pos
+        jaw_axis = jaw_axis / (jp.linalg.norm(jaw_axis) + 1e-6)
+        app_axis = (
+            0.5 * (left_finger_touch_pos + right_finger_touch_pos) - gripper_pos
+        )
+        app_axis = app_axis / (jp.linalg.norm(app_axis) + 1e-6)
+        box_axes = data.xmat[self._obj_body].reshape(3, 3)  # columns = box axes
+        a_jaw = jp.max(jp.abs(jaw_axis @ box_axes))
+        a_app = jp.max(jp.abs(app_axis @ box_axes))
+        # Boundary: no reward until each axis is within ~30 deg of a box axis
+        # (cos 30 = 0.866), then a linear ramp to 1 at perfect alignment. The
+        # PRODUCT requires BOTH axes inside the boundary (the "2 of 3 axes within
+        # a certain boundary" criterion).
+        _cos_bound = 0.866
+        jaw_score = jp.clip((a_jaw - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0)
+        app_score = jp.clip((a_app - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0)
+        alignment = jaw_score * app_score
+        # Weighted by approach proximity so it shapes the final approach and can't
+        # be farmed in free space (kept below grasp=3.0: reward-hacking lesson).
+        gripper_align_Reward = alignment * (1 - jp.tanh(5 * gripper_box_dist))
+
         # Penalty for deviating too far from the initial arm configuration.
         robot_target_qpos_penalty = 1 - jp.tanh(
             jp.linalg.norm(
@@ -549,6 +679,7 @@ class UR3Pick(ur3_base.UR3Base):
             "grasp": grasp_Reward,
             "lift": lift_Reward,
             "box_target": box_target_Reward,
+            "gripper_align": gripper_align_Reward,
             "no_floor_collision": no_floor_collision_Reward,
             "robot_target_qpos": robot_target_qpos_penalty,
         }
@@ -567,6 +698,11 @@ class UR3Pick(ur3_base.UR3Base):
             "box_target_dist": box_target_dist,
             "grip_box_dist": gripper_box_dist,
             "finger_touch_dist": finger_touch_dist,
+
+            # grasp-frame alignment (2-of-3-axis)
+            "a_jaw": a_jaw,
+            "a_app": a_app,
+            "alignment": alignment,
 
             # events
             "reached_box": info["reached_box"],
