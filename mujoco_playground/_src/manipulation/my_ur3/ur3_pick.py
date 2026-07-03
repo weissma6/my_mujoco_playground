@@ -56,6 +56,10 @@ def default_config() -> config_dict.ConfigDict:
                 ## Staged reward scaling factors (sequenced by sticky latches).
                 # Gripper (TCP) approaches the box (always on).
                 gripper_box=4.0,
+                # Keep the gripper OPEN while approaching, until the box is
+                # reached (complement of `grasp`, which rewards closing after
+                # reached). Trains the arm to arrive ready to grasp.
+                approach_open=2.0,
                 # Close the fingers on the box once the gripper has reached it.
                 grasp=3.0,
                 # Raise the box off its resting height — anti-push lever that
@@ -475,6 +479,12 @@ class UR3Pick(ur3_base.UR3Base):
         # air target rather than releasing it, so the grasp must stay rewarded.
         grasp_Reward = finger_closed * reached
 
+        # Stage 1b — approach OPEN: reward open fingers until the box is
+        # reached, so the arm arrives ready to grasp instead of bumping the box
+        # with a closed hand. Gated by (1 - reached) so it switches off exactly
+        # when `grasp` switches on.
+        approach_open_Reward = finger_open * (1 - reached)
+
         # Stage 3 — lift: raise the box off its resting height (saturates ~12 cm).
         lift_height = jp.clip(box_pos[2] - info["box_rest_z"], 0.0, 0.12)
         lift_Reward = jp.tanh(lift_height / 0.06) * reached
@@ -506,6 +516,7 @@ class UR3Pick(ur3_base.UR3Base):
 
         rewards = {
             "gripper_box": gripper_box_Reward,
+            "approach_open": approach_open_Reward,
             "grasp": grasp_Reward,
             "lift": lift_Reward,
             "box_target": box_target_Reward,
