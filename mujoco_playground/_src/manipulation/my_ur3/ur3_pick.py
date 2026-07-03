@@ -48,9 +48,17 @@ def default_config() -> config_dict.ConfigDict:
     return config_dict.create(
         ctrl_dt=0.02,
         sim_dt=0.005,
-        episode_length=150,
+        episode_length=200,
         action_repeat=1,
+        # Arm per-step ctrl delta = action * action_scale (swept per run). The
+        # gripper is DECOUPLED via gripper_action_scale below so it can be kept
+        # slow (stays open on approach) while the arm runs faster.
         action_scale=0.01,
+        # Separate per-step scale for the gripper actuator (last ctrl dim). Small
+        # + fixed so the hand can't snap shut in one step — full open->close
+        # travel is 0.025, which needs >=2.5 steps at 0.01. This is what keeps
+        # the hand open on approach independent of the swept arm action_scale.
+        gripper_action_scale=0.01,
         reward_config=config_dict.create(
             scales=config_dict.create(
                 ## Staged reward scaling factors (sequenced by sticky latches).
@@ -127,6 +135,20 @@ class UR3Pick(ur3_base.UR3Base):
 
         init_keyframe = getattr(self._config, "init_keyframe", "low_home")
         self._post_init(obj_name="box", keyframe=init_keyframe)
+
+        # Decoupled action scaling. The arm actuators use config.action_scale
+        # (the swept value); the gripper (the LAST actuator) uses its own
+        # gripper_action_scale so it stays slow/open regardless of arm speed.
+        # This overrides the scalar self._action_scale set in ur3_base.__init__.
+        # action_size == nu == 7 (6 arm + 1 gripper).
+        n_act = int(self._mjx_model.nu)
+        arm_scale = float(self._config.action_scale)
+        grip_scale = float(
+            getattr(self._config, "gripper_action_scale", arm_scale)
+        )
+        action_scale_vec = [arm_scale] * n_act
+        action_scale_vec[-1] = grip_scale  # gripper actuator is last
+        self._action_scale = jp.asarray(action_scale_vec, dtype=float)
 
         # Floor-collision sensors (Hand-E fingers + hand capsule vs floor).
         self._floor_hand_found_sensor = [
