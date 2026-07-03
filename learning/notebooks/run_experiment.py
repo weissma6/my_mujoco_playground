@@ -125,6 +125,7 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "init_qpos_noise",
         "init_start_random",
         "lifter_height_max",
+        "lifter_tilt_max",
         "box_z_rot_range",
         "action_scale",
         "success_tol",
