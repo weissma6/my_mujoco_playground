@@ -83,11 +83,20 @@ GRIPPER_FORCE_PCT = 80           # from 50 to 80 = gentle physical gripper motio
 # Convergence
 REACH_TOL = 0.02                  # 2 cm (box-to-target)
 DWELL_TIME_S = 2.0
-TIMEOUT_S = 10.0
+TIMEOUT_S = 30.0
 
-# Control (must match training: 50 Hz -> ctrl_dt=0.02, action_scale=0.04)
+# Control (must match training: 50 Hz -> ctrl_dt=0.02).
 CONTROL_HZ = 50.0
-ACTION_SCALE = 0.04              # MUST match training 0.01 also in training for lass shakeyness
+# ARM per-step delta scale. MUST match the run's trained action_scale (metadata
+# .json "action_scale"; this policy = 0.025).
+ACTION_SCALE = 0.025
+# GRIPPER per-step delta scale — DECOUPLED from the arm in the new setup. MUST
+# match the env's gripper_action_scale (ur3_pick default_config = 0.01, never
+# swept). Kept small so the finger can't snap shut in one step; using the arm's
+# 0.025 here would integrate the gripper ~2.5x too fast (out-of-distribution ->
+# hand snaps closed on approach). load_policy_fn prints the training value as
+# "Env gripper_action_scale" — this must equal it.
+GRIPPER_ACTION_SCALE = 0.04
 LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
 SERVOJ_A = 0.3                    # max joint accel [rad/s^2]
@@ -115,16 +124,17 @@ MODEL_PATH = os.path.join(
 # WANDB_PROJECT below adjusted. The selected policy is loaded from
 # evaluation/downloaded_policies/{run_id}/ if present, else downloaded from W&B.
 POLICY_REGISTRY = {
+    "EP200_AS0.025_78fd8855a6eeb72d8ef1a0395cd6e4860db1439d": "EP200_AS0.025_d0.99_20260703_132735_2201",
     "Simplified_9cd87e0bef819dcca2d86ea25451eaa98bf78eb5": "Simplified_lightRandom_lr1e-3_20260701_173930_3867",
     "NoVelocity_mid_ea1ffd26f79c25db5c62af8e68022f6677b5aff6": "cur_mid_base_20260701_164529_3867",
-    "NoVelocity_ea1ffd26f79c25db5c62af8e68022f6677b5aff6": "cur_light_lift8rot_20260701_163113_3867",
+    "Nolocity_ea1ffd26f79c25db5c62af8e68022f6677b5aff6": "cur_light_lift8rot_20260701_163113_3867",
     "base90_lr4e-10": "base90_j10_fin25_20M_lr4e-4_20260626_101918_6311",
     "reasonable starting positions": "Reso_Pos_lr6e-4_20260626_110022_7585",
     "pick_12M_rand_base85_fin25": "Pick_12M_rand_base85_fin25_20260626_094554_6311",
     "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
     "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
 }
-POLICY_NAME = "Simplified_9cd87e0bef819dcca2d86ea25451eaa98bf78eb5"  # <- select which policy to run
+POLICY_NAME = "EP200_AS0.025_78fd8855a6eeb72d8ef1a0395cd6e4860db1439d"  # pick policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
@@ -239,6 +249,7 @@ df, stats = robot.run_policy_loop(
     control_hz=CONTROL_HZ,
     timeout_s=TIMEOUT_S,
     action_scale=ACTION_SCALE,
+    gripper_action_scale=GRIPPER_ACTION_SCALE,
     lookahead_time=LOOKAHEAD_TIME,
     gain=GAIN,
     servoj_a=SERVOJ_A,
@@ -343,6 +354,7 @@ robot.save_run_metadata(
     timeout_s=TIMEOUT_S,
     control_hz=CONTROL_HZ,
     action_scale=ACTION_SCALE,
+    gripper_action_scale=GRIPPER_ACTION_SCALE,
     lookahead_time=LOOKAHEAD_TIME,
     gain=GAIN,
     servoj_a=SERVOJ_A,

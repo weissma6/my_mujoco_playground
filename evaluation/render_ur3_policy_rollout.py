@@ -33,6 +33,7 @@ from policy_downloader import download_policy  # noqa: E402
 
 # ── Config ────────────────────────────────────────────────────────────────
 POLICY_REGISTRY = {
+    "EP200_AS0.025_78fd8855a6eeb72d8ef1a0395cd6e4860db1439d": "EP200_AS0.025_d0.99_20260703_132735_2201",
     "NoVelocity_ea1ffd26f79c25db5c62af8e68022f6677b5aff6": "cur_light_lift8rot_20260701_163113_3867",
     "base90_lr4e-10": "base90_j10_fin25_20M_lr4e-4_20260626_101918_6311",
     "reasonable starting positions": "Reso_Pos_lr6e-4_20260626_110022_7585",
@@ -41,7 +42,7 @@ POLICY_REGISTRY = {
     "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
 }
 
-POLICY_NAME = "NoVelocity_ea1ffd26f79c25db5c62af8e68022f6677b5aff6"  # <- select which policy to run
+POLICY_NAME = "EP200_AS0.025_78fd8855a6eeb72d8ef1a0395cd6e4860db1439d"  # <- select which policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"

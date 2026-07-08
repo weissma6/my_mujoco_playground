@@ -1,0 +1,87 @@
+{
+  "env_name": "UR3Pick",
+  "episode_length": 200,
+  "observation_size": 13,
+  "action_size": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "seed": 1,
+  "env_overrides": {
+    "init_keyframe": "task_home",
+    "init_qpos_noise": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "init_start_random": "mid",
+    "lifter_height_max": 0.02,
+    "box_z_rot_range": 0.0,
+    "action_scale": 0.025,
+    "success_tol": 0.005
+  },
+  "domain_randomization": {},
+  "git_commit": "78fd8855",
+  "training_timestamp": "2026-07-03 13:38:38.098813",
+  "full_cfg": {
+    "run_id": "EP200_AS0.025_d0.99",
+    "env_name": "UR3Pick",
+    "init_keyframe": "task_home",
+    "action_scale": 0.025,
+    "discounting": 0.99,
+    "success_tol": 0.005,
+    "num_timesteps": 8000000,
+    "num_evals": 15,
+    "num_resets_per_eval": 1,
+    "init_qpos_noise": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "init_start_random": "mid",
+    "lifter_height_max": 0.02,
+    "box_z_rot_range": 0.0,
+    "unroll_length": 10,
+    "num_envs": 1024,
+    "batch_size": 128,
+    "num_minibatches": 64,
+    "num_updates_per_batch": 8,
+    "video_every_evals": 5,
+    "render_every": 1,
+    "learning_rate": 0.0006,
+    "seed": 1,
+    "wandb_project": "UR3_pick_ppo",
+    "wandb_tags": [
+      "gripDecoupled",
+      "EP200",
+      "AS0.025",
+      "disc0.99",
+      "8M",
+      "mid",
+      "lift2",
+      "target+6cm"
+    ]
+  }
+}

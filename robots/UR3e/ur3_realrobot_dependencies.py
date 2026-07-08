@@ -431,6 +431,19 @@ class UR3RealRobotPick:
             ][1]
         )
 
+        # Training-time gripper action scale (the sim decouples arm vs gripper
+        # scaling: ur3_pick default_config.gripper_action_scale). It is NOT saved
+        # in metadata.json, so it is read from the env default config here as the
+        # source of truth the pick loop should match. NaN if the env predates the
+        # decoupling. The pick loop passes its own gripper_action_scale into
+        # run_policy_loop; compare the two if the gripper behaves oddly.
+        self._train_gripper_action_scale = float(
+            getattr(getattr(env, "_config", None), "gripper_action_scale",
+                    float("nan"))
+        )
+        print(f"Env gripper_action_scale (training source of truth): "
+              f"{self._train_gripper_action_scale}")
+
         # JIT warmup.
         t0 = time.perf_counter()
         dummy = np.zeros((1, meta["obs_dim"]), dtype=np.float32)
@@ -582,6 +595,7 @@ class UR3RealRobotPick:
         q: np.ndarray,
         action: np.ndarray,
         action_scale: float = 0.04,
+        gripper_action_scale: Optional[float] = None,
         alpha: float = 1.0,
         dt: float = 0.02,
         gripper_tau: float = 0.0,
@@ -597,9 +611,21 @@ class UR3RealRobotPick:
         finger-plant low-pass below re-creates the sim finger dynamics the policy
         was trained against.
 
+        action_scale scales the 6 ARM deltas. gripper_action_scale scales the
+        single GRIPPER delta and MUST match the env's gripper_action_scale — the
+        sim decouples the two (ur3_pick: self._action_scale = [arm]*6 + [grip],
+        delta = action * self._action_scale). The gripper scale is kept small
+        (0.01 vs arm 0.025) so the hand can't snap shut in one step; applying the
+        arm scale here would integrate the finger ~2.5x too fast and drive it
+        out-of-distribution. None => fall back to action_scale (old coupled
+        behavior, for policies trained before the decoupling).
+
         gripper_tau / gripper_max_rate default to the degenerate (no-smoothing)
         values, so this reduces EXACTLY to the prior behavior when they are unset.
         """
+        grip_scale = float(
+            action_scale if gripper_action_scale is None else gripper_action_scale
+        )
         action = np.asarray(action, dtype=dtype).reshape(-1)
         q = np.asarray(q, dtype=dtype)
 
@@ -614,10 +640,12 @@ class UR3RealRobotPick:
         # --- Gripper ---
         # 1. Raw integrator in tendon-ctrl space [0, 0.05], faithful to the sim
         # integrator (ur3_pick.step: ctrl += action_scale*action, clipped to the
-        # actuator ctrlrange).
+        # actuator ctrlrange). Uses grip_scale (the DECOUPLED gripper scale), not
+        # the arm action_scale — the sim's action-scale vector applies the small
+        # gripper_action_scale to this last actuator dim.
         self._gripper_ctrl = float(
             np.clip(
-                self._gripper_ctrl + float(action_scale) * float(action[6]),
+                self._gripper_ctrl + grip_scale * float(action[6]),
                 self._gripper_lo,
                 self._gripper_hi,
             )
@@ -662,6 +690,7 @@ class UR3RealRobotPick:
         control_hz: float = 50.0,
         timeout_s: float = 15.0,
         action_scale: float = 0.04,
+        gripper_action_scale: Optional[float] = None,
         lookahead_time: float = 0.1,
         gain: int = 300,
         servoj_a: float = 1.4,
@@ -683,6 +712,10 @@ class UR3RealRobotPick:
         Args:
           drop_target: (3,) world-frame drop location (meters).
           mocap_reader: VRPN/Nokov rigid-body reader; get_rigid_body_xyz() -> box.
+          gripper_action_scale: per-step scale for the gripper delta; MUST match
+                      the env's gripper_action_scale (sim decouples arm vs gripper
+                      scaling). None => coupled to action_scale (pre-decoupling
+                      policies). See policy_step_ctrl_update.
           gripper_fn: callable(norm_cmd in [0,1]); defaults to self.send_gripper.
           gripper_state_fn: optional callable() -> real gripper readback; either a
                       read_state() dict (sim_finger metres [0,0.025] + pos_pct raw
@@ -805,7 +838,9 @@ class UR3RealRobotPick:
                 # 5. Control update (arm servoj + gripper cmd)
                 t0_ctrl = time.perf_counter()
                 arm_ctrl, gripper_norm, diag = self.policy_step_ctrl_update(
-                    q, action, action_scale, alpha=alpha, dt=dt,
+                    q, action, action_scale,
+                    gripper_action_scale=gripper_action_scale,
+                    alpha=alpha, dt=dt,
                     gripper_tau=gripper_tau, gripper_max_rate=gripper_max_rate,
                     dtype=dtype,
                 )
