@@ -143,12 +143,20 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return overrides
 
 
-def _make_progress_wandb():
+def _make_progress_wandb(prog_state=None):
     def progress_wandb(num_steps, metrics):
         log_dict = {"training/num_steps": int(num_steps)}
         for k, v in metrics.items():
             try:
                 log_dict[k] = float(v)
+            except Exception:
+                pass
+        # Stash the latest eval reward so policy_params_fn (called right after
+        # progress_fn at each eval) can tag the checkpoint it saves as best/not.
+        if prog_state is not None and "eval/episode_reward" in metrics:
+            try:
+                prog_state["last_eval_reward"] = float(metrics["eval/episode_reward"])
+                prog_state["last_step"] = int(num_steps)
             except Exception:
                 pass
         wandb.log(log_dict, step=int(num_steps))
@@ -1014,9 +1022,36 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         video_state = {"eval_idx": 0}
         total_timesteps = ppo_params_overwrite.get("num_timesteps", None)
 
+        # Per-eval checkpointing. The final params train_fn returns can be a
+        # post-peak DIP: UR3Pick runs learned to reach/grasp by ~5M then the
+        # policy collapsed (reached_box -> 0) by ~6M, and only the final
+        # (collapsed) params were saved. Snapshot every eval to disk (an
+        # order-independent safety net) and keep the best-by-eval-reward params
+        # in memory to publish alongside the final policy.
+        ckpt_dir = os.path.join(out_dir, "checkpoints")
+        os.makedirs(ckpt_dir, exist_ok=True)
+        prog_state = {}
+        best_ckpt = {"reward": float("-inf"), "step": -1, "params": None}
+
         def policy_params_fn(num_steps, make_policy, params):
             video_state["eval_idx"] += 1
             eval_idx = video_state["eval_idx"]
+
+            # Save this eval's params, and remember them if they are the best
+            # eval reward so far (reward stashed by progress_fn just before this).
+            try:
+                ckpt_path = os.path.join(
+                    ckpt_dir, f"params_step{int(num_steps):09d}.msgpack"
+                )
+                with open(ckpt_path, "wb") as _cf:
+                    _cf.write(serialization.to_bytes(params))
+                _r = prog_state.get("last_eval_reward")
+                if _r is not None and _r > best_ckpt["reward"]:
+                    best_ckpt.update(
+                        reward=float(_r), step=int(num_steps), params=params
+                    )
+            except Exception as _e:
+                print(f"[ckpt] save failed at step {num_steps}: {_e}", flush=True)
 
             is_last_eval = (total_timesteps is not None) and (int(num_steps) >= int(total_timesteps))
             should_record = (eval_idx % video_every_evals == 0) or is_last_eval
@@ -1064,7 +1099,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             **ppo_params_overwrite,
             **dr_kwargs,
             network_factory=network_factory,
-            progress_fn=_make_progress_wandb(),
+            progress_fn=_make_progress_wandb(prog_state),
             policy_params_fn=policy_params_fn,
             seed=seed,
         )
@@ -1126,6 +1161,27 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
 
         for name in ("params.msgpack", "final_metrics.json", "inference_config.json"):
             wandb.save(os.path.join(tp_dir, name), base_path=out_dir)
+
+        # Also publish the BEST-by-eval-reward checkpoint next to the final one.
+        # Guards against a post-peak collapse (the final params.msgpack can be
+        # worse than a mid-run policy). The deploy loader still defaults to
+        # params.msgpack; point it at best_params.msgpack to deploy the peak.
+        if best_ckpt.get("params") is not None:
+            with open(os.path.join(tp_dir, "best_params.msgpack"), "wb") as f:
+                f.write(serialization.to_bytes(best_ckpt["params"]))
+            with open(os.path.join(tp_dir, "best_info.json"), "w", encoding="utf-8") as f:
+                json.dump(
+                    {"best_eval_reward": best_ckpt["reward"], "best_step": best_ckpt["step"]},
+                    f,
+                    indent=2,
+                )
+            for name in ("best_params.msgpack", "best_info.json"):
+                wandb.save(os.path.join(tp_dir, name), base_path=out_dir)
+            print(
+                f"[ckpt] best policy: step={best_ckpt['step']} "
+                f"eval_reward={best_ckpt['reward']:.1f} -> trained_policy/best_params.msgpack",
+                flush=True,
+            )
 
     finally:
         run.finish()
