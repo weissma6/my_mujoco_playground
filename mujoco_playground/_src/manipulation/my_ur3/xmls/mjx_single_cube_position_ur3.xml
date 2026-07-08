@@ -4,10 +4,14 @@
   <include file="mjx_scene_position_ur3.xml"/>
 
   <worldbody>
-    <!-- Box to pick (UR3 has shorter reach than UR10: pulled in from 0.7 m to 0.3 m) -->
+    <!-- Box to pick (UR3 has shorter reach than UR10: pulled in from 0.7 m to 0.3 m).
+         3x3x4 cm box (4 cm = HEIGHT): half-extents 0.015 0.015 0.02. Rests upright
+         on its 3x3 cm base, 4 cm tall; the gripper grasps the 3 cm cross-section
+         (fingers open to 5 cm -> 1 cm clearance per side). pos z = 0.02 = half the
+         4 cm height so it rests on the floor. -->
     <body name="box" pos="0.3 0 0.02">
       <freejoint/>
-      <geom type="box" name="box" size="0.02 0.02 0.02" condim="4"
+      <geom type="box" name="box" size="0.015 0.015 0.02" condim="4"
             friction="1 .03 .003" rgba="0 1 0 1"
             contype="1" conaffinity="3" solref="0.01 1"/>
     </body>

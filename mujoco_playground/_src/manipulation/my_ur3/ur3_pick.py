@@ -40,7 +40,7 @@ from mujoco_playground._src.mjx_env import State  # pylint: disable=g-importing-
 # plane (z=0) so it never overlaps the floor (masks alone can't separate them).
 _LIFTER_HALF_THICKNESS = 0.0025  # 5 mm plate -> half-extent
 _LIFTER_HEIGHT_MIN = 0.003
-_BOX_HALF_EXTENT = 0.02  # 4 cm cube -> half-extent
+_BOX_HALF_EXTENT = 0.02  # half the box HEIGHT (3x3x4 cm box, 4 cm tall) -> rest offset
 
 
 def _quat_mul(a: jax.Array, b: jax.Array) -> jax.Array:
