@@ -567,10 +567,16 @@ class UR3Pick(ur3_base.UR3Base):
         # ==============================
         # --- Sticky stage latches (monotone via jp.maximum) ---
         # ==============================
-        # reached_box: gripper has been within 2 cm of the box at some point.
+        # reached_box: gripper has been within 1.5 cm of the box at some point.
+        # Loosened from 1 cm: on a rotated/tilted cube the open fingers straddle
+        # the corners, so the TCP can't get to the exact center without perfect
+        # alignment; the tight 1 cm gate then silently locks the whole grasp ->
+        # lift -> transport chain behind alignment. 1.5 cm lets the pick chain
+        # unlock a bit before perfect alignment (the `grasped` latch below still
+        # needs real finger-pad contact, so this can't be farmed).
         info["reached_box"] = jp.maximum(
             info["reached_box"],
-            (gripper_box_dist < 0.01).astype(float),
+            (gripper_box_dist < 0.015).astype(float),
         )
         # grasped: at the box AND both finger pads in contact with it.
         finger_box_contact = [
@@ -654,11 +660,17 @@ class UR3Pick(ur3_base.UR3Base):
         box_axes = data.xmat[self._obj_body].reshape(3, 3)  # columns = box axes
         a_jaw = jp.max(jp.abs(jaw_axis @ box_axes))
         a_app = jp.max(jp.abs(app_axis @ box_axes))
-        # Boundary: no reward until each axis is within ~30 deg of a box axis
-        # (cos 30 = 0.866), then a linear ramp to 1 at perfect alignment. The
-        # PRODUCT requires BOTH axes inside the boundary (the "2 of 3 axes within
-        # a certain boundary" criterion).
-        _cos_bound = 0.866
+        # Soft alignment cone (60 deg, cos 60 = 0.5), linear ramp to 1 at perfect
+        # alignment. WIDENED from the old hard 30-deg cone (0.866): with a 3-axis
+        # max, |axis . nearest box axis| is >= 1/sqrt(3) ~ 0.577, so a 0.5 bound
+        # keeps the score STRICTLY POSITIVE everywhere -> there is always a
+        # gradient pulling the hand toward alignment, no dead zone. The old 0.866
+        # cone gave zero reward AND zero gradient until BOTH axes were already
+        # inside 30 deg at once (product of two clipped ramps), a chicken-and-egg
+        # trap: the policy had to luck into near-perfect alignment before the
+        # reward ever turned on. Still a PRODUCT so both axes must improve ("2 of
+        # 3 axes aligned"), still proximity-gated below so it can't be farmed.
+        _cos_bound = 0.5
         jaw_score = jp.clip((a_jaw - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0)
         app_score = jp.clip((a_app - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0)
         alignment = jaw_score * app_score
