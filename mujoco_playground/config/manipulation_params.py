@@ -152,6 +152,15 @@ def brax_ppo_config(
         rl_config.entropy_cost = 2e-2
         rl_config.num_envs = 2048
         rl_config.batch_size = 512
+        # v_loss dominated total_loss and grew unbounded across the 20260708
+        # LR sweep (6e-4 stable but v_loss still climbing at 20M; 8e-4 spiked
+        # v_loss to ~4.5e5 then collapsed late; 1e-3/1.2e-3 diverged, v_loss
+        # -> 1e10+, by ~2-4M). UR3Pick never set max_grad_norm (unlike the
+        # Aloha/Panda branches in this file) and reward_scaling=1.0 left value
+        # targets at raw episode-return scale (~1900). Clip grads + shrink
+        # value targets so higher LR can be explored without diverging.
+        rl_config.max_grad_norm = 1.0
+        rl_config.reward_scaling = 0.1
         rl_config.network_factory.policy_hidden_layer_sizes = (32, 32, 32, 32)
         if impl == "warp":
             rl_config.num_timesteps *= 4
