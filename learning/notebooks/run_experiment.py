@@ -127,6 +127,8 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "lifter_height_max",
         "lifter_tilt_max",
         "box_z_rot_range",
+        "box_y_center_offset",
+        "target_y_center_offset",
         "action_scale",
         "success_tol",
         "num_eval_envs",
@@ -921,6 +923,12 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_overrides["lifter_tilt_max"] = float(cfg["lifter_tilt_max"])
         if "box_z_rot_range" in cfg:
             env_overrides["box_z_rot_range"] = float(cfg["box_z_rot_range"])
+        if "box_y_center_offset" in cfg:
+            env_overrides["box_y_center_offset"] = float(cfg["box_y_center_offset"])
+        if "target_y_center_offset" in cfg:
+            env_overrides["target_y_center_offset"] = float(
+                cfg["target_y_center_offset"]
+            )
         if "action_scale" in cfg:
             env_overrides["action_scale"] = float(cfg["action_scale"])
         if "success_tol" in cfg:

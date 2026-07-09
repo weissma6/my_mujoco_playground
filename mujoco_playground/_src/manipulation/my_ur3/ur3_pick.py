@@ -104,8 +104,24 @@ def default_config() -> config_dict.ConfigDict:
                 gripper_align=2.0,
                 # Do not collide the gripper with the floor.
                 no_floor_collision=0.25,
-                # Arm stays close to initial pose.
+                # Arm stays close to initial pose. Gated by (1-lifted) in
+                # _get_reward so it only regularizes the pre-lift approach —
+                # once the box is lifted this stopped fighting the transport
+                # stage, which needs the arm to move AWAY from its init pose
+                # to reach the (raised) target. Was un-gated and always-on;
+                # box_target_dist floored at ~30mm / success ~3% on the
+                # 20260709 speedtest runs, partly because this term penalized
+                # exactly the motion transport requires.
                 robot_target_qpos=0.3,
+                # Penalize large action deltas between consecutive steps
+                # (DeXtreme-style smoothness term) to stop the visible
+                # shaking/jitter in rollout videos that knocks the box loose.
+                # Raw signal is a squared L2 norm (unbounded, unlike the other
+                # tanh-saturated terms here) so keep this scale small relative
+                # to the others; NEGATIVE scale turns the raw magnitude into a
+                # penalty (same sign convention `franka_emika_panda_robotiq`
+                # and `leap_hand` use for their action_rate terms).
+                action_rate=-0.01,
             )
         ),
         impl="jax",
@@ -135,6 +151,16 @@ def default_config() -> config_dict.ConfigDict:
         # all yaw thanks to the cube's 4-fold symmetry, so the policy must learn
         # to match the jaw axis to a face rather than getting a free alignment.
         box_z_rot_range=0.7853981633974483,  # pi/4
+        # Y-axis center offset (m) for the box spawn / lift target, applied
+        # BEFORE their existing jitter ranges (box jitter Y +-0.2, target
+        # jitter Y +-0.03) — see reset(). Both currently jitter around the
+        # SAME anchor (self._init_obj_pos), so nominal box->target lateral
+        # distance is ~0. Setting these to opposite signs pushes the box spawn
+        # to one side and the target to the other, adding real transport
+        # distance on top of the jitter, to stress-test the box_target /
+        # robot_target_qpos transport stage. 0.0 = legacy (both centered).
+        box_y_center_offset=0.0,
+        target_y_center_offset=0.0,
         # Box-center distance (m) to the lift target counted as success (3
         # consecutive steps). Tight 3 mm — the box must end up inside the target.
         success_tol=0.003,
@@ -171,6 +197,7 @@ class UR3Pick(ur3_base.UR3Base):
         # This overrides the scalar self._action_scale set in ur3_base.__init__.
         # action_size == nu == 7 (6 arm + 1 gripper).
         n_act = int(self._mjx_model.nu)
+        self._nu = n_act  # action/ctrl dim (6 arm + 1 gripper); used for last_action init
         arm_scale = float(self._config.action_scale)
         grip_scale = float(
             getattr(self._config, "gripper_action_scale", arm_scale)
@@ -235,7 +262,9 @@ class UR3Pick(ur3_base.UR3Base):
         ) = jax.random.split(rng, 9)
 
         # initialize box XY — wide jitter, X-heavy, so the box spawns anywhere
-        # in X∈[0.30,0.60] (all graspable; 0.60 was the old nominal).
+        # in X∈[0.30,0.60] (all graspable; 0.60 was the old nominal). Y-center
+        # shiftable via box_y_center_offset (0.0 = legacy, centered on the XML
+        # keyframe) so a sweep can push the spawn to one side of the target.
         box_xy = (
             jax.random.uniform(
                 rng_box,
@@ -244,6 +273,7 @@ class UR3Pick(ur3_base.UR3Base):
                 maxval=jp.array([0.15, 0.2]),
             )
             + self._init_obj_pos[:2]  # Box XY from XML keyframe
+            + jp.array([0.0, float(self._config.box_y_center_offset)])
         )
 
         # Box yaw about world Z (±box_z_rot_range). The cube is symmetric so this
@@ -323,6 +353,12 @@ class UR3Pick(ur3_base.UR3Base):
         # may be physically unreachable — watch success/box_target_dist; pull the
         # MAX back toward 0.18 if success collapses. Raised further by the lifter
         # height so the lift target stays above the (possibly raised) box.
+        # Y-center shiftable via target_y_center_offset (0.0 = legacy) — set
+        # to the OPPOSITE sign of box_y_center_offset to force real lateral
+        # transport distance between spawn and target (see default_config).
+        # CAUTION: this stacks with the existing near-reach-limit Z band
+        # (see warning above) — push gradually and watch success/
+        # box_target_dist for collapse from unreachable targets.
         target_pos = (
             jax.random.uniform(
                 rng_target,
@@ -331,6 +367,7 @@ class UR3Pick(ur3_base.UR3Base):
                 maxval=jp.array([0.06, 0.03, 0.21]),
             )
             + self._init_obj_pos
+            + jp.array([0.0, float(self._config.target_y_center_offset), 0.0])
         )
         target_pos = target_pos.at[2].add(lifter_h)
 
@@ -439,6 +476,11 @@ class UR3Pick(ur3_base.UR3Base):
             # Per-episode box resting height (top of the lifter plate, or the
             # keyframe floor Z). The "lifted" latch measures lift against this.
             "box_rest_z": box_z,
+            # Previous action, for the action_rate smoothness penalty. Zeroed
+            # at reset (no prior action yet); also appended to the obs (below)
+            # so the action_rate-dependent reward stays a function of the
+            # observed state (Markov).
+            "last_action": jp.zeros(self._nu, dtype=float),
         }
 
         obs = self._get_obs(data, info)
@@ -454,12 +496,17 @@ class UR3Pick(ur3_base.UR3Base):
         info = dict(state.info)
         info["step"] = info["step"] + 1
 
-        raw_rewards, raw_signals = self._get_reward(data, info)
+        # action_rate reward reads info["last_action"] (the PREVIOUS action,
+        # still un-overwritten at this point) inside _get_reward below; only
+        # after the reward is computed do we overwrite it with the current
+        # action for the next step.
+        raw_rewards, raw_signals = self._get_reward(data, info, action)
         rewards = {
             k: v * self._config.reward_config.scales[k]
             for k, v in raw_rewards.items()
         }
         reward = jp.clip(sum(rewards.values()), -1e4, 1e4)
+        info["last_action"] = action
 
         box_pos = data.xpos[self._obj_body]
         box_target_dist = jp.linalg.norm(info["target_pos"] - box_pos)
@@ -498,7 +545,7 @@ class UR3Pick(ur3_base.UR3Base):
         return State(data, obs, reward, done, metrics, info)
 
     def _get_obs(self, data: mjx.Data, info: Dict[str, Any]) -> jax.Array:
-        """13D base obs + 6D gripper<->box orientation features (19D total).
+        """13D base obs + 6D gripper<->box orientation feats + 7D last_action (26D total).
 
         Appends where the two grasp-relevant gripper axes point IN THE BOX FRAME:
         the jaw axis (finger-separation) and the approach axis (palm->fingertips),
@@ -509,6 +556,13 @@ class UR3Pick(ur3_base.UR3Base):
         trained with this obs, `build_obs_from_feedback` on the real robot must
         append the same 6 numbers (re-enable the mocap orientation it currently
         drops), or sim and real observations will not match.
+
+        Also appends the previous action (7D, zeros on the reset step). This is
+        REQUIRED for the action_rate penalty in _get_reward (below) to keep the
+        task Markov: the reward now depends on (s, a, a_prev), so a_prev must be
+        observable. NOTE: deploying an action_rate-trained policy on the real
+        robot also needs this in `build_obs_from_feedback` (26D, not 19D) — same
+        deploy blocker as the 6D alignment obs above.
         """
         base_obs = super()._get_obs(data, info)
         l_pos = data.site_xpos[self._left_finger_touch]
@@ -521,9 +575,12 @@ class UR3Pick(ur3_base.UR3Base):
         box_axes = data.xmat[self._obj_body].reshape(3, 3)  # columns = box axes
         jaw_proj = jaw_axis @ box_axes  # [jaw·b0, jaw·b1, jaw·b2]
         app_proj = app_axis @ box_axes  # [app·b0, app·b1, app·b2]
-        return jp.concatenate([base_obs, jaw_proj, app_proj])
+        last_action = info["last_action"]
+        return jp.concatenate([base_obs, jaw_proj, app_proj, last_action])
 
-    def _get_reward(self, data: mjx.Data, info: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_reward(
+        self, data: mjx.Data, info: Dict[str, Any], action: jax.Array
+    ) -> Dict[str, Any]:
         # ==============================
         # Postition world-frame
         # ==============================
@@ -679,12 +736,30 @@ class UR3Pick(ur3_base.UR3Base):
         gripper_align_Reward = alignment * (1 - jp.tanh(5 * gripper_box_dist))
 
         # Penalty for deviating too far from the initial arm configuration.
-        robot_target_qpos_penalty = 1 - jp.tanh(
-            jp.linalg.norm(
-                data.qpos[self._robot_arm_qposadr]
-                - self._init_q[self._robot_arm_qposadr]
+        # Gated by (1 - lifted): this term existed to keep the arm from
+        # wandering during approach/grasp, but once the box is lifted, the
+        # transport stage (box_target, above) NEEDS the arm to move away from
+        # its init pose to reach the (raised) target -- an un-gated version
+        # actively fights that motion. box_target_dist floored around 30mm /
+        # success ~3% on the 20260709 speedtest runs partly because of this.
+        robot_target_qpos_penalty = (
+            1
+            - jp.tanh(
+                jp.linalg.norm(
+                    data.qpos[self._robot_arm_qposadr]
+                    - self._init_q[self._robot_arm_qposadr]
+                )
             )
-        )
+        ) * (1 - lifted)
+
+        # Action-rate penalty: discourage large deltas between consecutive
+        # actions (DeXtreme-style smoothness term). Raw value is a squared L2
+        # norm over the full 7D action (arm + gripper); the scale (negative)
+        # turns it into a penalty. Targets the visible shaking in rollout
+        # videos that knocks the box loose -- action_scale sets the jitter's
+        # AMPLITUDE, but nothing previously penalized the jitter itself.
+        last_action = info["last_action"]
+        action_rate_Reward = jp.sum(jp.square(action - last_action))
 
         # Floor collision via touch sensors (same as Panda).
         hand_floor_collision = [
@@ -703,6 +778,7 @@ class UR3Pick(ur3_base.UR3Base):
             "gripper_align": gripper_align_Reward,
             "no_floor_collision": no_floor_collision_Reward,
             "robot_target_qpos": robot_target_qpos_penalty,
+            "action_rate": action_rate_Reward,
         }
         # ==============================
         # Raw signals dict (for debug)
