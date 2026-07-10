@@ -665,17 +665,19 @@ class UR3Pick(ur3_base.UR3Base):
         each projected onto the three box axes. This is the state the policy needs
         to align its frame with the (rotated + tilted) cube, and it is
         reproducible on the real robot: jaw/approach axes come from arm FK, the box
-        axes from the mocap-streamed box quaternion. NOTE: when deploying a policy
-        trained with this obs, `build_obs_from_feedback` on the real robot must
-        append the same 6 numbers (re-enable the mocap orientation it currently
-        drops), or sim and real observations will not match.
+        axes from the mocap-streamed box quaternion. DEPLOYED: `build_obs_from_
+        feedback` in robots/UR3e/ur3_realrobot_dependencies.py appends the same 6
+        numbers via its own FK pass (`compute_obs_geometry`, reading the tcp/
+        finger-touch sites + box xmat of the same scene XML), gated on the
+        loaded policy's obs_dim so 13D (legacy) policies are unaffected. Verified
+        bit-parity against evaluation/ur3_reward_replay.SimFK.
 
         Also appends the previous action (7D, zeros on the reset step). This is
         REQUIRED for the action_rate penalty in _get_reward (below) to keep the
         task Markov: the reward now depends on (s, a, a_prev), so a_prev must be
-        observable. NOTE: deploying an action_rate-trained policy on the real
-        robot also needs this in `build_obs_from_feedback` (26D, not 19D) — same
-        deploy blocker as the 6D alignment obs above.
+        observable. DEPLOYED: `build_obs_from_feedback` also appends the
+        real-robot last_action (raw, pre action_scale) in its 26D path, tracked
+        per-tick in `run_policy_loop`.
         """
         base_obs = super()._get_obs(data, info)
         l_pos = data.site_xpos[self._left_finger_touch]
