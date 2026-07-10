@@ -141,9 +141,15 @@ WANDB_PROJECT = "UR3_pick_ppo"
 WANDB_RUN_ID = POLICY_REGISTRY[POLICY_NAME]
 # Local cache is run-id keyed: evaluation/downloaded_policies/{run_id}/
 POLICY_PATH = default_policy_dir(WANDB_RUN_ID)
-# real_robot_results/ (NOT "results/", which is git-ignored) so the run outputs
-# are tracked and uploaded.
-FOLDER_OUT = os.path.join(SCRIPT_DIR, "real_robot_results")
+# real_robot_results/{POLICY_NAME}/{run_stamp}/ (NOT "results/", which is
+# git-ignored) so the run outputs are tracked and uploaded, and so repeated
+# runs of the SAME policy accumulate as separate folders instead of
+# overwriting each other -- needed to collect e.g. 10 real rollouts per
+# policy for evaluation/compare_reward_train_sim_real.py. run_stamp is a
+# wall-clock timestamp taken once at script start (time.strftime, not
+# reused across runs).
+RUN_STAMP = time.strftime("%Y%m%d_%H%M%S")
+FOLDER_OUT = os.path.join(SCRIPT_DIR, "real_robot_results", POLICY_NAME, RUN_STAMP)
 VIDEO_OUT = os.path.join(FOLDER_OUT, "ur3_pick_replay.mp4")
 CSV_OUT = os.path.join(FOLDER_OUT, "ur3_pick_states.csv")
 ROBOT_PLOTS_OUT = os.path.join(FOLDER_OUT, "ur3_pick_robot_plots.png")

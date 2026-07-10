@@ -56,6 +56,16 @@ class MocapRigidBodyLost(RuntimeError):
     """
 
 
+class RobotStoppedExternally(RuntimeError):
+    """Raised when the robot itself signals it stopped: a protective/
+    emergency stop, or the External Control program is no longer PLAYING
+    (e.g. the operator pressed Stop on the PolyScope X pendant). Detected via
+    UR3RealRobotPick.is_stopped_externally(). run_policy_loop catches this
+    the same way as MocapRigidBodyLost: halt the arm, keep the partial log,
+    tag stopped_reason="external_stop".
+    """
+
+
 class UR3RealRobotPick:
     """RTDE control loop for the UR3 pick task (6-DOF arm + Hand-E, 26D obs)."""
 
@@ -171,6 +181,28 @@ class UR3RealRobotPick:
         if self._receiver is None or self._control is None:
             return False
         return self._receiver.isConnected() and self._control.isConnected()
+
+    def is_stopped_externally(self) -> bool:
+        """Best-effort check for a protective/emergency stop or the External
+        Control program no longer PLAYING. Used by run_policy_loop to break
+        out with stopped_reason="external_stop" instead of running blind
+        against a halted robot. Returns False (never blocks the loop) if the
+        receiver is unavailable or the check itself raises -- this is a
+        best-effort safety signal, not the primary control path.
+        """
+        if self._receiver is None:
+            return False
+        try:
+            if self._receiver.isProtectiveStopped():
+                return True
+        except Exception:
+            pass
+        try:
+            if not self._receiver.isConnected():
+                return True
+        except Exception:
+            pass
+        return False
 
     def receive_feedback(self) -> Dict[str, List[float]]:
         """Returns dict with joint state, TCP, currents, control output, force."""
@@ -758,6 +790,7 @@ class UR3RealRobotPick:
         overrun_count = 0
         in_tol_since = None
         last_box_pos = None
+        last_box_quat = None  # (w, x, y, z); carried forward like last_box_pos
         # The URCapX XML-RPC server must not be commanded above ~10 Hz, so the
         # gripper is sent at most every gripper_min_dt seconds even though the
         # arm loop runs at control_hz (e.g. 50 Hz).
@@ -766,6 +799,13 @@ class UR3RealRobotPick:
         last_gripper_norm = None
         last_gripper_fb = np.nan  # Hand-E finger readback [0,0.025]; NaN until polled
         last_gripper_fb_pct = float("nan")  # raw native percent [0,100]; NaN until polled
+        # Real grasp proxy (Robotiq object-detection flag), carried forward
+        # between the <=10 Hz gripper polls like the readback above. Used by
+        # evaluation/ur3_reward_replay.py to gate the grasp/lift/box_target/
+        # hold_target reward terms the same way sim's finger-pad contact
+        # sensors do (coarser: polled at <=10 Hz, not every control tick).
+        last_grasped = False
+        last_obj_flag = 0
 
         stopped_reason = "completed"
 
@@ -775,6 +815,16 @@ class UR3RealRobotPick:
         try:
             while True:
                 loop_start = time.perf_counter()
+
+                # 0. Robot-side stop check (protective/emergency stop, or
+                # External Control no longer PLAYING e.g. operator pressed
+                # Stop on the pendant). Best-effort -- see
+                # is_stopped_externally(); never raises on its own.
+                if self.is_stopped_externally():
+                    raise RobotStoppedExternally(
+                        f"robot reported a protective/emergency stop or lost "
+                        f"External Control at step {step_count}."
+                    )
 
                 # 1. RTDE receive
                 t0_recv = time.perf_counter()
@@ -816,6 +866,21 @@ class UR3RealRobotPick:
                                else drop_target.copy())
                 box_pos = np.asarray(box_pos, dtype=float)
                 last_box_pos = box_pos.copy()
+
+                # Box orientation (w, x, y, z), same mocap->base mapping as the
+                # position above. Not used by the 13D policy obs (orientation-
+                # free by design), but needed to reconstruct the training
+                # reward's gripper_align term post-hoc (see
+                # evaluation/ur3_reward_replay.py) -- carried forward like
+                # box_pos on a missed mocap frame.
+                box_quat = mocap_reader.get_rigid_body_quat()
+                if box_quat is not None:
+                    box_quat = self.mocap_quat_to_base(box_quat)
+                if box_quat is None:
+                    box_quat = (last_box_quat if last_box_quat is not None
+                                else np.array([1.0, 0.0, 0.0, 0.0]))
+                box_quat = np.asarray(box_quat, dtype=float)
+                last_box_quat = box_quat.copy()
                 t1_mocap = time.perf_counter()
 
                 box_target_dist = float(np.linalg.norm(drop_target - box_pos))
@@ -874,9 +939,17 @@ class UR3RealRobotPick:
                                     fb.get("sim_finger", np.nan))
                                 last_gripper_fb_pct = float(
                                     fb.get("pos_pct", np.nan))
+                                # Robotiq object-detection flag/bool -- real
+                                # grasp proxy for evaluation/
+                                # ur3_reward_replay.py (sim uses finger-pad
+                                # contact sensors; this is the closest real
+                                # equivalent, polled at the same <=10 Hz
+                                # cadence as the rest of this block).
+                                last_grasped = bool(fb.get("grasped", False))
+                                last_obj_flag = int(fb.get("obj_flag", 0))
                             else:
                                 # Back-compat: a plain float is the sim_finger
-                                # value; percent is unavailable.
+                                # value; percent/grasp are unavailable.
                                 last_gripper_fb = float(fb)
                                 last_gripper_fb_pct = float("nan")
                     except Exception as e:  # noqa: BLE001
@@ -931,8 +1004,12 @@ class UR3RealRobotPick:
                     "gripper_obs": float(obs_batch[0, 6]),
                     "gripper_fb_pos": last_gripper_fb,
                     "gripper_fb_pct": last_gripper_fb_pct,
+                    "grasped": last_grasped,
+                    "obj_flag": last_obj_flag,
                     "tcp_x": tcp_xyz[0], "tcp_y": tcp_xyz[1], "tcp_z": tcp_xyz[2],
                     "box_x": box_pos[0], "box_y": box_pos[1], "box_z": box_pos[2],
+                    "box_qw": box_quat[0], "box_qx": box_quat[1],
+                    "box_qy": box_quat[2], "box_qz": box_quat[3],
                     "target_x": drop_target[0], "target_y": drop_target[1],
                     "target_z": drop_target[2],
                     "box_to_target_dist": box_target_dist,
@@ -971,6 +1048,25 @@ class UR3RealRobotPick:
             stopped_reason = "mocap_lost"
             print("\n" + "!" * 70)
             print("MOCAP RIGID BODY LOST — STOPPING PICK LOOP")
+            print(f"  {type(e).__name__}: {e}")
+            print("!" * 70)
+        except RobotStoppedExternally as e:
+            # Protective/emergency stop, or External Control no longer
+            # PLAYING (e.g. operator pressed Stop on the pendant). Arm is
+            # halted in `finally`; partial data is still returned/saved.
+            stopped_reason = "external_stop"
+            print("\n" + "!" * 70)
+            print("ROBOT STOPPED EXTERNALLY — STOPPING PICK LOOP")
+            print(f"  {type(e).__name__}: {e}")
+            print("!" * 70)
+        except Exception as e:  # noqa: BLE001
+            # Any other RTDE/robot-side exception (connection drop, servoj
+            # rejection, etc.) -- stop the loop rather than crash the script,
+            # keep the partial log, and tag it distinctly from a clean
+            # completion/timeout/mocap-loss/external-stop.
+            stopped_reason = "robot_error"
+            print("\n" + "!" * 70)
+            print("ROBOT/RTDE ERROR — STOPPING PICK LOOP")
             print(f"  {type(e).__name__}: {e}")
             print("!" * 70)
         finally:
