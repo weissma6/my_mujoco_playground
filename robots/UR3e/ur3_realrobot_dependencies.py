@@ -444,6 +444,10 @@ class UR3RealRobotPick:
         self._policy_fn = policy_fn
         self._meta = meta
         self.policy_path = policy_path
+        # Drives build_obs_from_feedback's 13D/26D branch -- read from the
+        # saved metadata so both policy families in POLICY_REGISTRY produce
+        # the obs shape they actually trained on, automatically.
+        self._obs_dim = int(meta["obs_dim"])
 
         # Actuator ctrl limits (arm + gripper) from the env model.
         env = registry.load(meta["env_name"])
@@ -488,14 +492,43 @@ class UR3RealRobotPick:
     # E — MuJoCo FK model (optional: computes tcp_pos from joint angles)
     # =========================================================================
 
+    # Joint names for the FK model's grasp-geometry qpos addresses (mirrors
+    # mujoco_playground._src.manipulation.my_ur3.ur3_base._ARM_JOINTS /
+    # _FINGER_JOINTS -- kept as a literal here so this module has no MJX/
+    # mujoco_playground import dependency for FK).
+    _FK_ARM_JOINTS = [
+        "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+        "wrist_1_joint", "wrist_2_joint", "wrist_3_joint",
+    ]
+    _FK_FINGER_JOINTS = ["hande_left_finger_joint", "hande_right_finger_joint"]
+
     def init_fk_model(self, xml_path: str):
-        """Load a MuJoCo model for forward kinematics of the tcp site."""
+        """Load a MuJoCo model for forward kinematics: the tcp site (used by
+        compute_tcp_pos, unchanged) plus the grasp-frame geometry (finger
+        touch sites + box freejoint) needed by the 26D obs's orientation
+        features (see compute_obs_geometry / build_obs_from_feedback).
+        """
         self._fk_model = mujoco.MjModel.from_xml_path(xml_path)
         self._fk_data = mujoco.MjData(self._fk_model)
         self._fk_tcp_id = mujoco.mj_name2id(
             self._fk_model, mujoco.mjtObj.mjOBJ_SITE, "tcp"
         )
-        print(f"FK model loaded: tcp site id={self._fk_tcp_id}")
+        self._fk_left_touch = self._fk_model.site("left_finger_touch_site").id
+        self._fk_right_touch = self._fk_model.site("right_finger_touch_site").id
+        self._fk_box_body = self._fk_model.body("box").id
+        self._fk_arm_qadr = np.array(
+            [self._fk_model.jnt_qposadr[self._fk_model.joint(j).id]
+             for j in self._FK_ARM_JOINTS]
+        )
+        self._fk_finger_qadr = np.array(
+            [self._fk_model.jnt_qposadr[self._fk_model.joint(j).id]
+             for j in self._FK_FINGER_JOINTS]
+        )
+        _box_jntadr = self._fk_model.body("box").jntadr[0]
+        self._fk_box_qadr = int(self._fk_model.jnt_qposadr[_box_jntadr])
+        print(f"FK model loaded: tcp site id={self._fk_tcp_id}, "
+              f"left/right touch sites={self._fk_left_touch}/"
+              f"{self._fk_right_touch}, box body={self._fk_box_body}")
 
     def compute_tcp_pos(self, q: np.ndarray) -> np.ndarray:
         """Compute MuJoCo tcp site position from the 6 arm joint angles via FK."""
@@ -503,8 +536,52 @@ class UR3RealRobotPick:
         mujoco.mj_forward(self._fk_model, self._fk_data)
         return self._fk_data.site_xpos[self._fk_tcp_id].copy()
 
+    def compute_obs_geometry(self, q, finger_m: float, box_pos, box_quat) -> dict:
+        """One mj_forward on the full FK scene (arm + fingers + box freejoint)
+        that returns exactly the geometry the 26D obs's orientation features
+        need: the tcp site position, the jaw/approach unit axes (built from
+        the SAME finger-touch sites sim uses), and the box's world-frame
+        axes (from its quaternion, via MuJoCo's own xmat -- never a hand-
+        rolled quat->matrix, so this is guaranteed to match sim's
+        data.xmat[box] convention bit-for-bit). Mirrors
+        evaluation/ur3_reward_replay.SimFK.geom() exactly (kept as a
+        separate copy here so this deploy-time module has no dependency on
+        the evaluation/ package).
+
+        Args:
+          q: (6,) arm joint angles, radians.
+          finger_m: scalar meters in [0, 0.025] (both fingers, symmetric --
+            matches the sim tendon actuator's coef 0.5/0.5).
+          box_pos: (3,) base-frame meters.
+          box_quat: (4,) MuJoCo convention (w, x, y, z), base-frame.
+        """
+        d = self._fk_data
+        d.qpos[self._fk_arm_qadr] = np.asarray(q, dtype=float)
+        d.qpos[self._fk_finger_qadr] = float(finger_m)
+        d.qpos[self._fk_box_qadr:self._fk_box_qadr + 3] = np.asarray(
+            box_pos, dtype=float
+        )
+        bq = np.asarray(box_quat, dtype=float)
+        n = np.linalg.norm(bq)
+        d.qpos[self._fk_box_qadr + 3:self._fk_box_qadr + 7] = (
+            bq / n if n > 1e-9 else np.array([1.0, 0.0, 0.0, 0.0])
+        )
+        d.qvel[:] = 0.0
+        mujoco.mj_forward(self._fk_model, d)
+
+        tcp = d.site_xpos[self._fk_tcp_id].copy()
+        lft = d.site_xpos[self._fk_left_touch].copy()
+        rgt = d.site_xpos[self._fk_right_touch].copy()
+        jaw_axis = rgt - lft
+        jaw_axis = jaw_axis / (np.linalg.norm(jaw_axis) + 1e-6)
+        app_axis = 0.5 * (lft + rgt) - tcp
+        app_axis = app_axis / (np.linalg.norm(app_axis) + 1e-6)
+        box_axes = d.xmat[self._fk_box_body].reshape(3, 3).copy()
+        return {"tcp": tcp, "jaw_axis": jaw_axis, "app_axis": app_axis,
+                "box_axes": box_axes}
+
     # =========================================================================
-    # F — Observation Building (13D)
+    # F — Observation Building (13D / 26D)
     # =========================================================================
 
     def build_obs_from_feedback(
@@ -513,11 +590,31 @@ class UR3RealRobotPick:
         box_pos: np.ndarray,
         target_pos: np.ndarray,
         tcp_pos: Optional[np.ndarray] = None,
+        box_quat: Optional[np.ndarray] = None,
+        last_action: Optional[np.ndarray] = None,
+        obs_dim: Optional[int] = None,
         dtype=np.float32,
     ) -> np.ndarray:
-        """Build 13D obs to match the canonical UR3Base._get_obs (shared by
-        UR3PicknPlace, the deployment target, and UR3Pick):
-        [arm_q(6), gripper(1), (box-tcp)(3), (target-box)(3)].
+        """Build the obs to match the canonical UR3Base/UR3Pick _get_obs,
+        branching on `obs_dim` (13 for the legacy orientation-free policies,
+        26 for the grasp-frame-aligned policies e.g. AGATE250) so BOTH policy
+        families in POLICY_REGISTRY deploy correctly through one method.
+
+        13D (unchanged from before this branch was added):
+            [arm_q(6), gripper(1), (box-tcp)(3), (target-box)(3)]
+
+        26D (= 13D + 6D grasp-frame orientation features + 7D last_action,
+        matching ur3_pick.py's UR3Pick._get_obs EXACTLY):
+            [ ...13D above..., jaw_proj(3), app_proj(3), last_action(7) ]
+        where jaw_proj/app_proj are the gripper's jaw axis (finger
+        separation) and approach axis (palm->fingertips), each projected
+        onto the box's three world-frame axes -- computed via ONE mj_forward
+        on the FK scene (compute_obs_geometry, above), which reads the exact
+        tcp/finger-touch sites + box xmat sim uses (no hand-rolled
+        quat->matrix -- see that method's docstring). In the 26D path the
+        base 13D's box-tcp term ALSO uses this FK tcp (not tcp_pos/RTDE), so
+        both the position and orientation terms share one consistent TCP,
+        exactly like sim's single `_gripper_site`.
 
         arm_q = 6 arm joints (RTDE). gripper = combined finger opening in
         [0, 0.05] m: sim feeds the SUM of the two finger joint positions, so the
@@ -528,22 +625,63 @@ class UR3RealRobotPick:
         running_statistics.normalize, drive the policy off the rails (and the
         zero-lag feedback was what made the deploy gripper oscillate).
         tcp_pos defaults to RTDE getActualTCPPose()[:3] (X/Y already negated in
-        receive_feedback); pass an FK-computed tcp_pos to override.
-        Returns shape (1, 13) for batched policy input.
+        receive_feedback); pass an FK-computed tcp_pos to override -- ignored
+        in the 26D path (uses compute_obs_geometry's FK tcp instead, see above).
+        box_quat: (4,) MuJoCo convention (w, x, y, z), base-frame -- REQUIRED
+        for a correct 26D obs (defaults to identity if None, which silently
+        assumes an unrotated box; only safe as a degraded fallback).
+        last_action: previous RAW 7D policy action (pre action_scale), zeros
+        on the first step -- matches sim's info["last_action"]. Only used in
+        the 26D path.
+        obs_dim: 13 or 26; defaults to self._obs_dim (set by load_policy_fn
+        from the loaded policy's metadata.json) if not given explicitly.
+        Returns shape (1, obs_dim) for batched policy input.
         """
+        obs_dim = int(obs_dim if obs_dim is not None
+                      else getattr(self, "_obs_dim", 13))
+
         arm_q = np.array(fb["q"], dtype=dtype)                      # 6
         gripper = np.array(
             [2.0 * float(np.clip(self._finger_pos_est, 0.0, self._finger_hi))],
             dtype=dtype,
         )                                                           # 1 (0-0.05)
-        tcp = (np.array(fb["tcp_xyz"], dtype=dtype) if tcp_pos is None
-               else np.array(tcp_pos, dtype=dtype))
         box = np.array(box_pos, dtype=dtype)
         tgt = np.array(target_pos, dtype=dtype)
-        box_to_tcp = box - tcp                                      # 3
-        target_to_box = tgt - box                                  # 3
-        obs = np.concatenate([arm_q, gripper, box_to_tcp, target_to_box])
-        return obs[None, :]  # (1, 13)
+
+        if obs_dim == 13:
+            tcp = (np.array(fb["tcp_xyz"], dtype=dtype) if tcp_pos is None
+                   else np.array(tcp_pos, dtype=dtype))
+            box_to_tcp = box - tcp                                  # 3
+            target_to_box = tgt - box                              # 3
+            obs = np.concatenate([arm_q, gripper, box_to_tcp, target_to_box])
+            return obs[None, :]  # (1, 13)
+
+        if obs_dim == 26:
+            if getattr(self, "_fk_model", None) is None:
+                raise RuntimeError(
+                    "26D obs requires init_fk_model() to have been called "
+                    "(the grasp-frame orientation features need the FK "
+                    "scene's finger-touch sites + box body)."
+                )
+            bq = (np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+                  if box_quat is None else np.asarray(box_quat, dtype=float))
+            finger_m = float(np.clip(self._finger_pos_est, 0.0, self._finger_hi))
+            geo = self.compute_obs_geometry(arm_q, finger_m, box_pos, bq)
+            tcp = np.array(geo["tcp"], dtype=dtype)
+            box_to_tcp = box - tcp                                  # 3
+            target_to_box = tgt - box                              # 3
+            jaw_proj = (geo["jaw_axis"] @ geo["box_axes"]).astype(dtype)  # 3
+            app_proj = (geo["app_axis"] @ geo["box_axes"]).astype(dtype)  # 3
+            la = (np.zeros(7, dtype=dtype) if last_action is None
+                  else np.asarray(last_action, dtype=dtype).reshape(7))   # 7
+            obs = np.concatenate([
+                arm_q, gripper, box_to_tcp, target_to_box,
+                jaw_proj, app_proj, la,
+            ])
+            return obs[None, :]  # (1, 26)
+
+        raise ValueError(f"build_obs_from_feedback: unsupported obs_dim={obs_dim} "
+                          "(expected 13 or 26)")
 
     # =========================================================================
     # F2 — Mocap base-frame calibration (mocap world -> policy/base frame)
@@ -806,6 +944,11 @@ class UR3RealRobotPick:
         # sensors do (coarser: polled at <=10 Hz, not every control tick).
         last_grasped = False
         last_obj_flag = 0
+        # Previous RAW policy action (pre action_scale), fed into the 26D
+        # obs's last_action slot (matches sim's info["last_action"] -- see
+        # build_obs_from_feedback). Ignored by the 13D path. Zeros on the
+        # first step, matching the env's reset().
+        last_action = np.zeros(7, dtype=dtype)
 
         stopped_reason = "completed"
 
@@ -885,11 +1028,15 @@ class UR3RealRobotPick:
 
                 box_target_dist = float(np.linalg.norm(drop_target - box_pos))
 
-                # 3. Build observation (13D — no box orientation)
+                # 3. Build observation (13D or 26D, per the loaded policy's
+                # obs_dim -- see build_obs_from_feedback). box_quat/last_action
+                # are only consumed by the 26D path.
                 t0_obs = time.perf_counter()
                 obs_batch = self.build_obs_from_feedback(
                     fb, box_pos, drop_target,
                     tcp_pos=tcp_xyz if use_fk_tcp else None,
+                    box_quat=box_quat,
+                    last_action=last_action,
                     dtype=dtype,
                 )
                 t1_obs = time.perf_counter()
@@ -898,6 +1045,7 @@ class UR3RealRobotPick:
                 t0_policy = time.perf_counter()
                 action_raw = self._policy_fn(obs_batch)
                 action = np.asarray(action_raw, dtype=dtype).reshape(-1)
+                last_action = action.copy()  # for the NEXT step's 26D obs
                 t1_policy = time.perf_counter()
 
                 # 5. Control update (arm servoj + gripper cmd)
