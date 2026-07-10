@@ -199,6 +199,26 @@ def default_config() -> config_dict.ConfigDict:
         # robot_target_qpos transport stage. 0.0 = legacy (both centered).
         box_y_center_offset=0.0,
         target_y_center_offset=0.0,
+        # --- Lift-target sampling scheme ---------------------------------------
+        # "box"        = legacy axis-aligned sampling around the box anchor
+        #                (self._init_obj_pos + the fixed X/Y/Z jitter bands +
+        #                box_y_center_offset/target_y_center_offset). Unchanged.
+        # "base_polar" = sample the target XY in an ANNULUS around the ROBOT BASE
+        #                (radius target_r_min‥target_r_max), at an azimuth offset
+        #                target_azim_min‥target_azim_max to either side of the
+        #                box's bearing from the base. This supersedes the
+        #                box_y_center_offset/target_y_center_offset transport
+        #                hack (those still work under "box"); the Z band is
+        #                unchanged (fixed 0.18‥0.21 + lifter_h).
+        target_mode="box",
+        # Horizontal radius from the ROBOT BASE for base_polar targets (m).
+        target_r_min=0.30,
+        # Keep <= UR3 ~0.54 m reach so base_polar targets stay reachable.
+        target_r_max=0.48,
+        # Azimuth offset band (rad) from the box's bearing (as seen from the
+        # base) for base_polar targets: 90°‥180° around the base to either side.
+        target_azim_min=1.5708,  # pi/2
+        target_azim_max=3.1416,  # pi
         # Box-center distance (m) to the lift target counted as success (3
         # consecutive steps). Tight 3 mm — the box must end up inside the target.
         success_tol=0.003,
@@ -319,6 +339,15 @@ class UR3Pick(ur3_base.UR3Base):
         self._lifter_enabled = float(self._config.lifter_height_max) > 0.0
         self._lifter_mocap = self._mj_model.body("lifter").mocapid
 
+        # Robot base world XY, SOURCED FROM THE MODEL (not assumed to be the
+        # world origin). The UR3 "base" body is a direct child of worldbody, so
+        # its body.pos IS its world position at qpos0. Used by the "base_polar"
+        # target_mode to sample lift targets in an annulus around the base; stays
+        # correct if the base is ever repositioned in the scene XML.
+        self._robot_base_xy = jp.asarray(
+            self._mj_model.body("base").pos[:2], dtype=float
+        )
+
     def reset(self, rng: jax.Array) -> State:
         (
             rng,
@@ -430,17 +459,61 @@ class UR3Pick(ur3_base.UR3Base):
         # CAUTION: this stacks with the existing near-reach-limit Z band
         # (see warning above) — push gradually and watch success/
         # box_target_dist for collapse from unreachable targets.
-        target_pos = (
-            jax.random.uniform(
-                rng_target,
-                (3,),
-                minval=jp.array([0.02, -0.03, 0.18]),
-                maxval=jp.array([0.06, 0.03, 0.21]),
+        # target_mode is a STATIC config value, so this Python if/else is
+        # resolved at trace time (jit/vmap-safe).
+        if self._config.target_mode == "box":
+            target_pos = (
+                jax.random.uniform(
+                    rng_target,
+                    (3,),
+                    minval=jp.array([0.02, -0.03, 0.18]),
+                    maxval=jp.array([0.06, 0.03, 0.21]),
+                )
+                + self._init_obj_pos
+                + jp.array([0.0, float(self._config.target_y_center_offset), 0.0])
             )
-            + self._init_obj_pos
-            + jp.array([0.0, float(self._config.target_y_center_offset), 0.0])
-        )
-        target_pos = target_pos.at[2].add(lifter_h)
+            target_pos = target_pos.at[2].add(lifter_h)
+        else:  # "base_polar"
+            # Base-centered polar sampling: put the lift target in an annulus
+            # around the ROBOT BASE (radius r), at an azimuth phi that is offset
+            # by dphi (90°‥180°) to a random side of the box's bearing from the
+            # base. Because the box XY is already jittered above, the target
+            # tracks where the box actually spawned instead of a fixed anchor —
+            # this replaces the box_y_center_offset/target_y_center_offset
+            # transport hack. Every draw gets its own split key (jit/vmap-safe).
+            rng_r, rng_azim, rng_side, rng_tz = jax.random.split(rng_target, 4)
+            base_xy = self._robot_base_xy
+            box_bearing = jp.arctan2(
+                box_xy[1] - base_xy[1], box_xy[0] - base_xy[0]
+            )
+            dphi = jax.random.uniform(
+                rng_azim,
+                (),
+                minval=float(self._config.target_azim_min),
+                maxval=float(self._config.target_azim_max),
+            )
+            side = jp.sign(
+                jax.random.uniform(rng_side, (), minval=-1.0, maxval=1.0)
+            )
+            phi = box_bearing + side * dphi
+            r = jax.random.uniform(
+                rng_r,
+                (),
+                minval=float(self._config.target_r_min),
+                maxval=float(self._config.target_r_max),
+            )
+            target_xy = base_xy + r * jp.array([jp.cos(phi), jp.sin(phi)])
+            # HEIGHT NOTE: Z is kept identical to the legacy "box" path — the
+            # fixed 0.18‥0.21 band above the keyframe box height, raised by the
+            # lifter height. Only the XY changes here. For a true reach SPHERE,
+            # replace this fixed Z-band with an elevation angle (target_z from r
+            # and an elevation draw) at this spot.
+            target_z = (
+                jax.random.uniform(rng_tz, (), minval=0.18, maxval=0.21)
+                + self._init_obj_pos[2]
+            )
+            target_pos = jp.array([target_xy[0], target_xy[1], target_z])
+            target_pos = target_pos.at[2].add(lifter_h)
 
         # -----------------------------
         # Randomize robot joint positions
