@@ -104,10 +104,19 @@ def default_config() -> config_dict.ConfigDict:
                 # Grasp-frame alignment: the jaw axis AND the approach axis each
                 # line up with a box face-normal (2 of 3 gripper axes -> the 3rd
                 # is forced). Shapes the final approach so a parallel-jaw hand can
-                # actually close on the (rotated + tilted) cube. Kept modest and
-                # proximity-gated so it can't out-pay grasp/lift or be farmed in
-                # free space (the reward-hacking lesson from earlier open bonuses).
-                gripper_align=2.0,
+                # actually close on the (rotated + tilted) cube. RAISED 2.0->4.0:
+                # DIAGHOLD300 (W&B) showed the pick chain unlocking at 1.5cm+2-pad
+                # contact with no alignment requirement, so misaligned grabs still
+                # earned the full sticky lift/box_target/hold chain (~51% of
+                # return) while this term was only ~11% and approach-only ->
+                # alignment got unlearned, worst on hard start poses. Now
+                # intentionally the dominant approach-shaping term: safe to raise
+                # because `grasped` (below) is now GATED on alignment
+                # (grasp_align_thresh) so this can no longer be shortcut by a
+                # lucky grab, and it stays proximity-gated so it can't be farmed
+                # in free space (the reward-hacking lesson from earlier open
+                # bonuses).
+                gripper_align=4.0,
                 # Do not collide the gripper with the floor.
                 no_floor_collision=0.25,
                 # Arm stays close to initial pose. Gated by (1-lifted) in
@@ -194,6 +203,17 @@ def default_config() -> config_dict.ConfigDict:
         # (tanh(counter/tau) ~=0.76 @10 steps, ~=0.96 @20 steps).
         hold_radius=0.03,
         hold_tau=10.0,
+        # Minimum grasp-frame alignment (jaw_score * app_score, each in [0,1])
+        # required for the `grasped` sticky latch to set -- blocks the "grab
+        # while misaligned" shortcut that let a lucky 2-pad contact on a
+        # rotated/tilted cube unlock the whole sticky lift/box_target/hold
+        # chain regardless of alignment (DIAGHOLD300 W&B finding). Soft:
+        # gripper_align (reward_config.scales, above) still pays a continuous
+        # gradient below this bar, so there is no dead zone -- only the LATCH
+        # is hard-gated. 0.3 ~= both jaw and approach axes within ~40 deg of
+        # a box face-normal. Lower toward 0.2 if `grasped` fails to unlock at
+        # all early in training.
+        grasp_align_thresh=0.3,
         # When True (default, legacy behavior): grasped/lifted are STICKY
         # (jp.maximum) -- once true for an episode, stay true even if the box
         # is dropped, so grasp/lift/box_target/hold_target keep paying after a
@@ -710,6 +730,52 @@ class UR3Pick(ur3_base.UR3Base):
         )
 
         # ==============================
+        # --- Grasp-frame alignment (2 of 3 axes) ---
+        # ==============================
+        # MOVED UP (was "Stage 1c", computed after the sticky latches below) so
+        # `alignment` is available to GATE the `grasped` latch itself, not just
+        # to shape a reward term after the fact -- DIAGHOLD300 (W&B) showed the
+        # latch unlocking at 1.5cm+2-pad contact with no alignment requirement,
+        # so a misaligned grab still earned the full sticky lift/box_target/hold
+        # chain. A parallel-jaw gripper can close on a cube only when its frame
+        # lines up with the cube's frame: the jaw axis (finger separation) and
+        # the approach axis (palm -> fingertips) must EACH line up with a box
+        # face-normal. If those two align, the third gripper axis is forced by
+        # orthonormality — so "2 of 3 axes aligned" == fully aligned. Both axes
+        # are built from world-frame site positions (no frame/column
+        # assumptions); max over the 3 box axes + abs makes the score invariant
+        # to the cube's 24-fold (octahedral) symmetry, so every equivalent grasp
+        # scores the same.
+        jaw_axis = right_finger_touch_pos - left_finger_touch_pos
+        jaw_axis = jaw_axis / (jp.linalg.norm(jaw_axis) + 1e-6)
+        app_axis = (
+            0.5 * (left_finger_touch_pos + right_finger_touch_pos) - gripper_pos
+        )
+        app_axis = app_axis / (jp.linalg.norm(app_axis) + 1e-6)
+        box_axes = data.xmat[self._obj_body].reshape(3, 3)  # columns = box axes
+        a_jaw = jp.max(jp.abs(jaw_axis @ box_axes))
+        a_app = jp.max(jp.abs(app_axis @ box_axes))
+        # Soft alignment cone (60 deg, cos 60 = 0.5), linear ramp to 1 at perfect
+        # alignment. WIDENED from the old hard 30-deg cone (0.866): with a 3-axis
+        # max, |axis . nearest box axis| is >= 1/sqrt(3) ~ 0.577, so a 0.5 bound
+        # keeps the score STRICTLY POSITIVE everywhere -> there is always a
+        # gradient pulling the hand toward alignment, no dead zone. The old 0.866
+        # cone gave zero reward AND zero gradient until BOTH axes were already
+        # inside 30 deg at once (product of two clipped ramps), a chicken-and-egg
+        # trap: the policy had to luck into near-perfect alignment before the
+        # reward ever turned on. Still a PRODUCT so both axes must improve ("2 of
+        # 3 axes aligned"), still proximity-gated below so it can't be farmed.
+        _cos_bound = 0.5
+        jaw_score = jp.clip((a_jaw - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0)
+        app_score = jp.clip((a_app - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0)
+        alignment = jaw_score * app_score
+        # Weighted by approach proximity so it shapes the final approach and
+        # can't be farmed in free space. Gate WIDENED tanh(5d)->tanh(3d) so this
+        # pays earlier in the approach, not only the final ~cm (DIAGHOLD300:
+        # gripper_align was ~11% of return and effectively approach-only).
+        gripper_align_Reward = alignment * (1 - jp.tanh(3 * gripper_box_dist))
+
+        # ==============================
         # --- Sticky stage latches (monotone via jp.maximum) ---
         # ==============================
         # reached_box: gripper has been within 1.5 cm of the box at some point.
@@ -729,7 +795,19 @@ class UR3Pick(ur3_base.UR3Base):
             for sid in self._finger_box_found_sensor
         ]
         both_pads_touch = sum(finger_box_contact) >= 2
-        grasp_now = (info["reached_box"] > 0.5) & both_pads_touch
+        # GATED on alignment (DIAGHOLD300 fix): without this, a lucky 2-pad
+        # contact on a rotated/tilted cube -- with the gripper frame nowhere
+        # near the box's -- still set the sticky `grasped` latch and unlocked
+        # the whole downstream lift/box_target/hold chain. Now the box must
+        # actually be grasped ALONG A FACE (grasp_align_thresh, soft: see
+        # default_config) before the latch can set. `gripper_align_Reward`
+        # above still pays a continuous gradient below this bar, so there is
+        # no dead zone -- only the sticky latch is hard-gated.
+        grasp_now = (
+            (info["reached_box"] > 0.5)
+            & both_pads_touch
+            & (alignment > self._config.grasp_align_thresh)
+        )
         info["grasped"] = jp.maximum(info["grasped"], grasp_now.astype(float))
         # lifted: a grasped box has cleared its per-episode resting height by
         # lift_eps. Anti-push latch — box_target only pays once this is set.
@@ -779,7 +857,10 @@ class UR3Pick(ur3_base.UR3Base):
         # Stage 2 — grasp: close the fingers on the box once reached. No
         # near-target fade (unlike picknplace) — this task holds the box AT the
         # air target rather than releasing it, so the grasp must stay rewarded.
-        grasp_Reward = finger_closed * reached
+        # Shaped by `alignment` (continuous, in addition to the hard gate on the
+        # `grasped` latch above) so closing the fingers pays more when the
+        # gripper frame actually lines up with the box -- not just when reached.
+        grasp_Reward = finger_closed * reached * alignment
 
         # Stage 1b — approach OPEN: reward open fingers until the box is reached,
         # so the arm arrives ready to grasp instead of bumping the box with a
@@ -819,42 +900,6 @@ class UR3Pick(ur3_base.UR3Base):
         hold_target_Reward = in_hold.astype(float) * jp.tanh(
             info["hold_counter"] / self._config.hold_tau
         )
-
-        # Stage 1c — grasp-frame alignment (2 of 3 axes). A parallel-jaw gripper
-        # can close on a cube only when its frame lines up with the cube's frame:
-        # the jaw axis (finger separation) and the approach axis (palm ->
-        # fingertips) must EACH line up with a box face-normal. If those two
-        # align, the third gripper axis is forced by orthonormality — so "2 of 3
-        # axes aligned" == fully aligned. Both axes are built from world-frame
-        # site positions (no frame/column assumptions); max over the 3 box axes +
-        # abs makes the score invariant to the cube's 24-fold (octahedral)
-        # symmetry, so every equivalent grasp scores the same.
-        jaw_axis = right_finger_touch_pos - left_finger_touch_pos
-        jaw_axis = jaw_axis / (jp.linalg.norm(jaw_axis) + 1e-6)
-        app_axis = (
-            0.5 * (left_finger_touch_pos + right_finger_touch_pos) - gripper_pos
-        )
-        app_axis = app_axis / (jp.linalg.norm(app_axis) + 1e-6)
-        box_axes = data.xmat[self._obj_body].reshape(3, 3)  # columns = box axes
-        a_jaw = jp.max(jp.abs(jaw_axis @ box_axes))
-        a_app = jp.max(jp.abs(app_axis @ box_axes))
-        # Soft alignment cone (60 deg, cos 60 = 0.5), linear ramp to 1 at perfect
-        # alignment. WIDENED from the old hard 30-deg cone (0.866): with a 3-axis
-        # max, |axis . nearest box axis| is >= 1/sqrt(3) ~ 0.577, so a 0.5 bound
-        # keeps the score STRICTLY POSITIVE everywhere -> there is always a
-        # gradient pulling the hand toward alignment, no dead zone. The old 0.866
-        # cone gave zero reward AND zero gradient until BOTH axes were already
-        # inside 30 deg at once (product of two clipped ramps), a chicken-and-egg
-        # trap: the policy had to luck into near-perfect alignment before the
-        # reward ever turned on. Still a PRODUCT so both axes must improve ("2 of
-        # 3 axes aligned"), still proximity-gated below so it can't be farmed.
-        _cos_bound = 0.5
-        jaw_score = jp.clip((a_jaw - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0)
-        app_score = jp.clip((a_app - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0)
-        alignment = jaw_score * app_score
-        # Weighted by approach proximity so it shapes the final approach and can't
-        # be farmed in free space (kept below grasp=3.0: reward-hacking lesson).
-        gripper_align_Reward = alignment * (1 - jp.tanh(5 * gripper_box_dist))
 
         # Penalty for deviating too far from the initial arm configuration.
         # Gated by (1 - lifted): this term existed to keep the arm from
