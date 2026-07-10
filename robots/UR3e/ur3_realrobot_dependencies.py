@@ -874,6 +874,7 @@ class UR3RealRobotPick:
         reach_tol: float = None,
         dwell_time_s: float = 0.0,
         mocap_stale_s: float = None,
+        box_z_offset: float = 0.0,
         dtype=np.float32,
         debug_print: bool = True,
     ) -> Tuple[pd.DataFrame, dict]:
@@ -882,6 +883,14 @@ class UR3RealRobotPick:
         Args:
           drop_target: (3,) world-frame drop location (meters).
           mocap_reader: VRPN/Nokov rigid-body reader; get_rigid_body_xyz() -> box.
+          box_z_offset: (m) added to the mocap-derived box Z (base frame) every
+                      tick, BEFORE it feeds the obs/reward-replay/render -- a
+                      diagnostic knob to nudge the policy's belief of the box's
+                      height without moving the physical cube. E.g. +0.015 makes
+                      the policy think the box sits 15 mm higher than the mocap
+                      says, so you can visually check whether it would still
+                      attempt/complete a grasp at that offset. 0.0 = disabled
+                      (uses the raw mocap height, the old behavior).
           gripper_action_scale: per-step scale for the gripper delta; MUST match
                       the env's gripper_action_scale (sim decouples arm vs gripper
                       scaling). None => coupled to action_scale (pre-decoupling
@@ -1008,6 +1017,11 @@ class UR3RealRobotPick:
                     box_pos = (last_box_pos if last_box_pos is not None
                                else drop_target.copy())
                 box_pos = np.asarray(box_pos, dtype=float)
+                if box_z_offset != 0.0:
+                    # Applied here (once), then cached into last_box_pos below,
+                    # so a stale/missed mocap frame reuses the ALREADY-offset
+                    # value on the next tick instead of double-adding it.
+                    box_pos = box_pos + np.array([0.0, 0.0, box_z_offset])
                 last_box_pos = box_pos.copy()
 
                 # Box orientation (w, x, y, z), same mocap->base mapping as the

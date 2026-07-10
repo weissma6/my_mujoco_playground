@@ -60,6 +60,14 @@ UR_CAP_PORT = 50002
 # Drop target (where to bring the box). UR3-reachable workspace.
 DROP_TARGET = [0.3, -0.20, 0.30]
 
+# Diagnostic offset (m) added to the mocap-derived box Z every tick, BEFORE
+# it feeds the obs/gripper-align reward-replay/render -- does NOT move the
+# physical box. Use this to nudge the policy's belief of the box height up
+# (e.g. +0.015 = 15 mm) to visually check whether it would still
+# attempt/complete a grasp at that offset, without touching the setup.
+# 0.0 = disabled (raw mocap height, matches training exactly).
+BOX_Z_OFFSET = 0.015
+
 # Start pose — UR3 "task_home" keyframe arm angles from mjx_single_cube_position_ur3.xml
 # (gripper is opened separately below, since servoJ/moveJ only covers the 6 arm joints)
 Q_START = [0, -2.0, 1.6, -1.6, -1.5, 0]
@@ -127,6 +135,8 @@ MODEL_PATH = os.path.join(
 # WANDB_PROJECT below adjusted. The selected policy is loaded from
 # evaluation/downloaded_policies/{run_id}/ if present, else downloaded from W&B.
 POLICY_REGISTRY = {
+    "more_rot_weight_e919791fe2e332b8fe2a1ad345b2528570730727": "DIAGHOLD300_posemid_hard_offON_AS0.025_LR6e-4_2048env_25M_s1_20260710_084027_2201",
+    "AGATE250_posemid_hard_offOFF_4035f12ccc5925b7fac8af367a8096deff107707": "AGATE250_posemid_hard_offOFF_AS0.025_LR6e-4_2048env_25M_s1_20260710_102830_2201",
     "EP200_AS0.025_78fd8855a6eeb72d8ef1a0395cd6e4860db1439d": "EP200_AS0.025_d0.99_20260703_132735_2201",
     "Simplified_9cd87e0bef819dcca2d86ea25451eaa98bf78eb5": "Simplified_lightRandom_lr1e-3_20260701_173930_3867",
     "NoVelocity_mid_ea1ffd26f79c25db5c62af8e68022f6677b5aff6": "cur_mid_base_20260701_164529_3867",
@@ -137,7 +147,7 @@ POLICY_REGISTRY = {
     "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
     "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
 }
-POLICY_NAME = "EP200_AS0.025_78fd8855a6eeb72d8ef1a0395cd6e4860db1439d"  # pick policy to run
+POLICY_NAME = "more_rot_weight_e919791fe2e332b8fe2a1ad345b2528570730727"  # pick policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
@@ -237,8 +247,8 @@ print(f"\nDrop target : {target.tolist()}")
 print(f"Starting pick loop at {CONTROL_HZ} Hz ...")
 
 # ── Move to start ──────────────────────────────────────────────────────
-print(f"\nMoving to start pose {Q_START}")
-robot.send_movej(Q_START, a=1.0, v=0.5, asynchronous=False)  # blocking moveJ
+# print(f"\nMoving to start pose {Q_START}")
+# robot.send_movej(Q_START, a=1.0, v=0.5, asynchronous=False)  # blocking moveJ
 
 # ── Download policy from W&B if missing (cache-aware, run-id keyed) ─────
 download_policy(
@@ -274,6 +284,7 @@ df, stats = robot.run_policy_loop(
     reach_tol=REACH_TOL,
     dwell_time_s=DWELL_TIME_S,
     mocap_stale_s=MOCAP_STALE_S,
+    box_z_offset=BOX_Z_OFFSET,
 )
 
 # ── Results ────────────────────────────────────────────────────────────
@@ -354,6 +365,7 @@ robot.save_run_metadata(
     META_OUT,
     robot_ip=ROBOT_IP,
     drop_target=DROP_TARGET,
+    box_z_offset=BOX_Z_OFFSET,
     q_start=Q_START,
     mocap_server_ip=MOCAP_SERVER_IP,
     mocap_rigid_body_name=MOCAP_RIGID_BODY_NAME,
