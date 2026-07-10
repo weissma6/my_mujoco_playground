@@ -1150,8 +1150,16 @@ class UR3RealRobotPick:
                 "box_qposadr": box_qposadr}
 
     def mujoco_sync_and_render(self, mj: dict, q, gripper_ctrl=None, box_pos=None,
-                               drop_target=None) -> np.ndarray:
-        """Sync robot+box+target state into MuJoCo, run mj_forward, render."""
+                               drop_target=None, box_quat=None) -> np.ndarray:
+        """Sync robot+box+target state into MuJoCo, run mj_forward, render.
+
+        box_quat (w, x, y, z, base frame) sets the box freejoint ORIENTATION.
+        Without it the rendered cube stays axis-aligned even when the real
+        cube is rotated (the mocap streams the cube's orientation, mapped to
+        the base frame and logged as box_qw/qx/qy/qz) -- so the replay looked
+        "straight" while the physical 3x3x4 cm cube was yawed. Left None ->
+        identity (old behavior, for logs without the quaternion columns).
+        """
         data = mj["data"]
         data.qpos[:6] = np.asarray(q, dtype=float)
         if gripper_ctrl is not None:
@@ -1161,6 +1169,14 @@ class UR3RealRobotPick:
         if box_pos is not None:
             adr = mj["box_qposadr"]
             data.qpos[adr:adr + 3] = np.asarray(box_pos, dtype=float)
+            # Box orientation: default to identity so a missing quaternion
+            # reproduces the old axis-aligned render exactly.
+            q_box = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+            if box_quat is not None:
+                q_box = np.asarray(box_quat, dtype=float)
+                nrm = np.linalg.norm(q_box)
+                q_box = q_box / nrm if nrm > 1e-9 else np.array([1.0, 0.0, 0.0, 0.0])
+            data.qpos[adr + 3:adr + 7] = q_box
         if drop_target is not None and data.mocap_pos.shape[0] > 0:
             data.mocap_pos[0, :] = np.asarray(drop_target, dtype=float)
 
@@ -1173,6 +1189,8 @@ class UR3RealRobotPick:
         """Render frames from logged DataFrame at the desired video fps."""
         q_cols = [f"q{i}" for i in range(6)]
         has_box = all(c in df.columns for c in ["box_x", "box_y", "box_z"])
+        has_quat = all(c in df.columns
+                       for c in ["box_qw", "box_qx", "box_qy", "box_qz"])
         has_tgt = all(c in df.columns for c in ["target_x", "target_y", "target_z"])
         has_grip = "gripper_ctrl" in df.columns
 
@@ -1192,9 +1210,12 @@ class UR3RealRobotPick:
             grip = float(row["gripper_ctrl"]) if has_grip else None
             box = (row[["box_x", "box_y", "box_z"]].to_numpy(dtype=float)
                    if has_box else None)
+            box_q = (row[["box_qw", "box_qx", "box_qy", "box_qz"]].to_numpy(dtype=float)
+                     if has_quat else None)
             tgt = (row[["target_x", "target_y", "target_z"]].to_numpy(dtype=float)
                    if has_tgt else None)
-            frames.append(self.mujoco_sync_and_render(mj, q, grip, box, tgt))
+            frames.append(self.mujoco_sync_and_render(mj, q, grip, box, tgt,
+                                                       box_quat=box_q))
 
         print(f"  Rendered {len(frames)} frames from {len(df)} logged steps")
         return frames, actual_video_fps
