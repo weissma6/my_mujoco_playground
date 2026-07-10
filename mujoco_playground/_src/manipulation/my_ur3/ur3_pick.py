@@ -62,7 +62,13 @@ def default_config() -> config_dict.ConfigDict:
     return config_dict.create(
         ctrl_dt=0.02,
         sim_dt=0.005,
-        episode_length=200,
+        # 300 steps = 6s (was 200 = 4s). 4s left no time to transport a lifted
+        # box across a shifted target (box_y_center_offset/target_y_center_offset)
+        # or to recover from a drop -- FIXVERIFY hard-pose episodes ended ~190
+        # steps having never held the box at the target. run_experiment.py reads
+        # this from the env default config and forwards it to ppo.train, so
+        # env/EpisodeWrapper/eval stay consistent automatically.
+        episode_length=300,
         action_repeat=1,
         # Arm per-step ctrl delta = action * action_scale (swept per run). The
         # gripper is DECOUPLED via gripper_action_scale below so it can be kept
@@ -122,6 +128,18 @@ def default_config() -> config_dict.ConfigDict:
                 # penalty (same sign convention `franka_emika_panda_robotiq`
                 # and `leap_hand` use for their action_rate terms).
                 action_rate=-0.01,
+                # Sustained-proximity bonus: pay for KEEPING a lifted box inside
+                # the target sphere, ramping with dwell time so the policy
+                # settles and holds instead of tapping the point and drifting
+                # off. Resets to 0 the instant the box leaves the radius (a drop
+                # kills it), so it doubles as a drop penalty. Gated by `lifted`
+                # and tanh-capped so it cannot out-pay box_target(8.0)/grasp(3.0)
+                # -- the reward-hacking guard: it must never be farmable without
+                # an actual lifted box held at the goal. Added because
+                # box_target only rewards distance-to-point, nothing rewarded
+                # HOLDING it there (FIXVERIFY: box visibly enters the 4cm target
+                # sphere but drifts/drops with no recovery pressure).
+                hold_target=3.0,
             )
         ),
         impl="jax",
@@ -167,6 +185,28 @@ def default_config() -> config_dict.ConfigDict:
         # "Off the resting height" margin (m) a grasped box must clear to set the
         # sticky "lifted" latch that unlocks box_target (anti-push lever).
         lift_eps=0.03,
+        # hold_target (reward_config.scales, above) params. hold_radius: box-
+        # center distance (m) to the target counted as "in hold" -- inside the
+        # 4cm-radius visual mocap_target sphere (xmls/..._ur3.xml), which is
+        # decorative for physics but is what "at the target" looks like in the
+        # rollout videos, unlike success_tol's much tighter 5mm point gate.
+        # hold_tau: dwell-time constant in STEPS for the tanh ramp
+        # (tanh(counter/tau) ~=0.76 @10 steps, ~=0.96 @20 steps).
+        hold_radius=0.03,
+        hold_tau=10.0,
+        # When True (default, legacy behavior): grasped/lifted are STICKY
+        # (jp.maximum) -- once true for an episode, stay true even if the box
+        # is dropped, so grasp/lift/box_target/hold_target keep paying after a
+        # drop (masks drops in metrics: e.g. lifted=106/200 steps could mean
+        # "held the whole time" or "touched height once, dropped, sat on the
+        # floor for the rest"). When False, grasp/lift/box_target/hold_target
+        # instead gate on LIVE contact/height each step, so a drop stops all
+        # downstream reward until the box is actually re-grasped. `reached`
+        # stays sticky either way (legit "found the box once" signal, not a
+        # holding signal). Default True to keep the main sweep unconfounded;
+        # flip per-run to test re-grasp pressure. CAUTION if enabling: watch
+        # for stage-farming, the reward-hacking pattern from d24be6b/8ccfc67.
+        sticky_latches=True,
     )
 
 
@@ -457,6 +497,16 @@ class UR3Pick(ur3_base.UR3Base):
             "out_of_bounds": jp.array(0.0, dtype=float),
             "success": jp.array(0.0, dtype=float),
             "box_target_dist": jp.array(0.0, dtype=float),
+            # Non-summed diagnostics (see the "at_terminal" gating in step()):
+            # box_target_dist above is a per-step value that brax's EvalWrapper
+            # SUMS over the whole episode when logging eval/episode_*, so it
+            # reads as a summed proxy dominated by the (long, far) approach
+            # phase -- NOT the real final gap. These two are gated to be
+            # nonzero only on the episode's one terminal step, so their W&B
+            # sum equals that single value and the cross-env mean is the true
+            # mean, in meters.
+            "box_target_dist_final": jp.array(0.0, dtype=float),
+            "box_target_dist_min": jp.array(0.0, dtype=float),
             "reached_box": jp.array(0.0, dtype=float),
             "grasped": jp.array(0.0, dtype=float),
             "lifted": jp.array(0.0, dtype=float),
@@ -481,6 +531,17 @@ class UR3Pick(ur3_base.UR3Base):
             # so the action_rate-dependent reward stays a function of the
             # observed state (Markov).
             "last_action": jp.zeros(self._nu, dtype=float),
+            # Running minimum box_target_dist seen this episode (closest
+            # approach), updated in _get_reward. Large init so the very first
+            # step's real distance always wins the jp.minimum.
+            "dist_min": jp.array(1e3, dtype=float),
+            # Consecutive steps the (lifted) box has stayed within hold_radius
+            # of the target; drives the hold_target dwell-time bonus. Reset to
+            # 0 the instant the box leaves the radius or drops. NOT part of the
+            # observation (matches the existing success_counter precedent) --
+            # if hold_target proves hard to learn, adding it to obs is the
+            # fallback, not done preemptively.
+            "hold_counter": jp.array(0, dtype=jp.int32),
         }
 
         obs = self._get_obs(data, info)
@@ -528,12 +589,35 @@ class UR3Pick(ur3_base.UR3Base):
         )
         done = (success | out_of_bounds | invalid_state).astype(jp.float32)
 
+        # Non-summed box_target_dist_final/_min diagnostics (see the metrics
+        # dict comment in reset()). brax's EvalWrapper.step SUMS every key in
+        # State.metrics over the episode as `episode_metrics[k] += metrics[k]`
+        # (brax/envs/wrappers/training.py EpisodeWrapper, then EvalWrapper
+        # mirrors it), so a plain per-step value reads as a summed proxy
+        # dominated by the (long) approach phase, not the real final gap --
+        # this was silently misleading in the FIXVERIFY read. Fix: emit these
+        # ONLY on the episode's single terminal step (zero elsewhere), so the
+        # wrapper's sum equals that one value and the cross-env mean W&B logs
+        # is the true mean, in meters. `done` above already covers
+        # success|out_of_bounds|invalid_state; `at_horizon` covers the
+        # EpisodeWrapper truncation the base env can't otherwise see (relies
+        # on EpisodeWrapper setting exactly one done per episode, which it
+        # does: `done = steps >= episode_length` OR the env's own done).
+        at_horizon = info["step"] >= jp.array(
+            int(self._config.episode_length), dtype=info["step"].dtype
+        )
+        is_terminal = (done > 0.5) | at_horizon
+        box_target_dist_final = jp.where(is_terminal, box_target_dist, 0.0)
+        box_target_dist_min = jp.where(is_terminal, info["dist_min"], 0.0)
+
         metrics = state.metrics
         metrics.update(
             **raw_rewards,
             out_of_bounds=out_of_bounds.astype(jp.float32),
             success=success.astype(jp.float32),
             box_target_dist=box_target_dist,
+            box_target_dist_final=box_target_dist_final,
+            box_target_dist_min=box_target_dist_min,
             reached_box=info["reached_box"],
             grasped=info["grasped"],
             lifted=info["lifted"],
@@ -612,6 +696,10 @@ class UR3Pick(ur3_base.UR3Base):
         box_target_dist = jp.linalg.norm(
             target_pos - box_pos
         )
+        # Closest approach seen this episode (for the non-summed
+        # box_target_dist_min diagnostic emitted in step()). Includes the
+        # current step before any terminal emit.
+        info["dist_min"] = jp.minimum(info["dist_min"], box_target_dist)
         # Euclidean distance between gripper and box - scalar JAX float64
         gripper_box_dist = jp.linalg.norm(
             box_pos - gripper_pos
@@ -649,12 +737,28 @@ class UR3Pick(ur3_base.UR3Base):
         lift_now = box_off_rest & (info["grasped"] > 0.5)
         info["lifted"] = jp.maximum(info["lifted"], lift_now.astype(float))
 
+        # LIVE (non-sticky) counterparts: grasped_live/lifted_live reflect
+        # CURRENT contact/height only, unlike info["grasped"]/info["lifted"]
+        # above which latch true for the rest of the episode once achieved
+        # once (jp.maximum). Used below when sticky_latches=False so a dropped
+        # box stops earning grasp/lift/box_target/hold_target until it is
+        # actually re-grasped -- with sticky_latches=True (default) these are
+        # computed but unused, so behavior is unchanged from before this
+        # option existed.
+        grasped_live = grasp_now.astype(float)
+        lifted_live = (box_off_rest & (grasped_live > 0.5)).astype(float)
+        _use_sticky = bool(self._config.sticky_latches)  # Python bool at trace time
+        grasped_eff = info["grasped"] if _use_sticky else grasped_live
+        lifted_eff = info["lifted"] if _use_sticky else lifted_live
+
         # ==============================
         # --- Reward terms (staged by the latches above) ---
         # ==============================
+        # `reached` stays sticky unconditionally (legit "found the box once"
+        # signal, not a holding signal -- see sticky_latches docstring).
         reached = info["reached_box"]
-        grasped = info["grasped"]
-        lifted = info["lifted"]
+        grasped = grasped_eff
+        lifted = lifted_eff
 
         # Gripper open/closed in [0, 1] from the finger-tip separation.
         finger_open = jp.tanh(finger_touch_dist / 0.05)
@@ -698,6 +802,23 @@ class UR3Pick(ur3_base.UR3Base):
             0.5 * (1 - jp.tanh(5 * box_target_dist))
             + 0.5 * (1 - jp.tanh(30 * box_target_dist))
         ) * lifted
+
+        # Stage 5 — hold: pay for KEEPING a lifted box inside hold_radius of
+        # the target (settle-and-stay), not just tapping the point once.
+        # in_hold requires the CURRENT lifted state (grasped_eff/lifted_eff,
+        # respects sticky_latches) so a drop -- even under sticky_latches
+        # where box_target keeps paying via the sticky "lifted" -- still zeros
+        # this term and its dwell counter immediately, giving a drop penalty
+        # regardless of the sticky_latches setting. Dwell counter ramps a
+        # tanh bonus so held-longer > tapped-once; resets to 0 the instant the
+        # box leaves the radius.
+        in_hold = (lifted > 0.5) & (box_target_dist < self._config.hold_radius)
+        info["hold_counter"] = jp.where(
+            in_hold, info["hold_counter"] + 1, jp.array(0, dtype=jp.int32)
+        )
+        hold_target_Reward = in_hold.astype(float) * jp.tanh(
+            info["hold_counter"] / self._config.hold_tau
+        )
 
         # Stage 1c — grasp-frame alignment (2 of 3 axes). A parallel-jaw gripper
         # can close on a cube only when its frame lines up with the cube's frame:
@@ -775,6 +896,7 @@ class UR3Pick(ur3_base.UR3Base):
             "grasp": grasp_Reward,
             "lift": lift_Reward,
             "box_target": box_target_Reward,
+            "hold_target": hold_target_Reward,
             "gripper_align": gripper_align_Reward,
             "no_floor_collision": no_floor_collision_Reward,
             "robot_target_qpos": robot_target_qpos_penalty,
