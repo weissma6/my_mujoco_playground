@@ -62,13 +62,22 @@ def default_config() -> config_dict.ConfigDict:
     return config_dict.create(
         ctrl_dt=0.02,
         sim_dt=0.005,
-        # 300 steps = 6s (was 200 = 4s). 4s left no time to transport a lifted
-        # box across a shifted target (box_y_center_offset/target_y_center_offset)
-        # or to recover from a drop -- FIXVERIFY hard-pose episodes ended ~190
-        # steps having never held the box at the target. run_experiment.py reads
-        # this from the env default config and forwards it to ppo.train, so
-        # env/EpisodeWrapper/eval stay consistent automatically.
-        episode_length=300,
+        # 250 steps = 5s (was 300 = 6s, before that 200 = 4s). 4s left no time
+        # to transport a lifted box across a shifted target
+        # (box_y_center_offset/target_y_center_offset) or to recover from a
+        # drop -- FIXVERIFY hard-pose episodes ended ~190 steps having never
+        # held the box at the target, hence the bump to 300. But 300 walked
+        # back: gripper_align is approach-only (a fixed number of steps per
+        # episode) while lift/box_target/hold pay every step, so a longer
+        # episode dilutes the align share of the return and inflates the
+        # return magnitude that reward_scaling was tuned for (see
+        # manipulation_params.py). 250 keeps most of the transport/recovery
+        # headroom 300 added while cutting both costs. num_timesteps/num_evals
+        # are unaffected -- episode horizon doesn't change total env steps or
+        # eval cadence. run_experiment.py reads this from the env default
+        # config and forwards it to ppo.train, so env/EpisodeWrapper/eval stay
+        # consistent automatically.
+        episode_length=250,
         action_repeat=1,
         # Arm per-step ctrl delta = action * action_scale (swept per run). The
         # gripper is DECOUPLED via gripper_action_scale below so it can be kept
