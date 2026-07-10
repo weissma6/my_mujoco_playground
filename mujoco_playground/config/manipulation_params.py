@@ -160,7 +160,17 @@ def brax_ppo_config(
         # targets at raw episode-return scale (~1900). Clip grads + shrink
         # value targets so higher LR can be explored without diverging.
         rl_config.max_grad_norm = 1.0
-        rl_config.reward_scaling = 0.1
+        # 0.1 was tuned for the ep200 ~1900 return scale above. DIAGHOLD300
+        # (ep300) pushed returns to ~2900-3500 -> v_loss spiked to ~1e5 @8.5M
+        # and stayed elevated (6-10) for the rest of training; posehard cells
+        # showed ~2x the late-stage reward variance of posemid. 0.1->0.05
+        # brings the ep250 (see ur3_pick.py episode_length) value target back
+        # to ~145-175, in the range the value net tracked cleanly at ep200.
+        # Value net is already large (256,256,256,256,256) so capacity is not
+        # the issue and is left unchanged. LR decay intentionally NOT added --
+        # brax uses constant LR here by design (stability came from 64
+        # minibatches, not decay); revisit only if v_loss still spikes.
+        rl_config.reward_scaling = 0.05
         rl_config.network_factory.policy_hidden_layer_sizes = (32, 32, 32, 32)
         if impl == "warp":
             rl_config.num_timesteps *= 4
