@@ -134,6 +134,7 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "num_eval_envs",
         "seed",
         "domain_randomization",
+        "sticky_latches",
     }
     overrides: Dict[str, Any] = {}
     for k, v in cfg.items():
@@ -933,6 +934,8 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_overrides["action_scale"] = float(cfg["action_scale"])
         if "success_tol" in cfg:
             env_overrides["success_tol"] = float(cfg["success_tol"])
+        if "sticky_latches" in cfg:
+            env_overrides["sticky_latches"] = bool(cfg["sticky_latches"])
 
         env = registry.load(env_name, config_overrides=env_overrides)
         env_cfg = registry.get_default_config(env_name)
