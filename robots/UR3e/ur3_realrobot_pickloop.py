@@ -57,8 +57,15 @@ ROBOT_IP = "192.168.1.4"          # real UR3e (PolyScope X); URSim = "127.0.0.1"
 USE_EXT_URCAP = True
 UR_CAP_PORT = 50002
 
-# Drop target (where to bring the box). UR3-reachable workspace.
-DROP_TARGET = [0.3, -0.20, 0.30]
+# Lift target — the SAME fixed air-point UR3Pick trains on, NOT a place location.
+# Training anchors the target to the fixed keyframe box pos self._init_obj_pos
+# (task_home box = (0.4, 0, 0.02)) plus uniform([0.02,-0.03,0.18],[0.06,0.03,0.21]);
+# the midpoint => (0.44, 0.0, 0.215) in the base/sim frame. It is a STATIC point
+# (does not track the live box) and the policy lifts the box straight up into it.
+# No lifter on the real robot, so no lifter-height Z add. The old far-sideways
+# "place" target [0.3,-0.20,0.30] was out-of-distribution and made the policy
+# release mid-grasp (see diagnosis) — drop/place is disabled below; lift-and-hold.
+DROP_TARGET = [0.44, 0.0, 0.215]
 
 # Diagnostic offset (m) added to the mocap-derived box Z every tick, BEFORE
 # it feeds the obs/gripper-align reward-replay/render -- does NOT move the
@@ -66,7 +73,7 @@ DROP_TARGET = [0.3, -0.20, 0.30]
 # (e.g. +0.015 = 15 mm) to visually check whether it would still
 # attempt/complete a grasp at that offset, without touching the setup.
 # 0.0 = disabled (raw mocap height, matches training exactly).
-BOX_Z_OFFSET = 0.015
+BOX_Z_OFFSET = 0.0
 
 # Start pose — UR3 "task_home" keyframe arm angles from mjx_single_cube_position_ur3.xml
 # (gripper is opened separately below, since servoJ/moveJ only covers the 6 arm joints)
@@ -94,7 +101,7 @@ GRIPPER_FORCE_PCT = 80           # from 50 to 80 = gentle physical gripper motio
 # Convergence
 REACH_TOL = 0.02                  # 2 cm (box-to-target)
 DWELL_TIME_S = 2.0
-TIMEOUT_S = 30.0
+TIMEOUT_S = 15.0
 
 # Control (must match training: 50 Hz -> ctrl_dt=0.02).
 CONTROL_HZ = 50.0
@@ -107,7 +114,7 @@ ACTION_SCALE = 0.025
 # 0.025 here would integrate the gripper ~2.5x too fast (out-of-distribution ->
 # hand snaps closed on approach). load_policy_fn prints the training value as
 # "Env gripper_action_scale" — this must equal it.
-GRIPPER_ACTION_SCALE = 0.04
+GRIPPER_ACTION_SCALE = 0.01
 LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
 SERVOJ_A = 0.3                    # max joint accel [rad/s^2]
@@ -117,7 +124,7 @@ USE_FK_TCP = True                 # compute tcp_pos via MuJoCo FK (matches sim s
 # Gripper smoothing disabled: the raw integrator target goes straight to the
 # hardware/obs. Physical smoothing now comes from the low GRIPPER_SPEED_PCT above,
 # not a software low-pass (which double-lagged the real Hand-E's own dynamics).
-GRIPPER_TAU = 0.0                # s; 0 = no finger-plant low-pass
+GRIPPER_TAU = 0.1                # s; 0 = no finger-plant low-pass
 GRIPPER_MAX_RATE = float("inf")  # m/s; inf = no slew cap
 
 # Paths (relative to this script)
@@ -135,6 +142,8 @@ MODEL_PATH = os.path.join(
 # WANDB_PROJECT below adjusted. The selected policy is loaded from
 # evaluation/downloaded_policies/{run_id}/ if present, else downloaded from W&B.
 POLICY_REGISTRY = {
+    "Align_logic_easy_052d79fb30eeff144a0e3b1e3ef8cf495b070f9b": "Align_logic_easy_20260710_132446_2201",
+    "Align_logic_mid_052d79fb30eeff144a0e3b1e3ef8cf495b070f9b": "Align_logic_mid_20260710_132449_2201",
     "more_rot_weight_e919791fe2e332b8fe2a1ad345b2528570730727": "DIAGHOLD300_posemid_hard_offON_AS0.025_LR6e-4_2048env_25M_s1_20260710_084027_2201",
     "AGATE250_posemid_hard_offOFF_4035f12ccc5925b7fac8af367a8096deff107707": "AGATE250_posemid_hard_offOFF_AS0.025_LR6e-4_2048env_25M_s1_20260710_102830_2201",
     "EP200_AS0.025_78fd8855a6eeb72d8ef1a0395cd6e4860db1439d": "EP200_AS0.025_d0.99_20260703_132735_2201",
@@ -147,7 +156,7 @@ POLICY_REGISTRY = {
     "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
     "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
 }
-POLICY_NAME = "AGATE250_posemid_hard_offOFF_4035f12ccc5925b7fac8af367a8096deff107707"  # pick policy to run
+POLICY_NAME =  "Align_logic_easy_052d79fb30eeff144a0e3b1e3ef8cf495b070f9b"  # pick policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
@@ -295,20 +304,16 @@ print(f"Final box->target: {final_dist * 1000:.1f} mm — "
       f"{'REACHED' if final_dist < REACH_TOL else 'NOT REACHED'}")
 print(f"Steps: {len(df)}, wall time: {stats.get('total_wall_time_s', 0.0):.2f}s")
 
-# ── Success + release ──────────────────────────────────────────────────
+# ── Success (lift-and-hold; drop/return DISABLED for now) ──────────────
 # Only treat as success if the loop actually converged — a mocap-loss stop with
-# the box happening to be near target is NOT a real reach.
+# the box happening to be near target is NOT a real reach. The drop (open gripper)
+# and return-to-home are intentionally removed for now: the task is just "lift the
+# box to the training target and hold it there", so keep the fingers closed and
+# leave the arm where it converged.
 reached = stop_reason != "mocap_lost" and final_dist < REACH_TOL
 if reached:
-    print("\nSUCCESS")
+    print("\nSUCCESS — box lifted to the training target; holding (no drop).")
     time.sleep(3.0)
-    if gripper is not None:
-        gripper.open_gripper()   # direction-independent URCapX open
-    else:
-        gripper_fn(0.0)          # dry-run no-op / norm=0 = open
-    print("Gripper opened.")
-    print(f"Returning to task_home {Q_START}")
-    robot.send_movej(Q_START, a=1.0, v=0.5, asynchronous=False)  # blocking moveJ
 
 robot.print_stats(stats, keys=[
     "stopped_reason",
