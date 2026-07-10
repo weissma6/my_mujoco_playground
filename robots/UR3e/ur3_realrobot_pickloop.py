@@ -35,9 +35,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "../.."))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "../../evaluation/downloaded_policies"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "../../evaluation"))
 from motion_capture.mymocap.vrpn_dependencies import VRPNRigidBodyReader
 from robots.hande.HandE_dependency import HandEGripper
 from policy_downloader import default_policy_dir, download_policy
+from ur3_reward_replay import replay_dataframe, save_reward_terms_plot
 
 # ===========================================================================
 # CONFIGURATION
@@ -156,6 +159,8 @@ ROBOT_PLOTS_OUT = os.path.join(FOLDER_OUT, "ur3_pick_robot_plots.png")
 GRIPPER_PLOTS_OUT = os.path.join(FOLDER_OUT, "ur3_pick_gripper_plots.png")
 TIMING_OUT = os.path.join(FOLDER_OUT, "ur3_pick_timing.png")
 META_OUT = os.path.join(FOLDER_OUT, "ur3_pick_meta.json")
+REWARD_CSV_OUT = os.path.join(FOLDER_OUT, "ur3_pick_reward.csv")
+REWARD_PLOT_OUT = os.path.join(FOLDER_OUT, "ur3_pick_reward.png")
 VIDEO_FPS = 50.0
 
 # ===========================================================================
@@ -373,6 +378,29 @@ robot.save_run_metadata(
     model_path=MODEL_PATH,
     stats=stats,
 )
+
+# ── Reconstruct + plot the same reward terms as training (Task 1) ──────
+# Replays the logged geometry (arm q, finger position, mocap box pose +
+# orientation, action) through ur3_reward_replay's RewardReplayer -- a
+# numpy port of the training env's _get_reward, keyed to the SAME
+# default_config().reward_config.scales -- so this run's reward is directly
+# comparable to eval/episode_<term> in W&B. One multi-line chart: every
+# scaled reward term as its own line + a bold total, over the run's steps.
+try:
+    reward_df = replay_dataframe(df, xml_path=MODEL_PATH, target=DROP_TARGET)
+    reward_df.to_csv(REWARD_CSV_OUT, index=False)
+    print(f"Reward CSV: {REWARD_CSV_OUT}")
+    save_reward_terms_plot(
+        reward_df, REWARD_PLOT_OUT,
+        title=f"{POLICY_NAME} — real run reward ({stop_reason})",
+    )
+    print(f"Reward plot: {REWARD_PLOT_OUT}")
+except Exception as e:  # noqa: BLE001
+    # Reward reconstruction is a diagnostic add-on, not required for the
+    # pick loop itself -- never let it fail the run's other outputs (video/
+    # CSV/plots/metadata above are already saved by this point).
+    print(f"\n[warn] reward reconstruction failed: {e}; "
+          "video/CSV/plots/metadata above are unaffected.")
 
 # ── Disconnect ─────────────────────────────────────────────────────────
 mocap.stop()
