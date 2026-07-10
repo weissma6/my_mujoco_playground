@@ -147,7 +147,7 @@ POLICY_REGISTRY = {
     "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
     "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
 }
-POLICY_NAME = "more_rot_weight_e919791fe2e332b8fe2a1ad345b2528570730727"  # pick policy to run
+POLICY_NAME = "AGATE250_posemid_hard_offOFF_4035f12ccc5925b7fac8af367a8096deff107707"  # pick policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"

@@ -124,8 +124,10 @@ def default_config() -> config_dict.ConfigDict:
                 # (grasp_align_thresh) so this can no longer be shortcut by a
                 # lucky grab, and it stays proximity-gated so it can't be farmed
                 # in free space (the reward-hacking lesson from earlier open
-                # bonuses).
-                gripper_align=4.0,
+                # bonuses). RAISED 4.0->5.0 to give orientation control a touch
+                # more weight than the approach term (gripper_box=4.0), now that
+                # training exposes the full +/-2pi cube-yaw + wrist range.
+                gripper_align=5.0,
                 # Do not collide the gripper with the floor.
                 no_floor_collision=0.25,
                 # Arm stays close to initial pose. Gated by (1-lifted) in
@@ -466,6 +468,14 @@ class UR3Pick(ur3_base.UR3Base):
             maxval=arm_amp,
         )
         noisy_arm_qpos = base_arm_qpos + robot_qpos_noise
+        # Clip to the arm actuator ctrlrange so large init noise (e.g. a
+        # full-travel wrist) on a base pose near a limit can't write an
+        # out-of-range value into qpos OR the position-actuator ctrl below
+        # (which would clamp and jerk). Same 6-arm indexing used for init_ctrl.
+        n_arm = len(self._robot_arm_qposadr)
+        noisy_arm_qpos = jp.clip(
+            noisy_arm_qpos, self._lowers[:n_arm], self._uppers[:n_arm]
+        )
 
         # Gripper: the two fingers are coupled into one combined opening, so
         # randomize it as a single value uniformly across the full physical
