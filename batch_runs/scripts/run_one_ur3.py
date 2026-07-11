@@ -9,7 +9,7 @@ def load_config(jsonl_path: str, index_1based: int) -> dict:
         i = 0
         for line in f:
             line = line.strip()
-            if not line:
+            if not line or line.startswith("#"):
                 continue
             i += 1
             if i == index_1based:

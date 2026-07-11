@@ -82,7 +82,7 @@ def default_config() -> config_dict.ConfigDict:
         # Arm per-step ctrl delta = action * action_scale (swept per run). The
         # gripper is DECOUPLED via gripper_action_scale below so it can be kept
         # slow (stays open on approach) while the arm runs faster.
-        action_scale=0.01,
+        action_scale=0.025,
         # Separate per-step scale for the gripper actuator (last ctrl dim). Small
         # + fixed so the hand can't snap shut in one step — full open->close
         # travel is 0.025, which needs >=2.5 steps at 0.01. This is what keeps
@@ -169,26 +169,26 @@ def default_config() -> config_dict.ConfigDict:
         # Per-joint per-direction amplitude (rad) for reset randomization: 6 arm
         # + 1 finger. Applied symmetrically as uniform(-v, +v) on top of the init
         # keyframe. Default 0.05 reproduces the legacy uniform(-0.05, 0.05) arm noise.
-        init_qpos_noise=(0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.01),
+        init_qpos_noise=(0.05, 0.05, 0.05, 0.05, 0.05, 6.28319, 0.0),
         # Arm/finger start-pose source. "none" = literal keyframe start (then +
         # init_qpos_noise jitter); "light"/"mid"/"hard" = randomly pick one
         # hand-collected pose from init_poses/train/<level>.json each reset.
-        init_start_random="none",
+        init_start_random="mid",
         # Per-episode box-riser height (m). 0.0 disables the lifter (box on the
         # floor, legacy). >0 => h ~ uniform(_LIFTER_HEIGHT_MIN, lifter_height_max)
         # and the box spawns resting on the plate; the lift target is raised by h.
-        lifter_height_max=0.03,
+        lifter_height_max=0.02,
         # Per-episode SLIGHT plate tilt (rad). roll,pitch ~ uniform(-t, +t) about
         # world X and Y; the box rests FLUSH on the tilted plate, so it starts
         # both at a variable height and slightly tilted. This is what makes the
         # out-of-plane (approach-axis) component of the 2-of-3-axis grasp
         # alignment matter. 0.0 => flat plate (legacy). Only active with the
         # lifter enabled. Keep small (< ~0.12 rad) so the cube can't slide/tip.
-        lifter_tilt_max=0.08,  # ~4.6 deg
+        lifter_tilt_max=0.0,  # flat plate (baked from Spheretarget_mid_30M)
         # Box spawn yaw about world Z (rad); yaw ~ uniform(-r, +r). pi/4 covers
         # all yaw thanks to the cube's 4-fold symmetry, so the policy must learn
         # to match the jaw axis to a face rather than getting a free alignment.
-        box_z_rot_range=0.7853981633974483,  # pi/4
+        box_z_rot_range=6.28319,  # 2*pi (full-rotation yaw coverage)
         # Y-axis center offset (m) for the box spawn / lift target, applied
         # BEFORE their existing jitter ranges (box jitter Y +-0.2, target
         # jitter Y +-0.03) — see reset(). Both currently jitter around the
@@ -210,18 +210,20 @@ def default_config() -> config_dict.ConfigDict:
         #                box_y_center_offset/target_y_center_offset transport
         #                hack (those still work under "box"); the Z band is
         #                unchanged (fixed 0.18‥0.21 + lifter_h).
-        target_mode="box",
+        target_mode="base_polar",
         # Horizontal radius from the ROBOT BASE for base_polar targets (m).
-        target_r_min=0.30,
+        target_r_min=0.25,
         # Keep <= UR3 ~0.54 m reach so base_polar targets stay reachable.
         target_r_max=0.48,
         # Azimuth offset band (rad) from the box's bearing (as seen from the
-        # base) for base_polar targets: 90°‥180° around the base to either side.
-        target_azim_min=1.5708,  # pi/2
-        target_azim_max=3.1416,  # pi
+        # base) for base_polar targets: 30°‥60° to either side, so the target
+        # stays in front of the robot (a 90°‥180° band threw it across the base,
+        # out of reach within the episode).
+        target_azim_min=0.5236,  # pi/6 (30 deg)
+        target_azim_max=1.0472,  # pi/3 (60 deg)
         # Box-center distance (m) to the lift target counted as success (3
         # consecutive steps). Tight 3 mm — the box must end up inside the target.
-        success_tol=0.003,
+        success_tol=0.005,
         # "Off the resting height" margin (m) a grasped box must clear to set the
         # sticky "lifted" latch that unlocks box_target (anti-push lever).
         lift_eps=0.03,
