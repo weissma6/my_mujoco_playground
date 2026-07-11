@@ -109,7 +109,17 @@ def default_config() -> config_dict.ConfigDict:
                 lift=5.0,
                 # Box goes to the mocap target (lift point in the air); gated by
                 # the sticky "lifted" latch so a sliding box earns nothing.
-                box_target=8.0,
+                # RAISED 8.0->20.0: with base_polar targets the box was picked/
+                # lifted reliably but stalled ~13cm short and drifted back --
+                # the "grab-and-hold" stack (gripper_box 4.0 + gripper_align 5.0
+                # + lift 5.0 + grasp 3.0, ~3100 of return) dwarfed transport
+                # (~390, ~11%), and none of it requires MOVING the box, so PPO
+                # had no incentive to finish the carry. At 20.0 transport is ~25%
+                # of return, on par with the largest hold terms and the dominant
+                # POST-LIFT incentive. Safe to raise (no reward-hacking): gated
+                # on the sticky `lifted` latch, so it only pays after a real
+                # grasp+lift and cannot short-circuit the pick chain.
+                box_target=20.0,
                 # Grasp-frame alignment: the jaw axis AND the approach axis each
                 # line up with a box face-normal (2 of 3 gripper axes -> the 3rd
                 # is forced). Shapes the final approach so a parallel-jaw hand can
@@ -153,13 +163,16 @@ def default_config() -> config_dict.ConfigDict:
                 # settles and holds instead of tapping the point and drifting
                 # off. Resets to 0 the instant the box leaves the radius (a drop
                 # kills it), so it doubles as a drop penalty. Gated by `lifted`
-                # and tanh-capped so it cannot out-pay box_target(8.0)/grasp(3.0)
+                # and tanh-capped so it cannot out-pay box_target(20)/grasp(3)
                 # -- the reward-hacking guard: it must never be farmable without
                 # an actual lifted box held at the goal. Added because
                 # box_target only rewards distance-to-point, nothing rewarded
                 # HOLDING it there (FIXVERIFY: box visibly enters the 4cm target
-                # sphere but drifts/drops with no recovery pressure).
-                hold_target=3.0,
+                # sphere but drifts/drops with no recovery pressure). RAISED
+                # 3.0->6.0 to fight the observed drift-back (box reached ~13cm
+                # then retreated): reward dwelling inside hold_radius, still
+                # < box_target so it cannot out-pay the transport gradient.
+                hold_target=6.0,
             )
         ),
         impl="jax",

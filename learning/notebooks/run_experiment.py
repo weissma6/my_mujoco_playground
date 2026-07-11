@@ -951,10 +951,19 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_overrides["target_azim_min"] = float(cfg["target_azim_min"])
         if "target_azim_max" in cfg:
             env_overrides["target_azim_max"] = float(cfg["target_azim_max"])
+        if "episode_length" in cfg:
+            # Reach the env too, not just ppo.train's EpisodeWrapper: the env's
+            # own at_horizon check uses self._config.episode_length, so without
+            # this a JSONL override cannot lengthen the episode (the env still
+            # terminates at its default). episode_length stays non-reserved, so
+            # it also flows to ppo.train -- both horizons stay consistent.
+            env_overrides["episode_length"] = int(cfg["episode_length"])
 
         env = registry.load(env_name, config_overrides=env_overrides)
         env_cfg = registry.get_default_config(env_name)
-        episode_length = int(getattr(env_cfg, "episode_length", 1000))
+        episode_length = int(
+            cfg.get("episode_length", getattr(env_cfg, "episode_length", 1000))
+        )
         
         
         # ─────────────────────────────────────────────
