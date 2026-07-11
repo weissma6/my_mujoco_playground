@@ -150,7 +150,12 @@ def brax_ppo_config(
         rl_config.unroll_length = 10
         rl_config.num_minibatches = 32
         rl_config.num_updates_per_batch = 8
-        rl_config.discounting = 0.99
+        # 0.99 (2 s horizon) barely credits the far base_polar carry across a
+        # 5 s (250-step) episode -- a terminal success was worth ~8% at t=0, so
+        # the box plateaued short. 0.995 -> 4 s horizon, ~29% retention, valuing
+        # the lateral transport. Watch training/v_loss (returns ~2x); if it
+        # spikes, drop reward_scaling 0.05->0.03 (below), not gamma.
+        rl_config.discounting = 0.995
         rl_config.learning_rate = 6e-4
         rl_config.entropy_cost = 2e-2
         rl_config.num_envs = 2048

@@ -178,13 +178,22 @@ def default_config() -> config_dict.ConfigDict:
         # floor, legacy). >0 => h ~ uniform(_LIFTER_HEIGHT_MIN, lifter_height_max)
         # and the box spawns resting on the plate; the lift target is raised by h.
         lifter_height_max=0.02,
-        # Per-episode SLIGHT plate tilt (rad). roll,pitch ~ uniform(-t, +t) about
-        # world X and Y; the box rests FLUSH on the tilted plate, so it starts
-        # both at a variable height and slightly tilted. This is what makes the
-        # out-of-plane (approach-axis) component of the 2-of-3-axis grasp
-        # alignment matter. 0.0 => flat plate (legacy). Only active with the
-        # lifter enabled. Keep small (< ~0.12 rad) so the cube can't slide/tip.
-        lifter_tilt_max=0.0,  # flat plate (baked from Spheretarget_mid_30M)
+        # Per-episode SLIGHT plate tilt (rad). roll AND pitch are sampled
+        # INDEPENDENTLY, each ~ uniform(-t, +t) about world X and world Y, then
+        # composed — so both axes tilt at once and the worst-case surface-normal
+        # tilt is ~sqrt(2)*t when both hit their extremes. The box rests FLUSH on
+        # the tilted plate, so it starts both at a variable height and slightly
+        # tilted. This is what makes the out-of-plane (approach-axis) component of
+        # the 2-of-3-axis grasp alignment matter. 0.0 => flat plate (legacy).
+        # Only active with the lifter enabled.
+        # Reasonable values (per axis; remember the ~1.41x combined worst case):
+        #   0.00  => flat (baked default here)
+        #   0.05  => mild,     ~2.9 deg  (~4.0 deg combined)  -- gentle start
+        #   0.08  => moderate, ~4.6 deg  (~6.5 deg combined)  -- prior default
+        #   0.10  => strong,   ~5.7 deg  (~8.1 deg combined)  -- stickyoff "hard"
+        # Keep < ~0.12 rad (~6.9 deg / ~9.7 deg combined) so the cube can't
+        # slide/tip off the plate before the grasp.
+        lifter_tilt_max=0.08,  # flat plate (baked from Spheretarget_mid_30M)
         # Box spawn yaw about world Z (rad); yaw ~ uniform(-r, +r). pi/4 covers
         # all yaw thanks to the cube's 4-fold symmetry, so the policy must learn
         # to match the jaw axis to a face rather than getting a free alignment.
@@ -213,8 +222,13 @@ def default_config() -> config_dict.ConfigDict:
         target_mode="base_polar",
         # Horizontal radius from the ROBOT BASE for base_polar targets (m).
         target_r_min=0.25,
-        # Keep <= UR3 ~0.54 m reach so base_polar targets stay reachable.
-        target_r_max=0.48,
+        # Keep the far target reachable WHILE GRASPING a box. At 0.48 the worst
+        # target was 0.52-0.54 m from base (at/over the ~0.54 m reach BEFORE the
+        # grasp consumes any), so far targets were unreachable and the box
+        # plateaued. 0.42 -> worst ~0.47-0.49 m, ~6-7 cm headroom for the grasp;
+        # drop to 0.40 if success stays 0. Still a real carry (chord up to
+        # ~0.40 m at the 60 deg azimuth cap).
+        target_r_max=0.42,
         # Azimuth offset band (rad) from the box's bearing (as seen from the
         # base) for base_polar targets: 30°‥60° to either side, so the target
         # stays in front of the robot (a 90°‥180° band threw it across the base,
@@ -971,14 +985,19 @@ class UR3Pick(ur3_base.UR3Base):
         lift_height = jp.clip(box_pos[2] - info["box_rest_z"], 0.0, 0.12)
         lift_Reward = jp.tanh(lift_height / 0.06) * reached
 
-        # Stage 4 — transport: box to the target. Two-scale (coarse tanh*5 keeps a
-        # long-range pull, fine tanh*30 adds a steep near-goal gradient so the box
-        # is pulled the last ~10 mm) and GATED by "lifted" so a box pushed along
-        # the floor earns nothing.
+        # Stage 4 — transport: box to the target. THREE-scale cascade so the
+        # pull never vanishes across the full base_polar carry (~0.5 m -> 5 mm):
+        # coarse tanh*1.5 pulls from ~0.5 m, mid tanh*6 covers 0.05-0.3 m, fine
+        # tanh*40 drives the last cm to the 5 mm success gate. The old two-scale
+        # (tanh*5 + tanh*30) went flat past ~0.4 m, so far targets sat in a
+        # gradient dead-zone and the box plateaued ~19 cm short (W&B
+        # Spheretarget_mid_30M). /3 keeps max=1 at d=0 so the box_target=8.0
+        # scale is unchanged. GATED by "lifted" so a floor-pushed box earns 0.
         box_target_Reward = (
-            0.5 * (1 - jp.tanh(5 * box_target_dist))
-            + 0.5 * (1 - jp.tanh(30 * box_target_dist))
-        ) * lifted
+            (1 - jp.tanh(1.5 * box_target_dist))
+            + (1 - jp.tanh(6.0 * box_target_dist))
+            + (1 - jp.tanh(40.0 * box_target_dist))
+        ) / 3.0 * lifted
 
         # Stage 5 — hold: pay for KEEPING a lifted box inside hold_radius of
         # the target (settle-and-stay), not just tapping the point once.
