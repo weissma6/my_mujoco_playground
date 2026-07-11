@@ -150,12 +150,14 @@ def brax_ppo_config(
         rl_config.unroll_length = 10
         rl_config.num_minibatches = 32
         rl_config.num_updates_per_batch = 8
-        # 0.99 (2 s horizon) barely credits the far base_polar carry across a
-        # 5 s (250-step) episode -- a terminal success was worth ~8% at t=0, so
-        # the box plateaued short. 0.995 -> 4 s horizon, ~29% retention, valuing
-        # the lateral transport. Watch training/v_loss (returns ~2x); if it
-        # spikes, drop reward_scaling 0.05->0.03 (below), not gamma.
-        rl_config.discounting = 0.995
+        # Kept at 0.99: raising it to 0.995 (Spheretarget_far_cascade_30M) blew
+        # v_loss up to 1e10 the moment the discounted box_target reward came
+        # online (~17M steps), collapsing grasped 92->25 and lifted 26->8, AND
+        # slowed early credit assignment (lifted still 0 at 15M vs 67 at 8M for
+        # gamma=0.99). 0.99 is the proven-stable optimizer here. If the cascade
+        # box_target still plateaus short, lengthen the effective horizon via
+        # reward_scaling 0.05->0.03 (below), NOT gamma.
+        rl_config.discounting = 0.99
         rl_config.learning_rate = 6e-4
         rl_config.entropy_cost = 2e-2
         rl_config.num_envs = 2048

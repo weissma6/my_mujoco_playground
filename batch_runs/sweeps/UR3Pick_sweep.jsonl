@@ -4,4 +4,4 @@
 # baked base_polar best-known defaults. Reproducibility is preserved because
 # run_experiment logs full_cfg + git_commit per run. Comment/blank lines are
 # skipped by the runner and do NOT count toward the 1-based SLURM_ARRAY_TASK_ID.
-{"env_name": "UR3Pick", "seed": 1, "run_id": "Spheretarget_far_cascade_30M", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "wandb_tags": ["spheretarget", "base_polar", "cascade", "r0.42", "g995", "Zrot2pi", "wrist2pi", "gAlign5", "pose_mid", "ep250", "2048env", "LR6e-4", "AS0.025", "30M", "s1"]}
+{"env_name": "UR3Pick", "seed": 1, "run_id": "Spheretarget_cascade_g99_30M", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "wandb_tags": ["spheretarget", "base_polar", "cascade", "r0.42", "g99", "Zrot2pi", "wrist2pi", "gAlign5", "pose_mid", "ep250", "2048env", "LR6e-4", "AS0.025", "30M", "s1"]}
