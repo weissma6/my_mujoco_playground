@@ -140,9 +140,17 @@ class UR3Base(mjx_env.MjxEnv):
             self._obj_qposadr = self._mj_model.jnt_qposadr[
                 self._mj_model.body(obj_name).jntadr[0]
             ]
+            # Box collision geom (shares the body name in the UR3 scenes). Needed
+            # for physics domain randomization of geom_friction / geom_size.
+            self._obj_geom = (
+                self._mj_model.geom(obj_name).id
+                if obj_name in geom_names
+                else None
+            )
         else:
             self._obj_body = None
             self._obj_qposadr = None
+            self._obj_geom = None
 
         # Mocap and floor
         self._mocap_target = self._mj_model.body("mocap_target").mocapid

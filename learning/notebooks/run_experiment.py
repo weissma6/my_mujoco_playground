@@ -145,7 +145,9 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
     overrides: Dict[str, Any] = {}
     for k, v in cfg.items():
-        if k in reserved:
+        if k in reserved or k.startswith("domain_rand."):
+            # domain_rand.* are nested env-config overrides (Part 2 physics DR),
+            # forwarded to registry.load below -- never PPO params.
             continue
         overrides[k] = v
     if "network_factory" in cfg and isinstance(cfg["network_factory"], dict):
@@ -970,6 +972,14 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             # terminates at its default). episode_length stays non-reserved, so
             # it also flows to ppo.train -- both horizons stay consistent.
             env_overrides["episode_length"] = int(cfg["episode_length"])
+        # Physics domain randomization (Part 2): forward every "domain_rand.*"
+        # dotted key straight through as a nested env-config override. ConfigDict
+        # update_from_flattened_dict resolves the dotted path, so a sweep can set
+        # e.g. "domain_rand.enable"/"domain_rand.cube_mass.enable"/"...min" and it
+        # lands on config.domain_rand.*. Values pass through verbatim (bool/float).
+        for k, v in cfg.items():
+            if k.startswith("domain_rand."):
+                env_overrides[k] = v
 
         env = registry.load(env_name, config_overrides=env_overrides)
         env_cfg = registry.get_default_config(env_name)

@@ -42,6 +42,17 @@ _LIFTER_HALF_THICKNESS = 0.0025  # 5 mm plate -> half-extent
 _LIFTER_HEIGHT_MIN = 0.003
 _BOX_HALF_EXTENT = 0.02  # half the box HEIGHT (3x3x4 cm box, 4 cm tall) -> rest offset
 
+# Per-episode domain-randomization factors logged to W&B (terminal-gated, see
+# step()). Realized scale per axis + the gravity z-component.
+_DR_METRIC_KEYS = (
+    "cube_mass",
+    "cube_friction",
+    "cube_size",
+    "gravity_z",
+    "arm_stiffness",
+    "arm_damping",
+)
+
 
 def _quat_mul(a: jax.Array, b: jax.Array) -> jax.Array:
     """Hamilton product of two [w, x, y, z] quaternions (MuJoCo convention)."""
@@ -82,7 +93,7 @@ def default_config() -> config_dict.ConfigDict:
         # Arm per-step ctrl delta = action * action_scale (swept per run). The
         # gripper is DECOUPLED via gripper_action_scale below so it can be kept
         # slow (stays open on approach) while the arm runs faster.
-        action_scale=0.025,
+        action_scale=0.015,
         # Separate per-step scale for the gripper actuator (last ctrl dim). Small
         # + fixed so the hand can't snap shut in one step — full open->close
         # travel is 0.025, which needs >=2.5 steps at 0.01. This is what keeps
@@ -157,7 +168,7 @@ def default_config() -> config_dict.ConfigDict:
                 # to the others; NEGATIVE scale turns the raw magnitude into a
                 # penalty (same sign convention `franka_emika_panda_robotiq`
                 # and `leap_hand` use for their action_rate terms).
-                action_rate=-0.05,
+                action_rate=-0.10,
                 # Sustained-proximity bonus: pay for KEEPING a lifted box inside
                 # the target sphere, ramping with dwell time so the policy
                 # settles and holds instead of tapping the point and drifting
@@ -287,6 +298,56 @@ def default_config() -> config_dict.ConfigDict:
         # flip per-run to test re-grasp pressure. CAUTION if enabling: watch
         # for stage-farming, the reward-hacking pattern from d24be6b/8ccfc67.
         sticky_latches=True,
+        # ------------------------------------------------------------------
+        # Physics domain randomization (per-EPISODE, sampled fresh in reset()).
+        # ------------------------------------------------------------------
+        # Robustness DR: perturb the sim physics so the policy generalizes to
+        # the sim-to-real gap. Sampled once per reset(), stashed in info, and
+        # applied to a per-episode model via tree_replace at the top of step()
+        # (the policy is NOT told the sampled values -- no obs change). This is
+        # the per-episode, in-env path -- NOT the brax per-env randomization_fn
+        # wrapper (do not enable both). Every axis is INDEPENDENTLY gated for
+        # one-at-a-time ablation (like sticky_latches / target_mode), and all
+        # default OFF/identity so training is byte-for-byte unchanged when the
+        # master `enable` is False (the enable flags are STATIC, so the off path
+        # is a trace-time branch that skips the extra rng split entirely).
+        # Sweep-overridable via dotted keys, e.g. "domain_rand.cube_mass.enable".
+        domain_rand=config_dict.create(
+            # Master switch. False -> reset()/step() take the identity path.
+            enable=False,
+            # Cube mass: x nominal body_mass[box] (and body_inertia, kept
+            # consistent). Box is ~0.036 kg (auto from volume); [0.7,1.3]x.
+            cube_mass=config_dict.create(enable=False, min=0.7, max=1.3),
+            # Cube sliding friction: x nominal geom_friction[box, 0]. [0.5,1.5]x.
+            cube_friction=config_dict.create(enable=False, min=0.5, max=1.5),
+            # Cube size: x nominal geom_size[box] half-extents. Hard-clamped to a
+            # graspable width (fingers open ~5 cm; 3 cm cube -> ~1 cm/side) so DR
+            # can never produce an ungraspable box. [0.9,1.1]x. NOTE: the sampled
+            # Z half-extent also re-seats the box on the (lifter) plate in reset().
+            cube_size=config_dict.create(enable=False, min=0.9, max=1.1),
+            # Gravity: opt.gravity magnitude += U(-g_delta, g_delta) m/s^2, plus a
+            # small random directional tilt (rad) off vertical. tilt=0 -> pure
+            # magnitude noise. Nominal g = 9.81.
+            gravity=config_dict.create(enable=False, g_delta=0.5, tilt=0.0),
+            # Arm "stiffness": x arm position-actuator kp (actuator_gainprm[:6,0],
+            # with biasprm[:6,1]=-kp mirrored). CAVEAT: raw arm jnt_stiffness is 0
+            # in the model (compliance lives in the servos), so this scales the
+            # effective servo stiffness the arm feels, not a passive joint spring.
+            arm_stiffness=config_dict.create(enable=False, min=0.75, max=1.25),
+            # Arm "damping": x arm position-actuator kv (actuator_biasprm[:6,2]).
+            # Same caveat -- raw arm dof_damping is 0; this scales the servo's
+            # velocity gain (the effective joint damping).
+            arm_damping=config_dict.create(enable=False, min=0.75, max=1.25),
+            # ---- deferred DeXtreme-style axes (scaffolded, OFF, code stubbed) ----
+            # Contact restitution / softness: solref/solimp on box + finger geoms.
+            restitution=config_dict.create(enable=False),
+            # Arm joint-range jitter: jnt_range on the 6 arm joints.
+            joint_limits=config_dict.create(enable=False),
+            # Per-STEP random perturbation force (xfrc_applied) on the box body.
+            cube_force=config_dict.create(enable=False),
+            # Action latency: delay the commanded action via an info ring buffer.
+            action_delay=config_dict.create(enable=False),
+        ),
     )
 
 
@@ -377,6 +438,173 @@ class UR3Pick(ur3_base.UR3Base):
             self._mj_model.body("base").pos[:2], dtype=float
         )
 
+        # ------------------------------------------------------------------
+        # Physics domain-randomization setup (see default_config().domain_rand).
+        # ------------------------------------------------------------------
+        # The master switch is STATIC (read once here), so reset()/step() branch
+        # on it at TRACE time and the OFF path is byte-for-byte identical to the
+        # pre-DR env (no extra rng split, model untouched). Per-axis enable flags
+        # (also static) are read from self._config.domain_rand.* in the sampler.
+        self._dr_enable = bool(self._config.domain_rand.enable)
+        # Nominal physics captured ONCE so each axis scales from the baseline and
+        # never compounds across episodes. Sourced from the numpy mj_model.
+        self._dr_nom_friction = jp.asarray(
+            self._mj_model.geom_friction[self._obj_geom], dtype=float
+        )
+        self._dr_nom_size = jp.asarray(
+            self._mj_model.geom_size[self._obj_geom], dtype=float
+        )
+        self._dr_nom_mass = float(self._mj_model.body_mass[self._obj_body])
+        self._dr_nom_inertia = jp.asarray(
+            self._mj_model.body_inertia[self._obj_body], dtype=float
+        )
+        self._dr_nom_gravity = jp.asarray(
+            self._mj_model.opt.gravity, dtype=float
+        )
+        # Arm position-actuator gains (first 6 actuators; the gripper is #7 and is
+        # left untouched). kp = actuator_gainprm[:, 0]; the affine velocity gain
+        # kv = actuator_biasprm[:, 2] (biasprm[:, 1] = -kp mirrors the setpoint).
+        self._dr_nom_kp = jp.asarray(
+            self._mj_model.actuator_gainprm[:6, 0], dtype=float
+        )
+        self._dr_nom_kv = jp.asarray(
+            self._mj_model.actuator_biasprm[:6, 2], dtype=float
+        )
+        # Box Z half-extent (rest offset), == _BOX_HALF_EXTENT. Identity value for
+        # cube_half_z so the size-off path re-seats the box unchanged.
+        self._dr_nom_half_z = _BOX_HALF_EXTENT
+        # Hard graspability clamp on the box WIDTH half-extent (xy) regardless of
+        # the configured cube_size range: fingers open ~5 cm, so keep the width
+        # half-extent <= 0.018 (3.6 cm). Height (z) is unclamped.
+        self._dr_max_box_half_xy = 0.018
+        # Identity DR factors for the OFF path (same keys as _sample_physics_dr).
+        self._dr_identity = {
+            "mass_scale": jp.array(1.0, dtype=float),
+            "fric_scale": jp.array(1.0, dtype=float),
+            "size_scale": jp.array(1.0, dtype=float),
+            "grav": self._dr_nom_gravity,
+            "kp_scale": jp.array(1.0, dtype=float),
+            "kv_scale": jp.array(1.0, dtype=float),
+            "cube_half_z": jp.array(self._dr_nom_half_z, dtype=float),
+        }
+
+    def _sample_physics_dr(self, rng: jax.Array) -> Dict[str, jax.Array]:
+        """Sample per-episode physics-randomization factors.
+
+        Each axis is gated on its STATIC `domain_rand.<axis>.enable` flag, so a
+        disabled axis stays at its identity value AND consumes no randomness
+        (the Python `if` is resolved at trace time). Returns the same keys as
+        `self._dr_identity`; applied to the model in `_randomize_physics`.
+        """
+        dr = self._config.domain_rand
+        out = dict(self._dr_identity)  # identity; overwrite only enabled axes
+
+        if dr.cube_mass.enable:
+            rng, k = jax.random.split(rng)
+            out["mass_scale"] = jax.random.uniform(
+                k, (), minval=float(dr.cube_mass.min), maxval=float(dr.cube_mass.max)
+            )
+        if dr.cube_friction.enable:
+            rng, k = jax.random.split(rng)
+            out["fric_scale"] = jax.random.uniform(
+                k,
+                (),
+                minval=float(dr.cube_friction.min),
+                maxval=float(dr.cube_friction.max),
+            )
+        if dr.cube_size.enable:
+            rng, k = jax.random.split(rng)
+            s = jax.random.uniform(
+                k, (), minval=float(dr.cube_size.min), maxval=float(dr.cube_size.max)
+            )
+            out["size_scale"] = s
+            # Z half-extent used by reset() to re-seat the box on the plate/floor.
+            out["cube_half_z"] = self._dr_nom_half_z * s
+        if dr.gravity.enable:
+            rng, k1, k2 = jax.random.split(rng, 3)
+            gmag = jp.linalg.norm(self._dr_nom_gravity)
+            gdir = self._dr_nom_gravity / gmag
+            dmag = jax.random.uniform(
+                k1, (), minval=-float(dr.gravity.g_delta), maxval=float(dr.gravity.g_delta)
+            )
+            # Small random directional tilt: perturb the unit down-vector and
+            # renormalize (tilt=0 -> pure magnitude noise along nominal g).
+            tilt = float(dr.gravity.tilt)
+            off = jax.random.uniform(k2, (3,), minval=-tilt, maxval=tilt)
+            new_dir = gdir + off
+            new_dir = new_dir / jp.linalg.norm(new_dir)
+            out["grav"] = new_dir * (gmag + dmag)
+        if dr.arm_stiffness.enable:
+            rng, k = jax.random.split(rng)
+            out["kp_scale"] = jax.random.uniform(
+                k,
+                (),
+                minval=float(dr.arm_stiffness.min),
+                maxval=float(dr.arm_stiffness.max),
+            )
+        if dr.arm_damping.enable:
+            rng, k = jax.random.split(rng)
+            out["kv_scale"] = jax.random.uniform(
+                k, (), minval=float(dr.arm_damping.min), maxval=float(dr.arm_damping.max)
+            )
+        return out
+
+    def _randomize_physics(
+        self, model: mjx.Model, info: Dict[str, Any]
+    ) -> mjx.Model:
+        """Return a per-episode model with the DR factors (stashed in `info` by
+        reset()) applied via tree_replace. Only ENABLED axes touch the model;
+        each is gated on its static flag, so this is composable and isolatable
+        for one-axis-at-a-time ablation. Called from step() only when the master
+        switch is on -- see the `self._dr_enable` branch there.
+        """
+        dr = self._config.domain_rand
+        updates = {}
+
+        if dr.cube_mass.enable:
+            # Scale mass AND inertia by the same factor (keeps them consistent).
+            updates["body_mass"] = model.body_mass.at[self._obj_body].set(
+                self._dr_nom_mass * info["dr_mass_scale"]
+            )
+            updates["body_inertia"] = model.body_inertia.at[self._obj_body].set(
+                self._dr_nom_inertia * info["dr_mass_scale"]
+            )
+        if dr.cube_friction.enable:
+            # Sliding (tangential dim 0) only; torsional/rolling left nominal.
+            new_fric = self._dr_nom_friction.at[0].set(
+                self._dr_nom_friction[0] * info["dr_fric_scale"]
+            )
+            updates["geom_friction"] = model.geom_friction.at[self._obj_geom].set(
+                new_fric
+            )
+        if dr.cube_size.enable:
+            # Uniform half-extent scale; width (xy) hard-clamped graspable.
+            new_size = self._dr_nom_size * info["dr_size_scale"]
+            new_size = new_size.at[:2].set(
+                jp.minimum(new_size[:2], self._dr_max_box_half_xy)
+            )
+            updates["geom_size"] = model.geom_size.at[self._obj_geom].set(new_size)
+        if dr.gravity.enable:
+            updates["opt.gravity"] = info["dr_grav"]  # dotted-path tree_replace
+        if dr.arm_stiffness.enable or dr.arm_damping.enable:
+            # kp_scale / kv_scale are identity (1.0) when their sub-axis is off.
+            new_kp = self._dr_nom_kp * info["dr_kp_scale"]
+            gainprm = model.actuator_gainprm.at[:6, 0].set(new_kp)
+            biasprm = model.actuator_biasprm
+            biasprm = biasprm.at[:6, 1].set(-new_kp)  # mirror setpoint: bias1 = -kp
+            biasprm = biasprm.at[:6, 2].set(self._dr_nom_kv * info["dr_kv_scale"])
+            updates["actuator_gainprm"] = gainprm
+            updates["actuator_biasprm"] = biasprm
+
+        # TODO(dr): deferred DeXtreme-style axes, wired to their (off) flags:
+        #   - dr.restitution: model.tree_replace geom_solref/solimp on box+fingers.
+        #   - dr.joint_limits: model.jnt_range jitter on the 6 arm joints.
+        # (cube_force + action_delay are per-STEP -> handled in step(), not here.)
+
+        if not updates:
+            return model
+        return model.tree_replace(updates)
+
     def reset(self, rng: jax.Array) -> State:
         (
             rng,
@@ -389,6 +617,21 @@ class UR3Pick(ur3_base.UR3Base):
             rng_lift,
             rng_tilt,
         ) = jax.random.split(rng, 9)
+
+        # Physics domain randomization: sample the per-episode factors up-front
+        # so the cube half-extent is available for box placement below. STATIC
+        # master gate -> when off, there is NO extra split (the rng carry is
+        # untouched) and `dr` is the identity dict, so the whole reset stays
+        # byte-for-byte unchanged. When on, the DR draw consumes only the carry,
+        # leaving every task sub-key (box/target/pose/...) bit-identical.
+        if self._dr_enable:
+            rng, rng_dr = jax.random.split(rng)
+            dr = self._sample_physics_dr(rng_dr)
+        else:
+            dr = self._dr_identity
+        # Box Z half-extent for resting the cube (== _BOX_HALF_EXTENT unless the
+        # cube_size axis is on).
+        box_half_z = dr["cube_half_z"]
 
         # initialize box XY — wide jitter, X-heavy, so the box spawns anywhere
         # in X∈[0.30,0.60] (all graspable; 0.60 was the old nominal). Y-center
@@ -460,11 +703,11 @@ class UR3Pick(ur3_base.UR3Base):
                 n[0] * (box_xy[0] - self._init_obj_pos[0])
                 + n[1] * (box_xy[1] - self._init_obj_pos[1])
             ) / n[2]
-            box_z = z_plane + _BOX_HALF_EXTENT * n[2]
+            box_z = z_plane + box_half_z * n[2]
         else:
             lifter_h = jp.array(0.0, dtype=float)
             q_tilt = jp.array([1.0, 0.0, 0.0, 0.0])
-            box_z = self._init_obj_pos[2]  # legacy on-floor (0.02)
+            box_z = box_half_z  # rest at half-height (== 0.02 unless cube_size DR)
 
         box_pos = jp.array([box_xy[0], box_xy[1], box_z])
         # Box orientation: plate tilt composed with the yaw spin about the plate
@@ -685,6 +928,24 @@ class UR3Pick(ur3_base.UR3Base):
             "hold_counter": jp.array(0, dtype=jp.int32),
         }
 
+        # Stash the per-episode DR factors in info (read by _randomize_physics in
+        # step()) and seed their W&B metric keys. STATIC gate -> these keys exist
+        # only when DR is on, keeping the State pytree (and the off path) clean.
+        if self._dr_enable:
+            info.update(
+                {
+                    "dr_mass_scale": dr["mass_scale"],
+                    "dr_fric_scale": dr["fric_scale"],
+                    "dr_size_scale": dr["size_scale"],
+                    "dr_grav": dr["grav"],
+                    "dr_kp_scale": dr["kp_scale"],
+                    "dr_kv_scale": dr["kv_scale"],
+                }
+            )
+            metrics.update(
+                {f"dr/{k}": jp.array(0.0, dtype=float) for k in _DR_METRIC_KEYS}
+            )
+
         obs = self._get_obs(data, info)
         reward, done = jp.zeros(2)
         return State(data, obs, reward, done, metrics, info)
@@ -693,7 +954,20 @@ class UR3Pick(ur3_base.UR3Base):
         delta = action * self._action_scale
         ctrl = jp.clip(state.data.ctrl + delta, self._lowers, self._uppers)
 
-        data = mjx_env.step(self._mjx_model, state.data, ctrl, self.n_substeps)
+        # Per-episode physics DR: rebuild the model from the factors sampled in
+        # reset() (stashed in state.info). STATIC gate -> when off this is
+        # exactly `self._mjx_model` and the physics step is unchanged. Under vmap
+        # the per-env info scalars make the model per-env automatically.
+        # TODO(dr): per-STEP axes hook here, gated on their (off) flags:
+        #   - dr.cube_force: sample from state.info["rng"] and apply an external
+        #     wrench via data.replace(xfrc_applied=...at[self._obj_body].set(f)).
+        #   - dr.action_delay: pop a delayed action from an info ring buffer.
+        model = (
+            self._randomize_physics(self._mjx_model, state.info)
+            if self._dr_enable
+            else self._mjx_model
+        )
+        data = mjx_env.step(model, state.data, ctrl, self.n_substeps)
 
         info = dict(state.info)
         info["step"] = info["step"] + 1
@@ -765,6 +1039,24 @@ class UR3Pick(ur3_base.UR3Base):
             align_jaw=raw_signals["a_jaw"],
             align_app=raw_signals["a_app"],
         )
+        # Realized per-episode DR factors, terminal-gated like box_target_dist_*
+        # so brax's EvalWrapper episode-SUM equals the single per-episode value
+        # (=> the cross-env W&B mean is the true realized mean of each factor).
+        if self._dr_enable:
+            metrics.update(
+                {
+                    "dr/cube_mass": jp.where(is_terminal, info["dr_mass_scale"], 0.0),
+                    "dr/cube_friction": jp.where(
+                        is_terminal, info["dr_fric_scale"], 0.0
+                    ),
+                    "dr/cube_size": jp.where(is_terminal, info["dr_size_scale"], 0.0),
+                    "dr/gravity_z": jp.where(is_terminal, info["dr_grav"][2], 0.0),
+                    "dr/arm_stiffness": jp.where(
+                        is_terminal, info["dr_kp_scale"], 0.0
+                    ),
+                    "dr/arm_damping": jp.where(is_terminal, info["dr_kv_scale"], 0.0),
+                }
+            )
 
         obs = self._get_obs(data, info)
         return State(data, obs, reward, done, metrics, info)

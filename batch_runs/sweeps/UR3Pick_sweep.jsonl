@@ -2,19 +2,23 @@
 # ur3_pick.py default_config() (env). Each line below carries ONLY per-run
 # metadata plus the knob(s) that actually vary; every omitted key inherits the
 # baked base_polar best-known defaults (30M steps, num_evals=40,
-# num_resets_per_eval=1, gamma=0.99, LR=6e-4, reward_scaling=0.05 -> TOTAL~31.9M).
+# num_resets_per_eval=1, gamma=0.99, LR=6e-4, reward_scaling=0.05 -> TOTAL~31.9M;
+# action_scale=0.015, action_rate=-0.10, gripper=0.02, init_start_random=mid).
 # Reproducibility is preserved because run_experiment logs full_cfg + git_commit.
 # Comment/blank lines are skipped by the runner and do NOT count toward the
 # 1-based SLURM_ARRAY_TASK_ID.
 #
-# Smooth-slowdown sweep: the far-target reach works (base_polar, box_target=20)
-# but control is far too jerky (per-episode action_rate ~880-1400 on W&B) so the
-# arm skates over the cube and drops it near the goal. Baked smoothness/grip
-# defaults were strengthened in ur3_pick.py: action_rate -0.01->-0.05 (smoother)
-# and gripper_action_scale 0.01->0.02 (more responsive grip). This OAT sweep
-# then varies the arm action_scale (slower arm) at episode_length=400 (more time
-# for the slower arm to reach + settle the far target), init_start_random="mid".
-{"env_name": "UR3Pick", "seed": 1, "run_id": "Smooth_slow_mid_as020", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "init_start_random": "mid", "episode_length": 400, "action_scale": 0.020, "wandb_tags": ["spheretarget", "base_polar", "smooth", "mid", "ar-0.05", "grip0.02", "ep400", "as0.020", "30M", "s1"]}
-{"env_name": "UR3Pick", "seed": 1, "run_id": "Smooth_slow_mid_as015", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "init_start_random": "mid", "episode_length": 400, "action_scale": 0.015, "wandb_tags": ["spheretarget", "base_polar", "smooth", "mid", "ar-0.05", "grip0.02", "ep400", "as0.015", "30M", "s1"]}
-{"env_name": "UR3Pick", "seed": 1, "run_id": "Smooth_slow_mid_as010", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "init_start_random": "mid", "episode_length": 400, "action_scale": 0.010, "wandb_tags": ["spheretarget", "base_polar", "smooth", "mid", "ar-0.05", "grip0.02", "ep400", "as0.010", "30M", "s1"]}
-{"env_name": "UR3Pick", "seed": 1, "run_id": "Smooth_slow_mid_as015_ar10", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "init_start_random": "mid", "episode_length": 400, "action_scale": 0.015, "action_rate": -0.10, "wandb_tags": ["spheretarget", "base_polar", "smooth", "mid", "ar-0.10", "grip0.02", "ep400", "as0.015", "30M", "s1"]}
+# Domain-randomization ABLATION: layer ONE physics-DR axis at a time (LIGHT band)
+# on top of the known-good config (the Smooth_slow_mid_as015_ar10 winner, now
+# baked) at episode_length=400, to see how each axis trains vs a no-DR baseline.
+# episode_length is a rollout truncation, NOT a step multiplier, so every line is
+# still ~31.9M steps. DR knobs are nested config passed via dotted keys, which
+# run_experiment forwards to registry.load (see the domain_rand block in
+# ur3_pick.py). Line 1 is the no-DR control (reproduces the winner at ep400).
+{"env_name": "UR3Pick", "seed": 1, "run_id": "DR_baseline_ep400", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "episode_length": 400, "wandb_tags": ["DR", "ablation", "baseline", "noDR", "ep400", "s1"]}
+{"env_name": "UR3Pick", "seed": 1, "run_id": "DR_cube_mass_light", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "episode_length": 400, "domain_rand.enable": true, "domain_rand.cube_mass.enable": true, "domain_rand.cube_mass.min": 0.85, "domain_rand.cube_mass.max": 1.15, "wandb_tags": ["DR", "ablation", "cube_mass", "light", "ep400", "s1"]}
+{"env_name": "UR3Pick", "seed": 1, "run_id": "DR_cube_friction_light", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "episode_length": 400, "domain_rand.enable": true, "domain_rand.cube_friction.enable": true, "domain_rand.cube_friction.min": 0.8, "domain_rand.cube_friction.max": 1.2, "wandb_tags": ["DR", "ablation", "cube_friction", "light", "ep400", "s1"]}
+{"env_name": "UR3Pick", "seed": 1, "run_id": "DR_cube_size_light", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "episode_length": 400, "domain_rand.enable": true, "domain_rand.cube_size.enable": true, "domain_rand.cube_size.min": 0.95, "domain_rand.cube_size.max": 1.05, "wandb_tags": ["DR", "ablation", "cube_size", "light", "ep400", "s1"]}
+{"env_name": "UR3Pick", "seed": 1, "run_id": "DR_gravity_light", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "episode_length": 400, "domain_rand.enable": true, "domain_rand.gravity.enable": true, "domain_rand.gravity.g_delta": 0.25, "wandb_tags": ["DR", "ablation", "gravity", "light", "ep400", "s1"]}
+{"env_name": "UR3Pick", "seed": 1, "run_id": "DR_arm_stiffness_light", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "episode_length": 400, "domain_rand.enable": true, "domain_rand.arm_stiffness.enable": true, "domain_rand.arm_stiffness.min": 0.9, "domain_rand.arm_stiffness.max": 1.1, "wandb_tags": ["DR", "ablation", "arm_stiffness", "light", "ep400", "s1"]}
+{"env_name": "UR3Pick", "seed": 1, "run_id": "DR_arm_damping_light", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "episode_length": 400, "domain_rand.enable": true, "domain_rand.arm_damping.enable": true, "domain_rand.arm_damping.min": 0.9, "domain_rand.arm_damping.max": 1.1, "wandb_tags": ["DR", "ablation", "arm_damping", "light", "ep400", "s1"]}
