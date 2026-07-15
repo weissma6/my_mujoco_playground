@@ -87,7 +87,7 @@ def default_config() -> config_dict.ConfigDict:
         # + fixed so the hand can't snap shut in one step — full open->close
         # travel is 0.025, which needs >=2.5 steps at 0.01. This is what keeps
         # the hand open on approach independent of the swept arm action_scale.
-        gripper_action_scale=0.01,
+        gripper_action_scale=0.02,
         reward_config=config_dict.create(
             scales=config_dict.create(
                 ## Staged reward scaling factors (sequenced by sticky latches).
@@ -157,7 +157,7 @@ def default_config() -> config_dict.ConfigDict:
                 # to the others; NEGATIVE scale turns the raw magnitude into a
                 # penalty (same sign convention `franka_emika_panda_robotiq`
                 # and `leap_hand` use for their action_rate terms).
-                action_rate=-0.01,
+                action_rate=-0.05,
                 # Sustained-proximity bonus: pay for KEEPING a lifted box inside
                 # the target sphere, ramping with dwell time so the policy
                 # settles and holds instead of tapping the point and drifting
@@ -1004,7 +1004,7 @@ class UR3Pick(ur3_base.UR3Base):
         # tanh*40 drives the last cm to the 5 mm success gate. The old two-scale
         # (tanh*5 + tanh*30) went flat past ~0.4 m, so far targets sat in a
         # gradient dead-zone and the box plateaued ~19 cm short (W&B
-        # Spheretarget_mid_30M). /3 keeps max=1 at d=0 so the box_target=8.0
+        # Spheretarget_mid_30M). /3 keeps max=1 at d=0 so the box_target=20.0
         # scale is unchanged. GATED by "lifted" so a floor-pushed box earns 0.
         box_target_Reward = (
             (1 - jp.tanh(1.5 * box_target_dist))

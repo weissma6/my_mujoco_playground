@@ -130,6 +130,8 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "box_y_center_offset",
         "target_y_center_offset",
         "action_scale",
+        "gripper_action_scale",
+        "action_rate",
         "success_tol",
         "num_eval_envs",
         "seed",
@@ -937,6 +939,16 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             )
         if "action_scale" in cfg:
             env_overrides["action_scale"] = float(cfg["action_scale"])
+        if "gripper_action_scale" in cfg:
+            env_overrides["gripper_action_scale"] = float(
+                cfg["gripper_action_scale"]
+            )
+        if "action_rate" in cfg:
+            # action_rate is nested under reward_config.scales; ConfigDict
+            # update_from_flattened_dict handles the dotted key.
+            env_overrides["reward_config.scales.action_rate"] = float(
+                cfg["action_rate"]
+            )
         if "success_tol" in cfg:
             env_overrides["success_tol"] = float(cfg["success_tol"])
         if "sticky_latches" in cfg:

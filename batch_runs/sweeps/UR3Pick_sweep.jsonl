@@ -1,16 +1,20 @@
 # UR3Pick sweep — DRY: base config lives in manipulation_params.py (PPO) +
 # ur3_pick.py default_config() (env). Each line below carries ONLY per-run
 # metadata plus the knob(s) that actually vary; every omitted key inherits the
-# baked base_polar best-known defaults. Reproducibility is preserved because
-# run_experiment logs full_cfg + git_commit per run. Comment/blank lines are
-# skipped by the runner and do NOT count toward the 1-based SLURM_ARRAY_TASK_ID.
-# Easy-start rebudget sweep: reward budget rebalanced toward target-reach
-# (baked box_target 8->20, hold_target 3->6 in ur3_pick.py), all runs start
-# from the "light" (easy) pose library. Lean OAT over discounting x
-# episode_length x LR; higher gamma is paired with lower reward_scaling
-# (value-target magnitude ~ rs/(1-gamma)) so v_loss stays stable.
-{"env_name": "UR3Pick", "seed": 1, "run_id": "Easy_rebudget_g99_ep250_LR6e4", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "init_start_random": "light", "wandb_tags": ["spheretarget", "base_polar", "cascade", "easy", "rebudget", "boxT20", "hold6", "r0.42", "tol5mm", "30M", "s1", "g99", "rs05", "ep250", "LR6e-4"]}
-{"env_name": "UR3Pick", "seed": 1, "run_id": "Easy_rebudget_g995_ep250_LR6e4", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "init_start_random": "light", "discounting": 0.995, "reward_scaling": 0.03, "wandb_tags": ["spheretarget", "base_polar", "cascade", "easy", "rebudget", "boxT20", "hold6", "r0.42", "tol5mm", "30M", "s1", "g995", "rs03", "ep250", "LR6e-4"]}
-{"env_name": "UR3Pick", "seed": 1, "run_id": "Easy_rebudget_g99_ep400_LR6e4", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "init_start_random": "light", "episode_length": 400, "wandb_tags": ["spheretarget", "base_polar", "cascade", "easy", "rebudget", "boxT20", "hold6", "r0.42", "tol5mm", "30M", "s1", "g99", "rs05", "ep400", "LR6e-4"]}
-{"env_name": "UR3Pick", "seed": 1, "run_id": "Easy_rebudget_g99_ep250_LR3e4", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "init_start_random": "light", "learning_rate": 0.0003, "wandb_tags": ["spheretarget", "base_polar", "cascade", "easy", "rebudget", "boxT20", "hold6", "r0.42", "tol5mm", "30M", "s1", "g99", "rs05", "ep250", "LR3e-4"]}
-{"env_name": "UR3Pick", "seed": 1, "run_id": "Easy_rebudget_g997_ep250_LR6e4", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "init_start_random": "light", "discounting": 0.997, "reward_scaling": 0.02, "wandb_tags": ["spheretarget", "base_polar", "cascade", "easy", "rebudget", "boxT20", "hold6", "r0.42", "tol5mm", "30M", "s1", "g997", "rs02", "ep250", "LR6e-4"]}
+# baked base_polar best-known defaults (30M steps, num_evals=40,
+# num_resets_per_eval=1, gamma=0.99, LR=6e-4, reward_scaling=0.05 -> TOTAL~31.9M).
+# Reproducibility is preserved because run_experiment logs full_cfg + git_commit.
+# Comment/blank lines are skipped by the runner and do NOT count toward the
+# 1-based SLURM_ARRAY_TASK_ID.
+#
+# Smooth-slowdown sweep: the far-target reach works (base_polar, box_target=20)
+# but control is far too jerky (per-episode action_rate ~880-1400 on W&B) so the
+# arm skates over the cube and drops it near the goal. Baked smoothness/grip
+# defaults were strengthened in ur3_pick.py: action_rate -0.01->-0.05 (smoother)
+# and gripper_action_scale 0.01->0.02 (more responsive grip). This OAT sweep
+# then varies the arm action_scale (slower arm) at episode_length=400 (more time
+# for the slower arm to reach + settle the far target), init_start_random="mid".
+{"env_name": "UR3Pick", "seed": 1, "run_id": "Smooth_slow_mid_as020", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "init_start_random": "mid", "episode_length": 400, "action_scale": 0.020, "wandb_tags": ["spheretarget", "base_polar", "smooth", "mid", "ar-0.05", "grip0.02", "ep400", "as0.020", "30M", "s1"]}
+{"env_name": "UR3Pick", "seed": 1, "run_id": "Smooth_slow_mid_as015", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "init_start_random": "mid", "episode_length": 400, "action_scale": 0.015, "wandb_tags": ["spheretarget", "base_polar", "smooth", "mid", "ar-0.05", "grip0.02", "ep400", "as0.015", "30M", "s1"]}
+{"env_name": "UR3Pick", "seed": 1, "run_id": "Smooth_slow_mid_as010", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "init_start_random": "mid", "episode_length": 400, "action_scale": 0.010, "wandb_tags": ["spheretarget", "base_polar", "smooth", "mid", "ar-0.05", "grip0.02", "ep400", "as0.010", "30M", "s1"]}
+{"env_name": "UR3Pick", "seed": 1, "run_id": "Smooth_slow_mid_as015_ar10", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "init_start_random": "mid", "episode_length": 400, "action_scale": 0.015, "action_rate": -0.10, "wandb_tags": ["spheretarget", "base_polar", "smooth", "mid", "ar-0.10", "grip0.02", "ep400", "as0.015", "30M", "s1"]}
