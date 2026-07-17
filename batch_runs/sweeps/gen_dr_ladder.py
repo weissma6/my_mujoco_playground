@@ -103,6 +103,11 @@ EPISODE_LENGTH = 400
 # point -- SAME numbers that used to be hardcoded in ur3_pick.reset() before
 # Commit 2 exposed them as config fields. target_z/r/azim use the MIDPOINT of
 # their baked jitter range (zero-width interval -> deterministic draw).
+#
+# NOTE: evaluation/gap_target.py imports this dict directly (its
+# "L0_deterministic" target profile) rather than re-typing target_r_min/max/
+# target_azim_min/max/target_z_jitter -- keep this name and its keys stable,
+# or update that import alongside any change here.
 _DETERMINISTIC_POSITION = {
     "box_xy_jitter": [0.0, 0.0],
     "target_z_jitter": [0.195, 0.195],       # midpoint of baked [0.18, 0.21]
