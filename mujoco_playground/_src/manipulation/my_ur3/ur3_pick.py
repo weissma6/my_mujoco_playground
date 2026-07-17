@@ -54,6 +54,27 @@ _DR_METRIC_KEYS = (
 )
 
 
+def _skew(v: jax.Array) -> jax.Array:
+    """3x3 skew-symmetric (cross-product) matrix of a 3-vector.
+
+    Used for the small-angle box-orientation obs-noise perturbation
+    (domain_rand.obs_noise): for a small rotation vector `d` (rad),
+    `R_noisy_axes ~= axes + skew(d) @ axes` is the standard first-order SO(3)
+    approximation (`R(d) ~= I + skew(d)` for |d| << 1). Valid here because
+    the configured biases/jitters are ~1-3 deg (~0.02-0.05 rad); the
+    resulting matrix is not re-orthonormalized since only its dot products
+    with jaw/approach axes are ever used (see UR3Pick._get_obs), not its
+    validity as a rotation.
+    """
+    return jp.array(
+        [
+            [0.0, -v[2], v[1]],
+            [v[2], 0.0, -v[0]],
+            [-v[1], v[0], 0.0],
+        ]
+    )
+
+
 def _quat_mul(a: jax.Array, b: jax.Array) -> jax.Array:
     """Hamilton product of two [w, x, y, z] quaternions (MuJoCo convention)."""
     aw, ax, ay, az = a[0], a[1], a[2], a[3]
@@ -232,6 +253,23 @@ def default_config() -> config_dict.ConfigDict:
         # robot_target_qpos transport stage. 0.0 = legacy (both centered).
         box_y_center_offset=0.0,
         target_y_center_offset=0.0,
+        # Box XY spawn jitter half-range (m), per axis: box_xy ~ uniform(-v, +v)
+        # + the XML keyframe box XY (+ box_y_center_offset). Was a hardcoded
+        # [0.15, 0.20] literal in reset(); exposed here with the SAME default
+        # so a sweep can zero it for a deterministic baseline (the "position"
+        # cluster of "Plan - Sim-to-Real Gap Protocol", DR-ladder L0) without
+        # touching this file again. 0.0 => box always at the nominal XY.
+        box_xy_jitter=(0.15, 0.2),
+        # Lift-target Z-band jitter (m): target_z ~ uniform(*target_z_jitter) +
+        # _init_obj_pos[2] (+ lifter_h). Was a hardcoded [0.18, 0.21] literal,
+        # shared verbatim by BOTH target_mode paths ("box" and "base_polar");
+        # exposed here for the same reason as box_xy_jitter. A zero-width
+        # tuple (e.g. (0.195, 0.195)) makes the goal height deterministic.
+        target_z_jitter=(0.18, 0.21),
+        # Per-episode gripper start position. True (legacy) = sample uniform
+        # [0, 0.025] m (anywhere open<->closed) at reset. False = always start
+        # FULLY OPEN (0.0) -- for a deterministic DR-ladder L0 baseline.
+        finger_random_init=True,
         # --- Lift-target sampling scheme ---------------------------------------
         # "box"        = legacy axis-aligned sampling around the box anchor
         #                (self._init_obj_pos + the fixed X/Y/Z jitter bands +
@@ -344,9 +382,63 @@ def default_config() -> config_dict.ConfigDict:
             # Arm joint-range jitter: jnt_range on the 6 arm joints.
             joint_limits=config_dict.create(enable=False),
             # Per-STEP random perturbation force (xfrc_applied) on the box body.
-            cube_force=config_dict.create(enable=False),
-            # Action latency: delay the commanded action via an info ring buffer.
-            action_delay=config_dict.create(enable=False),
+            # A fresh 3D force ~ uniform(-force_mag, force_mag) N per axis is
+            # drawn EVERY step (not held per-episode) from info["rng"] and
+            # applied at the box's center of mass -- see step(). Magnitude is
+            # UNCALIBRATED (no measured real perturbation to center on; see
+            # "Plan - Sim-to-Real Gap Protocol" C4/blind-randomization note) --
+            # 0.5 N is ~1.4x the box's own weight (~0.036 kg * 9.81 ~= 0.35 N),
+            # a deliberately noticeable nudge, purely exploratory.
+            cube_force=config_dict.create(enable=False, force_mag=0.5),
+            # Action latency: delay the commanded action via an info ring
+            # buffer. max_delay_steps=5 at ctrl_dt=0.02 => up to 100 ms of
+            # latency, sampled ONCE per episode (held constant within it) --
+            # see reset()/step(). UNCALIBRATED (no measured real action
+            # latency to center on); purely exploratory, per the same blind-
+            # randomization note as cube_force above.
+            action_delay=config_dict.create(enable=False, max_delay_steps=5),
+            # Observation noise: per-step JITTER (resampled every step) + a
+            # per-episode BIAS (sampled once at reset, held constant) on every
+            # *measured* obs quantity -- arm q, finger, box_pos, box
+            # orientation. Modeled as two components because the real error
+            # is NOT zero-mean: Nokov mocap jitter is sub-mm and negligible,
+            # but the mocap-centroid / base-frame CALIBRATION offset is
+            # systematic and constant within a run (see [[Base Frame
+            # Calibration]], the vault's "Robustness to Initial Position"
+            # note). The bias is the component that matters -- precedent:
+            # Peng et al. ICRA 2018 (arXiv:1710.06537), DR robust to
+            # calibration error. target_pos gets NO noise: it is COMMANDED
+            # (chosen by us), not measured, so noising it would model
+            # nothing. Injected at the SOURCE in _get_obs (never on the
+            # finished obs vector -- the 6 alignment projections are derived
+            # from box orientation + FK, so independent noise there would
+            # make the obs physically self-contradictory). The REWARD always
+            # uses the TRUE (unnoised) state -- see _get_reward, which reads
+            # `data`/`info` directly and never consumes the obs vector.
+            #
+            # box_pos_bias has a HARD GEOMETRIC CEILING: the Hand-E jaw opens
+            # ~5 cm, the box cross-section is 3 cm -> ~1 cm total clearance,
+            # ~5 mm per side (see UR3Pick Environment's grasp-alignment
+            # notes). Past that the policy cannot localize the box to within
+            # grasping tolerance and has NO tactile channel to recover -- the
+            # task becomes unlearnable, not merely harder. 0.005 (5 mm) is
+            # that ceiling; do not raise it without re-deriving the margin.
+            obs_noise=config_dict.create(
+                enable=False,
+                q_jitter=0.001,      # rad/step; arm encoders are excellent,
+                q_bias=0.002,        # rad/episode; deliberately small -- not
+                                     # a real error source, covers FK/URDF
+                                     # mismatch only.
+                finger_jitter=0.0005,  # m/step; readback is percent-
+                finger_bias=0.001,     # m/episode; quantized (0.25 mm/count)
+                                       # + <=10 Hz staleness carry-forward.
+                box_pos_jitter=0.002,  # m/step; deliberately conservative,
+                box_pos_bias=0.005,    # m/episode -- THE CRITICAL ONE, see
+                                       # the geometric-ceiling note above.
+                box_quat_jitter=0.0175,  # rad/step (~1 deg); marker-rig
+                box_quat_bias=0.0524,    # rad/episode (~3 deg) -- mocap
+                                         # measures the RIG, not the box.
+            ),
         ),
     )
 
@@ -633,16 +725,56 @@ class UR3Pick(ur3_base.UR3Base):
         # cube_size axis is on).
         box_half_z = dr["cube_half_z"]
 
+        # Action-delay DR: sample the per-episode delay length ONCE (held
+        # constant for the whole episode -- the real deploy loop's HTTP/RTDE
+        # timing does not change tick-to-tick in a way we'd model as
+        # per-step). Same STATIC-gate pattern as the physics DR block above:
+        # off -> no split, no info keys (see step() for the ring-buffer read).
+        ad = self._config.domain_rand.action_delay
+        if ad.enable:
+            rng, rng_delay = jax.random.split(rng)
+            action_delay_steps = jax.random.randint(
+                rng_delay, (), 0, int(ad.max_delay_steps) + 1
+            )
+        # Observation-noise DR: sample the per-episode BIAS terms once here
+        # (held constant for the episode); per-step JITTER is instead derived
+        # deterministically inside _get_obs via jax.random.fold_in(seed,
+        # info["step"]), so it needs no further rng threading through step().
+        # Same STATIC-gate pattern: off -> no split, no info keys.
+        on = self._config.domain_rand.obs_noise
+        if on.enable:
+            rng, rng_obs_seed, rng_obs_bias = jax.random.split(rng, 3)
+            k_q, k_f, k_p, k_axis = jax.random.split(rng_obs_bias, 4)
+            obs_bias_q = jax.random.uniform(
+                k_q, (6,), minval=-float(on.q_bias), maxval=float(on.q_bias)
+            )
+            obs_bias_finger = jax.random.uniform(
+                k_f, (), minval=-float(on.finger_bias), maxval=float(on.finger_bias)
+            )
+            obs_bias_box_pos = jax.random.uniform(
+                k_p, (3,),
+                minval=-float(on.box_pos_bias), maxval=float(on.box_pos_bias),
+            )
+            # Small-rotation bias vector for the box axes (see _skew); each
+            # component independently ~ uniform(-box_quat_bias, +box_quat_bias)
+            # rather than a unit-axis + angle draw -- simpler, and at these
+            # small magnitudes (~3 deg) the difference is negligible.
+            obs_bias_quat_vec = jax.random.uniform(
+                k_axis, (3,),
+                minval=-float(on.box_quat_bias), maxval=float(on.box_quat_bias),
+            )
+
         # initialize box XY — wide jitter, X-heavy, so the box spawns anywhere
         # in X∈[0.30,0.60] (all graspable; 0.60 was the old nominal). Y-center
         # shiftable via box_y_center_offset (0.0 = legacy, centered on the XML
         # keyframe) so a sweep can push the spawn to one side of the target.
+        box_xy_jitter = jp.asarray(self._config.box_xy_jitter, dtype=float)
         box_xy = (
             jax.random.uniform(
                 rng_box,
                 (2,),
-                minval=jp.array([-0.15, -0.2]),
-                maxval=jp.array([0.15, 0.2]),
+                minval=-box_xy_jitter,
+                maxval=box_xy_jitter,
             )
             + self._init_obj_pos[:2]  # Box XY from XML keyframe
             + jp.array([0.0, float(self._config.box_y_center_offset)])
@@ -733,13 +865,14 @@ class UR3Pick(ur3_base.UR3Base):
         # box_target_dist for collapse from unreachable targets.
         # target_mode is a STATIC config value, so this Python if/else is
         # resolved at trace time (jit/vmap-safe).
+        tz_jitter = jp.asarray(self._config.target_z_jitter, dtype=float)
         if self._config.target_mode == "box":
             target_pos = (
                 jax.random.uniform(
                     rng_target,
                     (3,),
-                    minval=jp.array([0.02, -0.03, 0.18]),
-                    maxval=jp.array([0.06, 0.03, 0.21]),
+                    minval=jp.array([0.02, -0.03, tz_jitter[0]]),
+                    maxval=jp.array([0.06, 0.03, tz_jitter[1]]),
                 )
                 + self._init_obj_pos
                 + jp.array([0.0, float(self._config.target_y_center_offset), 0.0])
@@ -781,7 +914,9 @@ class UR3Pick(ur3_base.UR3Base):
             # replace this fixed Z-band with an elevation angle (target_z from r
             # and an elevation draw) at this spot.
             target_z = (
-                jax.random.uniform(rng_tz, (), minval=0.18, maxval=0.21)
+                jax.random.uniform(
+                    rng_tz, (), minval=tz_jitter[0], maxval=tz_jitter[1]
+                )
                 + self._init_obj_pos[2]
             )
             target_pos = jp.array([target_xy[0], target_xy[1], target_z])
@@ -827,9 +962,15 @@ class UR3Pick(ur3_base.UR3Base):
         # per-finger range [0, 0.025] m (0 = open, 0.025 = closed) and apply it to
         # both fingers. This starts the policy anywhere between fully open and
         # fully closed, independent of the base pose and init_qpos_noise.
-        finger_sample = jax.random.uniform(
-            rng_gripper, (), minval=0.0, maxval=0.025
-        )
+        if self._config.finger_random_init:
+            finger_sample = jax.random.uniform(
+                rng_gripper, (), minval=0.0, maxval=0.025
+            )
+        else:
+            # Deterministic DR-ladder baseline: always start fully OPEN.
+            # rng_gripper is still split above (fixed 9-way split, jit/vmap-
+            # safe) but simply goes unused here.
+            finger_sample = jp.array(0.0, dtype=float)
         noisy_finger_qpos = jp.full((2,), finger_sample)
 
         # -----------------------------
@@ -946,30 +1087,98 @@ class UR3Pick(ur3_base.UR3Base):
                 {f"dr/{k}": jp.array(0.0, dtype=float) for k in _DR_METRIC_KEYS}
             )
 
+        # Action-delay ring buffer + the sampled per-episode delay length (see
+        # the sampling above and step()'s exec_action read). STATIC gate ->
+        # keys exist only when this axis is enabled.
+        if ad.enable:
+            info.update(
+                {
+                    "action_buffer": jp.zeros(
+                        (int(ad.max_delay_steps) + 1, self._nu), dtype=float
+                    ),
+                    "dr_action_delay_steps": action_delay_steps,
+                }
+            )
+            metrics.update({"dr/action_delay_steps": jp.array(0.0, dtype=float)})
+
+        # Obs-noise per-episode bias terms + the fold_in seed for the per-step
+        # jitter (see _get_obs). STATIC gate -> keys exist only when enabled.
+        if on.enable:
+            info.update(
+                {
+                    "obs_noise_seed": rng_obs_seed,
+                    "obs_bias_q": obs_bias_q,
+                    "obs_bias_finger": obs_bias_finger,
+                    "obs_bias_box_pos": obs_bias_box_pos,
+                    "obs_bias_quat_vec": obs_bias_quat_vec,
+                }
+            )
+
         obs = self._get_obs(data, info)
         reward, done = jp.zeros(2)
         return State(data, obs, reward, done, metrics, info)
 
     def step(self, state: State, action: jax.Array) -> State:
-        delta = action * self._action_scale
+        info = dict(state.info)
+
+        # Action-delay DR: execute a buffered PAST action instead of the
+        # fresh one (the delay length was sampled ONCE per episode in
+        # reset(), held in info["dr_action_delay_steps"]). Push the
+        # just-computed RAW action into the ring buffer (index 0 = most
+        # recent, pushed every step) and read back the delayed entry for the
+        # CTRL computation only -- info["last_action"] (the obs Markov
+        # feature + the action_rate reward, both below) stays on the RAW
+        # action, matching real deployment: the policy is never told its own
+        # command was delayed, only the arm's physical execution lags. STATIC
+        # gate -> the off path is byte-for-byte the old
+        # `delta = action * self._action_scale`.
+        ad = self._config.domain_rand.action_delay
+        if ad.enable:
+            buf = jp.concatenate(
+                [action[None, :], info["action_buffer"][:-1]], axis=0
+            )
+            info["action_buffer"] = buf
+            exec_action = buf[info["dr_action_delay_steps"]]
+        else:
+            exec_action = action
+
+        delta = exec_action * self._action_scale
         ctrl = jp.clip(state.data.ctrl + delta, self._lowers, self._uppers)
 
         # Per-episode physics DR: rebuild the model from the factors sampled in
-        # reset() (stashed in state.info). STATIC gate -> when off this is
-        # exactly `self._mjx_model` and the physics step is unchanged. Under vmap
-        # the per-env info scalars make the model per-env automatically.
-        # TODO(dr): per-STEP axes hook here, gated on their (off) flags:
-        #   - dr.cube_force: sample from state.info["rng"] and apply an external
-        #     wrench via data.replace(xfrc_applied=...at[self._obj_body].set(f)).
-        #   - dr.action_delay: pop a delayed action from an info ring buffer.
+        # reset() (stashed in info). STATIC gate -> when off this is exactly
+        # `self._mjx_model` and the physics step is unchanged. Under vmap the
+        # per-env info scalars make the model per-env automatically.
         model = (
-            self._randomize_physics(self._mjx_model, state.info)
+            self._randomize_physics(self._mjx_model, info)
             if self._dr_enable
             else self._mjx_model
         )
-        data = mjx_env.step(model, state.data, ctrl, self.n_substeps)
 
-        info = dict(state.info)
+        # Per-step environment DR: a fresh random 3D force on the box, drawn
+        # from info["rng"] and re-split EVERY step (unlike action_delay, this
+        # is NOT held per-episode -- it models a continuous small
+        # "environment disturbance", e.g. a bumped table, not a one-off
+        # event). STATIC gate -> the off path never touches
+        # state.data.xfrc_applied or info["rng"] at all.
+        cf = self._config.domain_rand.cube_force
+        if cf.enable:
+            rng_force, rng_next = jax.random.split(info["rng"])
+            info["rng"] = rng_next
+            force = jax.random.uniform(
+                rng_force, (3,),
+                minval=-float(cf.force_mag), maxval=float(cf.force_mag),
+            )
+            data_in = state.data.replace(
+                xfrc_applied=state.data.xfrc_applied.at[self._obj_body, :3].set(
+                    force
+                )
+            )
+        else:
+            data_in = state.data
+
+        data = mjx_env.step(model, data_in, ctrl, self.n_substeps)
+
         info["step"] = info["step"] + 1
 
         # action_rate reward reads info["last_action"] (the PREVIOUS action,
@@ -1057,6 +1266,18 @@ class UR3Pick(ur3_base.UR3Base):
                     "dr/arm_damping": jp.where(is_terminal, info["dr_kv_scale"], 0.0),
                 }
             )
+        # action_delay is sampled/gated independently of self._dr_enable (the
+        # physics-DR master switch), so it gets its own terminal-gated entry.
+        if ad.enable:
+            metrics.update(
+                {
+                    "dr/action_delay_steps": jp.where(
+                        is_terminal,
+                        info["dr_action_delay_steps"].astype(jp.float32),
+                        0.0,
+                    ),
+                }
+            )
 
         obs = self._get_obs(data, info)
         return State(data, obs, reward, done, metrics, info)
@@ -1082,8 +1303,20 @@ class UR3Pick(ur3_base.UR3Base):
         observable. DEPLOYED: `build_obs_from_feedback` also appends the
         real-robot last_action (raw, pre action_scale) in its 26D path, tracked
         per-tick in `run_policy_loop`.
+
+        Observation noise (domain_rand.obs_noise, STATIC gate): when enabled,
+        the arm q / finger / box_pos / box-orientation channels are corrupted
+        with a per-episode BIAS + per-step JITTER (sampled in reset() /
+        derived here via fold_in) BEFORE this method's formula runs, so the
+        whole obs is assembled from mutually consistent noisy quantities --
+        never patched onto the finished vector afterward. TCP-side geometry
+        (gripper/finger-touch sites -> jaw_axis/app_axis) stays TRUE: it
+        mirrors the real arm's own encoder-driven FK, which is accurate.
+        Only the channels that are genuinely *measured* on the real robot
+        (arm q readback, finger readback, mocap box pose) get noise. The
+        REWARD (_get_reward, below) is never affected: it reads `data`/`info`
+        directly and never consumes this obs vector.
         """
-        base_obs = super()._get_obs(data, info)
         l_pos = data.site_xpos[self._left_finger_touch]
         r_pos = data.site_xpos[self._right_finger_touch]
         g_pos = data.site_xpos[self._gripper_site]
@@ -1091,7 +1324,69 @@ class UR3Pick(ur3_base.UR3Base):
         jaw_axis = jaw_axis / (jp.linalg.norm(jaw_axis) + 1e-6)
         app_axis = 0.5 * (l_pos + r_pos) - g_pos
         app_axis = app_axis / (jp.linalg.norm(app_axis) + 1e-6)
-        box_axes = data.xmat[self._obj_body].reshape(3, 3)  # columns = box axes
+        box_axes_true = data.xmat[self._obj_body].reshape(3, 3)  # columns = box axes
+
+        on = self._config.domain_rand.obs_noise
+        if on.enable:
+            # Per-step jitter is derived deterministically from the
+            # per-episode seed + the current step count -- no extra rng
+            # threading through step() needed (mirrors how info["step"] is
+            # already a stable per-step counter).
+            step_key = jax.random.fold_in(info["obs_noise_seed"], info["step"])
+            k_q, k_f, k_p, k_r = jax.random.split(step_key, 4)
+
+            q_noisy = (
+                data.qpos[self._robot_arm_qposadr]
+                + info["obs_bias_q"]
+                + jax.random.uniform(
+                    k_q, (6,),
+                    minval=-float(on.q_jitter), maxval=float(on.q_jitter),
+                )
+            )
+            finger_noisy = (
+                data.qpos[self._robot_qposadr[-2:]].sum()
+                + info["obs_bias_finger"]
+                + jax.random.uniform(
+                    k_f, (),
+                    minval=-float(on.finger_jitter), maxval=float(on.finger_jitter),
+                )
+            )
+            box_pos_noisy = (
+                data.xpos[self._obj_body]
+                + info["obs_bias_box_pos"]
+                + jax.random.uniform(
+                    k_p, (3,),
+                    minval=-float(on.box_pos_jitter),
+                    maxval=float(on.box_pos_jitter),
+                )
+            )
+            quat_delta = info["obs_bias_quat_vec"] + jax.random.uniform(
+                k_r, (3,),
+                minval=-float(on.box_quat_jitter),
+                maxval=float(on.box_quat_jitter),
+            )
+            # First-order small-angle rotation perturbation (see _skew); not
+            # re-orthonormalized -- only dot products with jaw/app axes below
+            # ever consume this matrix, so exact SO(3) membership is not
+            # required, and the residual error at these small angles
+            # (~1-3 deg) is negligible.
+            box_axes = box_axes_true + _skew(quat_delta) @ box_axes_true
+
+            tcp_pos = g_pos  # TRUE: arm FK/encoders, not a mocap channel
+            base_obs = jp.concatenate(
+                [
+                    q_noisy,
+                    finger_noisy.reshape(1),
+                    box_pos_noisy - tcp_pos,
+                    # target_pos is COMMANDED (chosen by us), not measured --
+                    # noising it would model nothing, so it stays exact.
+                    info["target_pos"] - box_pos_noisy,
+                ]
+            )
+        else:
+            base_obs = super()._get_obs(data, info)
+            box_axes = box_axes_true
+
         jaw_proj = jaw_axis @ box_axes  # [jaw·b0, jaw·b1, jaw·b2]
         app_proj = app_axis @ box_axes  # [app·b0, app·b1, app·b2]
         last_action = info["last_action"]
