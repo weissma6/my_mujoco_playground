@@ -109,6 +109,26 @@ def default_config() -> config_dict.ConfigDict:
         # eval cadence. run_experiment.py reads this from the env default
         # config and forwards it to ppo.train, so env/EpisodeWrapper/eval stay
         # consistent automatically.
+        #
+        # !! STALE -- DO NOT INHERIT THIS IN A SWEEP. 250 was tuned at b0731d7,
+        # when action_scale was 0.01. eaabb6b's slowdown sweep then chose
+        # action_scale=0.015 at ep400 (Smooth_slow_mid_as015_ar10), and 1636c98
+        # baked that winner's action_scale/action_rate but NOT its
+        # episode_length -- its DR ablation kept carrying ep400 per-line
+        # instead. So every run validated at the CURRENT defaults trained at
+        # 400, incl. DR_baseline_ep400 and DR_cube_mass_light (the policy that
+        # lifted the cube on the real robot); ep250 at action_scale=0.015 has
+        # never been shown to learn the lift. The DR-ladder sweep omitted
+        # episode_length on the assumption that the default was the winner and
+        # trained all 30 runs at 5.0 s instead of 8.0 s: they farmed the dense
+        # approach reward and never bootstrapped lift/box_target (both per-step
+        # and gated behind box_off_rest, so a horizon cut comes almost entirely
+        # out of the post-grasp budget). Left at 250 rather than moved to 400
+        # because reward_scaling=0.05 in manipulation_params.py is explicitly
+        # tuned against the ep250 return scale -- changing this default silently
+        # re-scopes that tuning and every other consumer, so it needs its own
+        # validated decision. Until then: set episode_length=400 EXPLICITLY in
+        # the sweep JSONL (see batch_runs/sweeps/gen_dr_ladder.py).
         episode_length=250,
         action_repeat=1,
         # Arm per-step ctrl delta = action * action_scale (swept per run). The

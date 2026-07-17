@@ -46,12 +46,36 @@ ur3_pick.default_config() -- this script only sets .enable flags (plus the
 deterministic-position literals for L0/LOO_no_pos). No range is
 re-invented here; see default_config() for the single source of truth.
 
+episode_length=400 IS set explicitly on every line, and MUST stay that way.
+This is the one winner knob that was never baked into default_config():
+
+  b0731d7 set the env default to 250 back when action_scale was 0.01.
+  eaabb6b's slowdown sweep -- the one that CHOSE action_scale=0.015
+  (Smooth_slow_mid_as015_ar10) -- ran at ep400. 1636c98 then baked that
+  winner's action_scale/action_rate (and init_start_random="mid" was
+  already default) but NOT its episode_length, and its DR ablation sweep
+  kept carrying ep400 per-line instead. So EVERY validated run at the
+  current defaults -- DR_baseline_ep400, and DR_cube_mass_light, the
+  policy that lifted the cube on the real robot -- trained at 400, while
+  ur3_pick.py's default sat stale at 250.
+
+The first version of this script omitted episode_length on purpose, on the
+(wrong) DRY premise quoted above that every line "inherits the baked
+winner". It inherited the stale 250 instead: 5.0 s of episode at
+ctrl_dt=0.02 instead of 8.0 s. gripper_align is approach-only (a fixed
+number of steps) while lift/box_target/hold are per-step and gated behind
+box_off_rest, so a horizon cut comes almost entirely out of the POST-GRASP
+budget -- the policies farmed the dense approach reward and never
+bootstrapped the lift. All 30 runs were dead. Do not "clean this up" back
+into an inherited default unless ur3_pick.py:episode_length is ALSO moved
+to 400 and re-validated.
+
 Deliberately UNCHANGED (Training strategy: shared HPs, pass 1 -- see the
-vault plan): num_envs/batch_size/num_minibatches/LR/episode_length are not
-overridden anywhere in this sweep. Every line inherits the current
-manipulation_params.py / ur3_pick.default_config() baked winner config,
-matching the existing UR3Pick_sweep.jsonl convention (DRY: only per-run
-metadata + the knob(s) that vary).
+vault plan): num_envs/batch_size/num_minibatches/LR are not overridden
+anywhere in this sweep -- every line inherits the current
+manipulation_params.py / ur3_pick.default_config() values, matching the
+existing UR3Pick_sweep.jsonl convention (DRY: only per-run metadata + the
+knob(s) that vary + the ep400 correction above).
 
 Usage:
     .venv/bin/python batch_runs/sweeps/gen_dr_ladder.py \
@@ -64,6 +88,16 @@ import json
 import os
 
 WANDB_PROJECT = "UR3_pick_ppo"
+
+# Episode horizon for EVERY line -- see the module docstring. This matches
+# DR_baseline_ep400 / the whole UR3Pick_sweep.jsonl DR ablation exactly, so the
+# ladder's L1_pos is a bit-for-bit replicate of that baseline (same seed s1) and
+# the two sweeps stay directly comparable in W&B. It is NOT inherited from
+# ur3_pick.default_config(), whose 250 is stale. run_experiment.py forwards
+# episode_length to BOTH the env config (the at_horizon metric gate) and
+# ppo.train's EpisodeWrapper (the real truncation), so this one key keeps both
+# horizons consistent.
+EPISODE_LENGTH = 400
 
 # The three literal values that collapse "position" to a single deterministic
 # point -- SAME numbers that used to be hardcoded in ur3_pick.reset() before
@@ -200,7 +234,14 @@ _HEADER = f"""\
 # DR-cluster .enable flags (or the deterministic-position literals for L0/
 # LOO_no_pos); every omitted key inherits the current baked defaults. Training
 # strategy is Pass 1 (shared HPs, no per-level tuning) -- num_envs/batch_size/
-# num_minibatches/LR/episode_length are intentionally NOT touched anywhere here.
+# num_minibatches/LR are intentionally NOT touched anywhere here.
+#
+# EXCEPTION: episode_length=400 is set on every line and is NOT inherited.
+# ur3_pick.default_config()'s 250 is STALE (predates action_scale 0.015); every
+# validated run -- incl. DR_baseline_ep400 and the real-robot-proven
+# DR_cube_mass_light -- trained at 400. Omitting it silently trained all 30 runs
+# at 5.0 s instead of 8.0 s and killed the lift phase. See gen_dr_ladder.py's
+# docstring before touching this.
 #
 # {len(_CONFIGS)} configs x N seeds. Comment/blank lines are skipped by the
 # runner and do NOT count toward the 1-based SLURM_ARRAY_TASK_ID.
@@ -218,6 +259,7 @@ def build_lines(seeds):
                 "wandb_project": WANDB_PROJECT,
                 "video_every_evals": 6,
                 "render_every": 1,
+                "episode_length": EPISODE_LENGTH,
                 **overrides,
                 "wandb_tags": [*tags, f"s{seed}"],
             }
