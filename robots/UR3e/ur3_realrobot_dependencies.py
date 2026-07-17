@@ -27,6 +27,7 @@ The UR10 reach files are left untouched; this is a sibling, not a replacement.
 from typing import Dict, List, Optional, Tuple
 import os
 import sys
+import threading
 import time
 
 if sys.platform.startswith("linux"):
@@ -64,6 +65,120 @@ class RobotStoppedExternally(RuntimeError):
     the same way as MocapRigidBodyLost: halt the arm, keep the partial log,
     tag stopped_reason="external_stop".
     """
+
+
+class _GripperWorker:
+    """Background thread that drives the Hand-E XML-RPC channel at <=10 Hz.
+
+    Commit 1 (2026-07-17, "Plan - Sim-to-Real Gap Protocol"): decouples the
+    gripper's blocking HTTP round-trips (move() + getCurrentPosition() --
+    measured 116 ms mean / 202 ms max, see the vault note
+    "Control Loop Frequencies") from the 50 Hz arm loop in run_policy_loop.
+
+    Previously those calls ran INSIDE the arm loop's tick, so every gripper
+    send stalled servoJ for 100-200 ms: 32% of ticks overran and the
+    effective loop rate measured ~40 Hz instead of the requested 50 Hz. Now
+    the arm loop only writes the latest commanded gripper_norm into a
+    single-slot mailbox (command(), non-blocking) and reads the latest known
+    readback out of another single-slot mailbox (latest_state(),
+    non-blocking); this worker thread owns the actual XML-RPC round-trips
+    and paces itself to gripper_min_dt seconds, independent of the arm
+    loop's timing. The arm loop never blocks on the gripper.
+
+    Carry-forward semantics are preserved: latest_state() always returns the
+    most recently obtained readback (grasped/obj_flag/finger position),
+    defaulting to the same NaN/False/0 sentinels as the old code until the
+    first successful poll. The <=10 Hz rate limit and the "only re-send on a
+    meaningful change" gate (>1e-3) are also preserved, just enforced by the
+    worker's own loop cadence instead of being gated on the arm loop's
+    `loop_start` timestamp.
+    """
+
+    def __init__(self, gripper_fn, gripper_state_fn=None,
+                 gripper_min_dt: float = 0.1, debug_print: bool = True):
+        self._gripper_fn = gripper_fn
+        self._gripper_state_fn = gripper_state_fn
+        self._gripper_min_dt = float(gripper_min_dt)
+        self._debug_print = debug_print
+
+        self._lock = threading.Lock()
+        self._pending_norm = None    # latest desired command, or None = nothing yet
+        self._last_sent_norm = None  # value actually sent last (for the change gate)
+
+        self._state = {
+            "gripper_fb_pos": np.nan,
+            "gripper_fb_pct": float("nan"),
+            "grasped": False,
+            "obj_flag": 0,
+        }
+
+        self._stop_event = threading.Event()
+        self._warned = False
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="HandE-XMLRPC")
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self, timeout: float = 1.0):
+        """Signal the worker to stop and join it. Safe to call even if the
+        thread was never started or already exited."""
+        self._stop_event.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+
+    def command(self, norm_cmd: float):
+        """Non-blocking: publish the latest desired gripper command."""
+        with self._lock:
+            self._pending_norm = float(norm_cmd)
+
+    def latest_state(self) -> dict:
+        """Non-blocking: read the most recently obtained gripper readback."""
+        with self._lock:
+            return dict(self._state)
+
+    def _run(self):
+        while not self._stop_event.is_set():
+            tick_start = time.perf_counter()
+            with self._lock:
+                norm = self._pending_norm
+                last_sent = self._last_sent_norm
+            if norm is not None and (
+                    last_sent is None or abs(norm - last_sent) > 1e-3):
+                try:
+                    self._gripper_fn(norm)
+                    with self._lock:
+                        self._last_sent_norm = norm
+                    if self._gripper_state_fn is not None:
+                        fb = self._gripper_state_fn()
+                        with self._lock:
+                            if isinstance(fb, dict):
+                                # Full read_state() dict: sim_finger metres +
+                                # raw native percent + the object-detection
+                                # grasp proxy (see the arm loop's original
+                                # comment on last_grasped/last_obj_flag).
+                                self._state["gripper_fb_pos"] = float(
+                                    fb.get("sim_finger", np.nan))
+                                self._state["gripper_fb_pct"] = float(
+                                    fb.get("pos_pct", np.nan))
+                                self._state["grasped"] = bool(
+                                    fb.get("grasped", False))
+                                self._state["obj_flag"] = int(
+                                    fb.get("obj_flag", 0))
+                            else:
+                                # Back-compat: a plain float is the
+                                # sim_finger value; percent/grasp unavailable.
+                                self._state["gripper_fb_pos"] = float(fb)
+                                self._state["gripper_fb_pct"] = float("nan")
+                except Exception as e:  # noqa: BLE001
+                    if not self._warned and self._debug_print:
+                        print(f"\n[warn] gripper command failed: {e}; "
+                              "arm runs, gripper ignored.")
+                        self._warned = True
+            elapsed = time.perf_counter() - tick_start
+            sleep_time = self._gripper_min_dt - elapsed
+            if sleep_time > 0:
+                self._stop_event.wait(sleep_time)
 
 
 class UR3RealRobotPick:
@@ -938,12 +1053,13 @@ class UR3RealRobotPick:
         in_tol_since = None
         last_box_pos = None
         last_box_quat = None  # (w, x, y, z); carried forward like last_box_pos
-        # The URCapX XML-RPC server must not be commanded above ~10 Hz, so the
-        # gripper is sent at most every gripper_min_dt seconds even though the
-        # arm loop runs at control_hz (e.g. 50 Hz).
+        # The URCapX XML-RPC server must not be commanded above ~10 Hz. Those
+        # calls (move() + getCurrentPosition()) are blocking HTTP round-trips
+        # -- measured 116 ms mean / 202 ms max -- so as of Commit 1
+        # (2026-07-17) they run on a dedicated background thread
+        # (_GripperWorker) instead of inside this 50 Hz arm loop; see that
+        # class's docstring for the full rationale and measurements.
         gripper_min_dt = 0.1
-        last_gripper_t = -1.0
-        last_gripper_norm = None
         last_gripper_fb = np.nan  # Hand-E finger readback [0,0.025]; NaN until polled
         last_gripper_fb_pct = float("nan")  # raw native percent [0,100]; NaN until polled
         # Real grasp proxy (Robotiq object-detection flag), carried forward
@@ -958,6 +1074,17 @@ class UR3RealRobotPick:
         # build_obs_from_feedback). Ignored by the 13D path. Zeros on the
         # first step, matching the env's reset().
         last_action = np.zeros(7, dtype=dtype)
+
+        # Background gripper channel (Commit 1, 2026-07-17) -- see
+        # _GripperWorker's docstring. Started before the loop, stopped in
+        # `finally` alongside servoStop() so it is torn down on every exit
+        # path (normal completion, timeout, mocap loss, external stop,
+        # robot error, or an uncaught exception).
+        gripper_worker = _GripperWorker(
+            gripper_fn, gripper_state_fn, gripper_min_dt=gripper_min_dt,
+            debug_print=debug_print,
+        )
+        gripper_worker.start()
 
         stopped_reason = "completed"
 
@@ -1073,51 +1200,31 @@ class UR3RealRobotPick:
                 )
                 t1_ctrl = time.perf_counter()
 
-                # 6. Send arm servoj + gripper
+                # 6. Send arm servoj (fast RTDE call) + publish the gripper
+                # command to the background worker (non-blocking -- see
+                # _GripperWorker, Commit 1 2026-07-17). The worker owns the
+                # actual <=10 Hz XML-RPC round-trips on its own thread, so a
+                # slow/blocking HTTP call can no longer stall this loop's
+                # servoJ cadence the way it used to (previously measured
+                # 116 ms mean / 202 ms max stalls, ~40 Hz effective rate).
                 t0_send = time.perf_counter()
                 self.send_servoj(
                     arm_ctrl.tolist(),
                     a=servoj_a, v=servoj_v, t=5 * dt,
                     lookahead_time=lookahead_time, gain=gain,
                 )
-                # Gripper on a separate (XML-RPC) channel, rate-limited to
-                # <=10 Hz and only re-sent when the command changes meaningfully.
-                if (loop_start - last_gripper_t >= gripper_min_dt and
-                        (last_gripper_norm is None
-                         or abs(gripper_norm - last_gripper_norm) > 1e-3)):
-                    try:
-                        gripper_fn(gripper_norm)
-                        last_gripper_t = loop_start
-                        last_gripper_norm = gripper_norm
-                        # Read the real Hand-E finger position back at the same
-                        # <=10 Hz cadence (diagnostic only — NOT fed into the obs).
-                        # Carried forward between polls; NaN in a dry-run.
-                        if gripper_state_fn is not None:
-                            fb = gripper_state_fn()
-                            if isinstance(fb, dict):
-                                # Full read_state() dict: sim_finger metres +
-                                # raw native percent.
-                                last_gripper_fb = float(
-                                    fb.get("sim_finger", np.nan))
-                                last_gripper_fb_pct = float(
-                                    fb.get("pos_pct", np.nan))
-                                # Robotiq object-detection flag/bool -- real
-                                # grasp proxy for evaluation/
-                                # ur3_reward_replay.py (sim uses finger-pad
-                                # contact sensors; this is the closest real
-                                # equivalent, polled at the same <=10 Hz
-                                # cadence as the rest of this block).
-                                last_grasped = bool(fb.get("grasped", False))
-                                last_obj_flag = int(fb.get("obj_flag", 0))
-                            else:
-                                # Back-compat: a plain float is the sim_finger
-                                # value; percent/grasp are unavailable.
-                                last_gripper_fb = float(fb)
-                                last_gripper_fb_pct = float("nan")
-                    except Exception as e:  # noqa: BLE001
-                        if step_count == 0 and debug_print:
-                            print(f"\n[warn] gripper command failed: {e}; "
-                                  "arm runs, gripper ignored.")
+                gripper_worker.command(gripper_norm)
+                gstate = gripper_worker.latest_state()
+                # Same carry-forward semantics as before: these hold the most
+                # recently obtained readback (diagnostic only — NOT fed into
+                # the obs) until the worker's next successful <=10 Hz poll.
+                last_gripper_fb = gstate["gripper_fb_pos"]
+                last_gripper_fb_pct = gstate["gripper_fb_pct"]
+                # Robotiq object-detection flag/bool -- real grasp proxy for
+                # evaluation/ur3_reward_replay.py (sim uses finger-pad
+                # contact sensors; this is the closest real equivalent).
+                last_grasped = gstate["grasped"]
+                last_obj_flag = gstate["obj_flag"]
                 t1_send = time.perf_counter()
 
                 # 7. Timing control. compute_end marks the end of all real work
@@ -1237,6 +1344,7 @@ class UR3RealRobotPick:
                     self._control.servoStop()
                 except Exception:
                     pass
+            gripper_worker.stop()
 
         total_wall = time.perf_counter() - start_time
         df = pd.DataFrame(log)
