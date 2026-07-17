@@ -60,7 +60,9 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from evaluation.protocols import canonical_episode_hash  # noqa: E402
+from mujoco_playground._src.manipulation.my_ur3 import ur3_pick  # noqa: E402
 from mujoco_playground._src.manipulation.my_ur3.init_poses import (  # noqa: E402
+    JOINT_ORDER,
     load_init_poses,
 )
 
@@ -118,6 +120,59 @@ def horizon_from_sweep(sweep_path: str) -> int:
     return next(iter(lengths))
 
 
+def training_support(level: str, lib_root: str, noise):
+    """Per-joint interval the policies were actually trained to start from.
+
+    The env's reset() draws a base pose from the TRAIN split of `level` and adds
+    uniform(-init_qpos_noise, +init_qpos_noise) per joint. So the support is the
+    train library's per-joint range widened by that noise. Both inputs are read
+    from the live env/library -- never hardcoded -- so this cannot drift.
+
+    Returns (lo[6], hi[6], unconstrained[6]) where `unconstrained[j]` marks a
+    joint whose noise is >= pi: it is randomized over the full circle during
+    training, so EVERY angle is in-distribution and no bound applies. This is
+    not a technicality -- init_qpos_noise's wrist_3 term is 2*pi, so a raw
+    range comparison flags large wrist_3 "excursions" that are in fact fully
+    trained. Filtering on them would discard good poses for no reason.
+    """
+    tr = load_init_poses(level, "train", root=lib_root)[:, :6]
+    noise = np.asarray(noise, dtype=float)[:6]
+    unconstrained = noise >= np.pi
+    return tr.min(0) - noise, tr.max(0) + noise, unconstrained
+
+
+def filter_to_support(poses: np.ndarray, lo, hi, unconstrained):
+    """Keep only poses lying inside the training support on every bounded joint.
+
+    Rationale: the protocol exists to measure the SIM-TO-REAL gap. A start pose
+    the policy never trained from measures out-of-distribution generalization
+    instead, and the two are not separable after the fact. Worse, an OOD start
+    tends to fail in BOTH domains, driving sim and real return toward the floor
+    together -- which makes the D8 retention ratio a 0/0 and quietly destroys
+    that episode's contribution to the headline metric.
+
+    The test split is hand-collected in a SEPARATE freedrive session from train,
+    and "mid" is a subjective difficulty label rather than an enforced envelope,
+    so the two sessions need not cover the same region -- and empirically they
+    do not (2026-07-17: 6/30 test poses sit up to +41.7 deg outside the trained
+    shoulder_pan range). Filtering keeps the poses real and held out while making
+    "in-distribution" true rather than assumed.
+    """
+    keep = np.ones(poses.shape[0], dtype=bool)
+    violations = {}
+    for j in range(6):
+        if unconstrained[j]:
+            continue
+        bad = (poses[:, j] < lo[j]) | (poses[:, j] > hi[j])
+        if bad.any():
+            excursion = float(
+                max(np.max(lo[j] - poses[:, j]), np.max(poses[:, j] - hi[j]))
+            )
+            violations[JOINT_ORDER[j]] = (int(bad.sum()), excursion)
+        keep &= ~bad
+    return keep, violations
+
+
 def library_sha256(level: str, split: str, root: str) -> str:
     """Hash the source library file, so a re-collection is detectable."""
     import hashlib
@@ -163,8 +218,12 @@ def build_episodes(poses: np.ndarray, n: int, seed: int):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--protocol_id", default="gap_v1")
-    ap.add_argument("--level", choices=["light", "mid", "hard"], default="mid",
-                    help="MUST match the env's init_start_random (baked: mid)")
+    ap.add_argument("--level", choices=["light", "mid", "hard"], default=None,
+                    help="pose library tier; default = the env's live "
+                         "init_start_random, which is what the policies train on")
+    ap.add_argument("--no_support_filter", action="store_true",
+                    help="do NOT restrict the draw to the training support "
+                         "(measures OOD generalization, not the sim-to-real gap)")
     ap.add_argument("--split", choices=["train", "test"], default="test",
                     help="test = held out from training; see the module docstring")
     ap.add_argument("--n", type=int, default=10, help="episodes to freeze")
@@ -208,8 +267,29 @@ def main():
     else:
         horizon = horizon_from_sweep(args.sweep)
 
+    # The level is NOT assumed: it is read from the live env config, so the
+    # protocol can never silently evaluate against a different pose tier than
+    # the policies trained on.
+    cfg = ur3_pick.default_config()
+    train_level = str(cfg.init_start_random)
+    level = args.level or train_level
+    if level != train_level:
+        print(
+            f"WARNING: --level {level!r} differs from the env's live "
+            f"init_start_random={train_level!r}. The policies train on "
+            f"{train_level!r} poses; evaluating on {level!r} measures a "
+            f"different task.",
+            file=sys.stderr,
+        )
+    if train_level == "none":
+        raise SystemExit(
+            "env init_start_random='none': reset() starts from the keyframe, not "
+            "the pose library, so a library-drawn protocol would be off-"
+            "distribution. Pass --level explicitly if you know what you want."
+        )
+
     try:
-        poses = load_init_poses(args.level, args.split, root=args.lib_root)
+        poses = load_init_poses(level, args.split, root=args.lib_root)
     except FileNotFoundError as e:
         raise SystemExit(
             f"{e}\n\n"
@@ -221,17 +301,69 @@ def main():
             f"enough -- no gripper, no URCap, no pendant Play.)"
         )
 
+    pool_size_raw = int(poses.shape[0])
+    support = None
+    if args.no_support_filter:
+        print(
+            "WARNING: --no_support_filter -- poses outside the trained start "
+            "distribution will be eligible. Any gap measured on them conflates "
+            "sim-to-real with OOD generalization.",
+            file=sys.stderr,
+        )
+        violations = {}
+    else:
+        lo, hi, unconstrained = training_support(level, args.lib_root, cfg.init_qpos_noise)
+        keep, violations = filter_to_support(poses, lo, hi, unconstrained)
+        # Never truncate silently: say exactly what was dropped and why.
+        print(
+            f"Support filter ({level}/train range +/- init_qpos_noise): "
+            f"{int(keep.sum())}/{pool_size_raw} test poses are in-distribution."
+        )
+        for jname, (count, exc) in sorted(violations.items()):
+            print(
+                f"  dropped on {jname:14s}: {count:2d} pose(s), worst excursion "
+                f"{exc:+.3f} rad ({np.degrees(exc):+.1f} deg)"
+            )
+        for j in range(6):
+            if unconstrained[j]:
+                print(
+                    f"  {JOINT_ORDER[j]:14s}: unbounded (init_qpos_noise "
+                    f">= pi -> every angle trained; not filtered)"
+                )
+        if int(keep.sum()) < args.n:
+            raise SystemExit(
+                f"only {int(keep.sum())} of {pool_size_raw} test poses lie inside "
+                f"the training support, but --n {args.n} were requested.\n"
+                f"Collect more test poses (--duration) aiming at the SAME arm "
+                f"region as the train session, or lower --n. Do NOT pass "
+                f"--no_support_filter to make this go away: it would trade a "
+                f"loud shortage for a silently OOD protocol."
+            )
+        poses = poses[keep]
+        support = {
+            "filtered_to": f"{level}/train range +/- init_qpos_noise",
+            "pool_size_raw": pool_size_raw,
+            "pool_size_in_support": int(keep.sum()),
+            "dropped": {k: {"n": v[0], "worst_excursion_rad": round(v[1], 4)}
+                        for k, v in violations.items()},
+            "unconstrained_joints": [
+                JOINT_ORDER[j] for j in range(6) if unconstrained[j]
+            ],
+        }
+
     episodes = build_episodes(poses, args.n, args.seed)
     doc = {
         "protocol_id": args.protocol_id,
         "created": datetime.now().isoformat(timespec="seconds"),
         "source": {
             "kind": "init_pose_library_heldout",
-            "level": args.level,
+            "level": level,
             "split": args.split,
-            "library_sha256": library_sha256(args.level, args.split, args.lib_root),
+            "library_sha256": library_sha256(level, args.split, args.lib_root),
+            "train_library_sha256": library_sha256(level, "train", args.lib_root),
             "pool_size": int(poses.shape[0]),
             "draw_seed": args.seed,
+            "support_filter": support,
             "note": (
                 "Poses are real UR3e configurations recorded via freedrive "
                 "(collect_init_poses.py) and frozen verbatim -- reachable by "
@@ -270,7 +402,8 @@ def main():
     print(f"Wrote {len(episodes)} episodes -> {args.out}")
     print(f"  horizon      : {horizon}  ({doc['horizon_source']})")
     print(f"  real_repeats : {args.real_repeats}  -> {len(episodes) * args.real_repeats} real runs per config")
-    print(f"  source       : {args.level}/{args.split}, pool={poses.shape[0]}, draw_seed={args.seed}")
+    print(f"  source       : {level}/{args.split}, pool={poses.shape[0]} "
+          f"(of {pool_size_raw} collected), draw_seed={args.seed}")
     print(f"  poses_sha256 : {doc['poses_sha256']}")
 
 

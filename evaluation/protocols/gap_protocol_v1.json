@@ -1,0 +1,193 @@
+{
+  "protocol_id": "gap_v1",
+  "created": "2026-07-17T15:24:09",
+  "source": {
+    "kind": "init_pose_library_heldout",
+    "level": "mid",
+    "split": "test",
+    "library_sha256": "81afcb7fdf3ddc977bab3474340b535bef6700f656dc85b73bb3d87338e6ad0e",
+    "train_library_sha256": "2d77f8887f9761e72c1550192b23274fffc33440ff664c32381684d9ddfe7a48",
+    "pool_size": 21,
+    "draw_seed": 0,
+    "support_filter": {
+      "filtered_to": "mid/train range +/- init_qpos_noise",
+      "pool_size_raw": 30,
+      "pool_size_in_support": 21,
+      "dropped": {
+        "shoulder_pan": {
+          "n": 6,
+          "worst_excursion_rad": 0.7278
+        },
+        "shoulder_lift": {
+          "n": 2,
+          "worst_excursion_rad": 0.0608
+        },
+        "wrist_2": {
+          "n": 2,
+          "worst_excursion_rad": 0.085
+        }
+      },
+      "unconstrained_joints": [
+        "wrist_3"
+      ]
+    },
+    "note": "Poses are real UR3e configurations recorded via freedrive (collect_init_poses.py) and frozen verbatim -- reachable by construction, in the training distribution's support, never trained on. NOT synthetic draws around a keyframe (D4 as originally written misread the env: with init_start_random='mid' the reset samples this same library, not a keyframe)."
+  },
+  "horizon": 400,
+  "horizon_source": "derived from batch_runs/sweeps/UR3Pick_dr_ladder.jsonl (all lines agree); D6: H == training episode_length",
+  "real_repeats": 3,
+  "validated_on_robot": true,
+  "episodes": [
+    {
+      "episode_id": 0,
+      "arm_qpos": [
+        0.03470693901181221,
+        -1.0899875325015564,
+        1.0824244658099573,
+        -1.6278048954405726,
+        -1.4013469854937952,
+        0.1233917698264122
+      ],
+      "finger": 0.01592404218303636,
+      "box_marker": "A0",
+      "notes": "place box roughly on marker A0",
+      "source_pose_index": 0
+    },
+    {
+      "episode_id": 1,
+      "arm_qpos": [
+        0.03470342233777046,
+        -1.0899259012988587,
+        1.0824368635760706,
+        -1.6277791462340296,
+        -1.4013469854937952,
+        0.12342648208141327
+      ],
+      "finger": 0.006744667844096758,
+      "box_marker": "A1",
+      "notes": "place box roughly on marker A1",
+      "source_pose_index": 1
+    },
+    {
+      "episode_id": 2,
+      "arm_qpos": [
+        -0.04890567461122686,
+        -1.1370217365077515,
+        1.0823901335345667,
+        -1.6273671589293421,
+        -1.3700273672686976,
+        0.09778546541929245
+      ],
+      "finger": 0.0004131908882132274,
+      "box_marker": "A2",
+      "notes": "place box roughly on marker A2",
+      "source_pose_index": 3
+    },
+    {
+      "episode_id": 3,
+      "arm_qpos": [
+        -0.9397533575641077,
+        -1.4152567696622391,
+        1.0457199255572718,
+        -1.1849070650390168,
+        -1.3125994841205042,
+        -0.4979637304889124
+      ],
+      "finger": 0.020331755980006812,
+      "box_marker": "A3",
+      "notes": "place box roughly on marker A3",
+      "source_pose_index": 4
+    },
+    {
+      "episode_id": 4,
+      "arm_qpos": [
+        0.4099372923374176,
+        -2.2891670666136683,
+        1.8256080786334437,
+        -1.1626294714263459,
+        -1.2463629881488245,
+        0.8072191476821899
+      ],
+      "finger": 0.01823741402459996,
+      "box_marker": "A4",
+      "notes": "place box roughly on marker A4",
+      "source_pose_index": 7
+    },
+    {
+      "episode_id": 5,
+      "arm_qpos": [
+        1.0161349773406982,
+        -2.2713529072203578,
+        1.8253596464740198,
+        -1.809263368646139,
+        -0.8691948095904749,
+        1.6861505508422852
+      ],
+      "finger": 0.013590624786635572,
+      "box_marker": "A5",
+      "notes": "place box roughly on marker A5",
+      "source_pose_index": 8
+    },
+    {
+      "episode_id": 6,
+      "arm_qpos": [
+        -0.09894067445863897,
+        -1.7415629825987757,
+        1.7620022932635706,
+        -1.4812515315464516,
+        -1.3496602217303675,
+        0.1352267861366272
+      ],
+      "finger": 0.020396338853038307,
+      "box_marker": "A6",
+      "notes": "place box roughly on marker A6",
+      "source_pose_index": 10
+    },
+    {
+      "episode_id": 7,
+      "arm_qpos": [
+        0.5223450660705566,
+        -2.0442358456053675,
+        1.6453350226031702,
+        -0.9324222368052979,
+        -1.3955805937396448,
+        0.24755604565143585
+      ],
+      "finger": 0.004391390515063975,
+      "box_marker": "A7",
+      "notes": "place box roughly on marker A7",
+      "source_pose_index": 15
+    },
+    {
+      "episode_id": 8,
+      "arm_qpos": [
+        -0.4639981428729456,
+        -1.0362935227206727,
+        0.6555727163897913,
+        -1.821240564385885,
+        -2.0628955999957483,
+        -0.7131899038897913
+      ],
+      "finger": 0.0007079917786365742,
+      "box_marker": "A8",
+      "notes": "place box roughly on marker A8",
+      "source_pose_index": 17
+    },
+    {
+      "episode_id": 9,
+      "arm_qpos": [
+        -0.35319453874696904,
+        -1.8983060322203578,
+        1.7105982939349573,
+        -1.8372651539244593,
+        -1.8347070852862757,
+        -0.845196549092428
+      ],
+      "finger": 0.003107081912489099,
+      "box_marker": "A9",
+      "notes": "place box roughly on marker A9",
+      "source_pose_index": 18
+    }
+  ],
+  "poses_sha256": "76ac2186a68cc45c490b2dfa3d3c8eeec5bf5689aeaa7c9082914fcd73094530"
+}

@@ -1,0 +1,55 @@
+{
+  "env_name": "UR3Pick",
+  "episode_length": 400,
+  "observation_size": 26,
+  "action_size": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "seed": 1,
+  "env_overrides": {
+    "episode_length": 400,
+    "domain_rand.enable": true,
+    "domain_rand.cube_mass.enable": true,
+    "domain_rand.cube_mass.min": 0.85,
+    "domain_rand.cube_mass.max": 1.15
+  },
+  "domain_randomization": {},
+  "git_commit": "1636c989",
+  "training_timestamp": "2026-07-15 14:07:22.400639",
+  "full_cfg": {
+    "env_name": "UR3Pick",
+    "seed": 1,
+    "run_id": "DR_cube_mass_light",
+    "wandb_project": "UR3_pick_ppo",
+    "video_every_evals": 6,
+    "render_every": 1,
+    "episode_length": 400,
+    "domain_rand.enable": true,
+    "domain_rand.cube_mass.enable": true,
+    "domain_rand.cube_mass.min": 0.85,
+    "domain_rand.cube_mass.max": 1.15,
+    "wandb_tags": [
+      "DR",
+      "ablation",
+      "cube_mass",
+      "light",
+      "ep400",
+      "s1"
+    ]
+  }
+}
