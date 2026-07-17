@@ -142,6 +142,12 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "target_r_max",
         "target_azim_min",
         "target_azim_max",
+        # DR-ladder position knobs ("Plan - Sim-to-Real Gap Protocol", C1):
+        # were hardcoded literals in ur3_pick.reset(), now config fields so a
+        # sweep can zero them for a deterministic L0 baseline.
+        "box_xy_jitter",
+        "target_z_jitter",
+        "finger_random_init",
     }
     overrides: Dict[str, Any] = {}
     for k, v in cfg.items():
@@ -965,6 +971,16 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_overrides["target_azim_min"] = float(cfg["target_azim_min"])
         if "target_azim_max" in cfg:
             env_overrides["target_azim_max"] = float(cfg["target_azim_max"])
+        if "box_xy_jitter" in cfg:
+            env_overrides["box_xy_jitter"] = tuple(
+                float(x) for x in cfg["box_xy_jitter"]
+            )
+        if "target_z_jitter" in cfg:
+            env_overrides["target_z_jitter"] = tuple(
+                float(x) for x in cfg["target_z_jitter"]
+            )
+        if "finger_random_init" in cfg:
+            env_overrides["finger_random_init"] = bool(cfg["finger_random_init"])
         if "episode_length" in cfg:
             # Reach the env too, not just ppo.train's EpisodeWrapper: the env's
             # own at_horizon check uses self._config.episode_length, so without
