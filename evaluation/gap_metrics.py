@@ -302,6 +302,11 @@ def sim_selection_regret(df, configs=None, n_boot=10000, seed=0):
         },
         "table": table,
         "n_episodes": n_ep,
+        # Raw resampled-argmax bootstrap distribution (n_boot floats) -- the
+        # REPORTABLE one (ci95_resampled_argmax is just its 2.5/97.5
+        # percentiles). Exposed so evaluation/plots_gap.py's F5 panel (b) can
+        # histogram/KDE it directly instead of re-running the bootstrap.
+        "regret_samples": reg_full,
     }
 
 
