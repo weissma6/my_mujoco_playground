@@ -1138,6 +1138,205 @@ class UR3Pick(ur3_base.UR3Base):
         reward, done = jp.zeros(2)
         return State(data, obs, reward, done, metrics, info)
 
+    def reset_to_state(
+        self,
+        rng: jax.Array,
+        arm_qpos: jax.Array,
+        finger: jax.Array,
+        box_pos: jax.Array,
+        box_quat: jax.Array,
+        target_pos: jax.Array,
+    ) -> State:
+        """EVAL-ONLY reset to an EXACT given state -- bypasses reset()'s random
+        sampling entirely. Used by evaluation/run_gap_protocol_sim.py (the
+        gap-protocol sim mirror, Commit 7) to reset to a real robot's measured
+        initial state (arm pose + box pose, from measured_init.json) instead of
+        a randomly sampled episode, so a sim rollout and its matched real run
+        start from the identical state (D1/D3: "sim mirrors the measurement").
+
+        DO NOT call this from the training loop. `reset()` above is the ONLY
+        reset path used by training and remains byte-for-byte unchanged by this
+        method's existence -- this is an additive method, nothing above it was
+        touched.
+
+        Args:
+          rng: PRNGKey. Threaded into `info["rng"]` (consumed by step()'s
+            per-step cube_force draw, if that axis is enabled -- see the
+            "per-step DR" note below) and into obs-noise jitter's fold_in seed
+            (if that axis is enabled). Pass the SAME key for two calls that
+            should reproduce the identical rollout (this is the determinism
+            check evaluation/run_gap_protocol_sim.py runs).
+          arm_qpos: (6,) rad, the 6 arm joint angles (measured or commanded).
+          finger: scalar m in [0, 0.025], applied to BOTH fingers symmetrically
+            (matches the tendon actuator's coef 0.5/0.5, same as reset()).
+          box_pos: (3,) world m, the box freejoint position.
+          box_quat: (4,) MuJoCo (w, x, y, z), the box freejoint orientation.
+            Normalized internally (defends against a slightly-off-unit logged
+            quaternion, same tolerance-guard as SimFK.geom in
+            evaluation/ur3_reward_replay.py).
+          target_pos: (3,) world m, the lift-target mocap position. Callers
+            MUST obtain this from evaluation/gap_target.target_for_episode()
+            (never re-derived here) so a real run and this sim mirror can never
+            disagree about which target they were scored against (D2).
+
+        What is and is NOT bypassed
+        ----------------------------------------------------------------------
+        Bypassed entirely (forced to IDENTITY, regardless of what this env's
+        `self._config.domain_rand.*` says -- i.e. regardless of the DR-ladder
+        config the loaded policy trained under): the per-episode PHYSICS DR
+        draw (cube mass/friction/size, gravity, arm stiffness/damping -- see
+        `self._dr_identity`), the per-episode ACTION-DELAY length (forced to
+        0 -- no delay), and the per-episode OBS-NOISE BIAS terms (forced to
+        the zero vector). None of reset()'s random sampling (box XY/yaw,
+        lifter height/tilt, target draw, arm-pose-library index, init_qpos_noise,
+        finger_random_init) runs at all -- every one of those quantities is an
+        ARGUMENT here instead, sourced from the measured init.
+
+        NOT bypassed (a documented, deliberate choice, not an oversight):
+          - The per-STEP cube_force disturbance (domain_rand.cube_force), if
+            this policy's config has it enabled, still fires every step() call
+            during the rollout -- it is not a "reset" quantity to bypass; it is
+            part of the deployed policy's OWN dynamics model and forcing it off
+            would evaluate a policy that never trained under it.
+          - The per-STEP obs-noise JITTER (domain_rand.obs_noise, the
+            q_jitter/finger_jitter/box_pos_jitter/box_quat_jitter amplitudes),
+            if enabled, still applies every step via `_get_obs`'s
+            `jax.random.fold_in(seed, info["step"])` -- it is a fixed, non-zero,
+            config-baked amplitude unrelated to reset()'s random sampling, and
+            (like cube_force) is part of what the policy trained under. Only
+            the per-episode BIAS component is zeroed above. Because the jitter
+            is a pure function of `info["obs_noise_seed"]` + the step counter
+            (never resampled), the rollout is still fully deterministic given
+            the same `rng` argument -- this is what run_gap_protocol_sim.py's
+            determinism check verifies.
+          - The lifter mocap body (if this scene's `lifter_height_max` > 0):
+            there is no physical lifter fixture on the real robot (see
+            evaluation/gap_target.py's "No lifter component" note), so it is
+            pinned at the nominal box XY with height 0 (flush with the floor,
+            out of the way) rather than sampled -- consistent with that same
+            already-accepted real<->sim convention, not a new assumption.
+        """
+        arm_qpos = jp.asarray(arm_qpos, dtype=float)
+        box_pos = jp.asarray(box_pos, dtype=float)
+        box_quat = jp.asarray(box_quat, dtype=float)
+        box_quat = box_quat / jp.linalg.norm(box_quat)
+        target_pos = jp.asarray(target_pos, dtype=float)
+        finger_qpos = jp.full((2,), jp.asarray(finger, dtype=float))
+
+        init_q = jp.array(self._init_q)
+        init_q = init_q.at[self._obj_qposadr : self._obj_qposadr + 3].set(box_pos)
+        init_q = init_q.at[self._obj_qposadr + 3 : self._obj_qposadr + 7].set(
+            box_quat
+        )
+        init_q = init_q.at[self._robot_arm_qposadr].set(arm_qpos)
+        init_q = init_q.at[self._robot_qposadr[-2:]].set(finger_qpos)
+
+        # ctrl consistent with init_q, same rationale as reset() ("avoids
+        # residual torques at reset").
+        init_ctrl = jp.array(self._init_ctrl)
+        init_ctrl = init_ctrl.at[: len(self._robot_arm_qposadr)].set(arm_qpos)
+        init_ctrl = init_ctrl.at[-1].set(finger_qpos.sum() * 0.5)
+
+        data = mjx_env.make_data(
+            self._mj_model,
+            qpos=init_q,
+            qvel=jp.zeros(self._mjx_model.nv, dtype=float),
+            ctrl=init_ctrl,
+            impl=self._mjx_model.impl.value,
+            nconmax=self._config.nconmax,
+            njmax=self._config.njmax,
+        )
+        data = data.replace(
+            mocap_pos=data.mocap_pos.at[self._mocap_target, :].set(target_pos),
+        )
+        if self._lifter_enabled:
+            # No physical lifter on the real robot -- pin flush at the floor,
+            # nominal XY, out of the way. See the docstring's "NOT bypassed"
+            # section (last bullet).
+            lifter_pos = jp.array(
+                [self._init_obj_pos[0], self._init_obj_pos[1], 0.0]
+            )
+            data = data.replace(
+                mocap_pos=data.mocap_pos.at[self._lifter_mocap, :].set(lifter_pos),
+                mocap_quat=data.mocap_quat.at[self._lifter_mocap, :].set(
+                    jp.array([1.0, 0.0, 0.0, 0.0])
+                ),
+            )
+
+        metrics = {
+            "out_of_bounds": jp.array(0.0, dtype=float),
+            "success": jp.array(0.0, dtype=float),
+            "box_target_dist": jp.array(0.0, dtype=float),
+            "box_target_dist_final": jp.array(0.0, dtype=float),
+            "box_target_dist_min": jp.array(0.0, dtype=float),
+            "reached_box": jp.array(0.0, dtype=float),
+            "grasped": jp.array(0.0, dtype=float),
+            "lifted": jp.array(0.0, dtype=float),
+            "align_jaw": jp.array(0.0, dtype=float),
+            "align_app": jp.array(0.0, dtype=float),
+            **{k: jp.array(0.0, dtype=float)
+               for k in self._config.reward_config.scales.keys()},
+        }
+        info = {
+            "rng": rng,
+            "target_pos": target_pos,
+            "step": jp.array(0, dtype=jp.int32),
+            "success_counter": jp.array(0, dtype=jp.int32),
+            "reached_box": jp.array(0.0, dtype=float),
+            "grasped": jp.array(0.0, dtype=float),
+            "lifted": jp.array(0.0, dtype=float),
+            "box_rest_z": box_pos[2],
+            "last_action": jp.zeros(self._nu, dtype=float),
+            "dist_min": jp.array(1e3, dtype=float),
+            "hold_counter": jp.array(0, dtype=jp.int32),
+        }
+
+        if self._dr_enable:
+            info.update(
+                {
+                    "dr_mass_scale": self._dr_identity["mass_scale"],
+                    "dr_fric_scale": self._dr_identity["fric_scale"],
+                    "dr_size_scale": self._dr_identity["size_scale"],
+                    "dr_grav": self._dr_identity["grav"],
+                    "dr_kp_scale": self._dr_identity["kp_scale"],
+                    "dr_kv_scale": self._dr_identity["kv_scale"],
+                }
+            )
+            metrics.update(
+                {f"dr/{k}": jp.array(0.0, dtype=float) for k in _DR_METRIC_KEYS}
+            )
+
+        ad = self._config.domain_rand.action_delay
+        if ad.enable:
+            info.update(
+                {
+                    "action_buffer": jp.zeros(
+                        (int(ad.max_delay_steps) + 1, self._nu), dtype=float
+                    ),
+                    # Identity: no delay (eval-only bypass -- see docstring).
+                    "dr_action_delay_steps": jp.array(0, dtype=jp.int32),
+                }
+            )
+            metrics.update({"dr/action_delay_steps": jp.array(0.0, dtype=float)})
+
+        on = self._config.domain_rand.obs_noise
+        if on.enable:
+            info.update(
+                {
+                    "obs_noise_seed": rng,
+                    # Identity: zero BIAS (eval-only bypass); per-step JITTER
+                    # still fires in _get_obs -- see docstring.
+                    "obs_bias_q": jp.zeros(6, dtype=float),
+                    "obs_bias_finger": jp.array(0.0, dtype=float),
+                    "obs_bias_box_pos": jp.zeros(3, dtype=float),
+                    "obs_bias_quat_vec": jp.zeros(3, dtype=float),
+                }
+            )
+
+        obs = self._get_obs(data, info)
+        reward, done = jp.zeros(2)
+        return State(data, obs, reward, done, metrics, info)
+
     def step(self, state: State, action: jax.Array) -> State:
         info = dict(state.info)
 
