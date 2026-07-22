@@ -88,6 +88,7 @@ def download_policy(
     entity: str = DEFAULT_ENTITY,
     project: str = DEFAULT_PROJECT,
     force: bool = False,
+    verify_against_registry: bool = False,
 ) -> str:
   """Download a trained PPO policy from W&B into a load_policy_fn-ready dir.
 
@@ -95,6 +96,23 @@ def download_policy(
   action dims from the run's inference_config.json, registry-resolved as a
   fallback). Skips the download if out_dir already has both files unless
   force=True. Returns out_dir.
+
+  MJX-instantiation note (this is why the local dev box choked on this
+  before): `registry.load(env_name)` builds a REAL mjx_env.MjxEnv -- the
+  same "never instantiate MJX locally, no GPU here" operation this project
+  bans everywhere else (see CLAUDE.md / the plan's own execution log: "Env
+  instantiation (MJX model load) ... was not run locally"). It used to run
+  unconditionally, purely to cross-check obs/action dims that were almost
+  always already present in the run's own `inference_config.json` -- so a
+  plain checkpoint download (a W&B file-fetch, nothing physics-related)
+  dragged in a full MJX build for no reason. Every self-describing run
+  (inference_config.json with observation_size + action_size -- true for
+  the whole DR ladder, confirmed 2026-07-22) now skips `registry.load`
+  entirely. It is only called as a genuine fallback for legacy runs that
+  predate self-describing policies (no inference_config.json, or one
+  missing those fields) -- OR if the caller explicitly opts into the
+  cross-check via `verify_against_registry=True`. That fallback path still
+  needs a machine that can build the MJX env (HPC/GPU box), same as before.
   """
   out_dir = out_dir or default_policy_dir(run_id)
   if not force and policy_exists_locally(run_id, out_dir):
@@ -120,14 +138,21 @@ def download_policy(
       inf_cfg = json.load(f)
 
   env_name = inf_cfg.get("env_name") or run.config.get("env_name", "UR3PicknPlace")
-  env = registry.load(env_name)
-  reg_obs, reg_act = int(env.observation_size), int(env.action_size)
+  self_describing = bool(inf_cfg) and "observation_size" in inf_cfg and "action_size" in inf_cfg
+
+  # Only touch the registry (MJX env build) when we genuinely lack dims, or
+  # the caller explicitly asked for the cross-check. Neither is true for any
+  # self-describing DR-ladder run, so this stays a pure file-download for them.
+  reg_obs = reg_act = None
+  if not self_describing or verify_against_registry:
+    env = registry.load(env_name)
+    reg_obs, reg_act = int(env.observation_size), int(env.action_size)
 
   if inf_cfg:
     nf = inf_cfg.get("network_factory", {}) or {}
     obs_dim = int(inf_cfg.get("observation_size", reg_obs))
     action_dim = int(inf_cfg.get("action_size", reg_act))
-    if obs_dim != reg_obs or action_dim != reg_act:
+    if reg_obs is not None and (obs_dim != reg_obs or action_dim != reg_act):
       print(f"[wandb] WARNING: artifact obs/act ({obs_dim},{action_dim}) "
             f"!= env {env_name} ({reg_obs},{reg_act}); using artifact dims")
   else:
