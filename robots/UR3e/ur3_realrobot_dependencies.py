@@ -1210,7 +1210,12 @@ class UR3RealRobotPick:
                 t0_send = time.perf_counter()
                 self.send_servoj(
                     arm_ctrl.tolist(),
-                    a=servoj_a, v=servoj_v, t=5 * dt,
+                    # ONE-TIME TRACKING CHECK 2026-07-22: was t=5*dt (=0.10s),
+                    # which throttled achieved joint motion to ~10% of commanded
+                    # (see gap-protocol ep0_rep1 diagnosis). t=dt tells servoJ to
+                    # reach each target within the control period. Watch for
+                    # jerk / protective stops; revert to 5*dt if unstable.
+                    a=servoj_a, v=servoj_v, t=dt,
                     lookahead_time=lookahead_time, gain=gain,
                 )
                 gripper_worker.command(gripper_norm)
