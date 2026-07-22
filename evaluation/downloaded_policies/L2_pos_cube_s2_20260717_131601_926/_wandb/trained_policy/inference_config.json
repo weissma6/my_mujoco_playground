@@ -1,0 +1,54 @@
+{
+  "env_name": "UR3Pick",
+  "episode_length": 400,
+  "observation_size": 26,
+  "action_size": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "seed": 2,
+  "env_overrides": {
+    "episode_length": 400,
+    "domain_rand.enable": true,
+    "domain_rand.cube_mass.enable": true,
+    "domain_rand.cube_friction.enable": true,
+    "domain_rand.cube_size.enable": true
+  },
+  "domain_randomization": {},
+  "git_commit": "b170af56",
+  "training_timestamp": "2026-07-17 13:46:21.762836",
+  "full_cfg": {
+    "env_name": "UR3Pick",
+    "seed": 2,
+    "run_id": "L2_pos_cube_s2",
+    "wandb_project": "UR3_pick_ppo",
+    "video_every_evals": 6,
+    "render_every": 1,
+    "episode_length": 400,
+    "domain_rand.enable": true,
+    "domain_rand.cube_mass.enable": true,
+    "domain_rand.cube_friction.enable": true,
+    "domain_rand.cube_size.enable": true,
+    "wandb_tags": [
+      "DR_ladder",
+      "L2",
+      "position",
+      "cube",
+      "s2"
+    ]
+  }
+}

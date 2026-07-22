@@ -1,0 +1,97 @@
+{
+  "env_name": "UR3Pick",
+  "episode_length": 400,
+  "observation_size": 26,
+  "action_size": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "seed": 0,
+  "env_overrides": {
+    "init_qpos_noise": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "init_start_random": "none",
+    "lifter_height_max": 0.0,
+    "lifter_tilt_max": 0.0,
+    "box_z_rot_range": 0.0,
+    "target_r_min": 0.335,
+    "target_r_max": 0.335,
+    "target_azim_min": 0.7854,
+    "target_azim_max": 0.7854,
+    "box_xy_jitter": [
+      0.0,
+      0.0
+    ],
+    "target_z_jitter": [
+      0.195,
+      0.195
+    ],
+    "finger_random_init": false,
+    "episode_length": 400
+  },
+  "domain_randomization": {},
+  "git_commit": "b170af56",
+  "training_timestamp": "2026-07-17 12:41:49.978345",
+  "full_cfg": {
+    "env_name": "UR3Pick",
+    "seed": 0,
+    "run_id": "L0_none_s0",
+    "wandb_project": "UR3_pick_ppo",
+    "video_every_evals": 6,
+    "render_every": 1,
+    "episode_length": 400,
+    "box_xy_jitter": [
+      0.0,
+      0.0
+    ],
+    "target_z_jitter": [
+      0.195,
+      0.195
+    ],
+    "finger_random_init": false,
+    "box_z_rot_range": 0.0,
+    "lifter_height_max": 0.0,
+    "lifter_tilt_max": 0.0,
+    "init_qpos_noise": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "init_start_random": "none",
+    "target_r_min": 0.335,
+    "target_r_max": 0.335,
+    "target_azim_min": 0.7854,
+    "target_azim_max": 0.7854,
+    "wandb_tags": [
+      "DR_ladder",
+      "L0",
+      "none",
+      "s0"
+    ]
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "env_name": "UR3Pick",
+  "episode_length": 400,
+  "observation_size": 26,
+  "action_size": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "seed": 0,
+  "env_overrides": {
+    "episode_length": 400
+  },
+  "domain_randomization": {},
+  "git_commit": "b170af56",
+  "training_timestamp": "2026-07-17 12:49:23.688461",
+  "full_cfg": {
+    "env_name": "UR3Pick",
+    "seed": 0,
+    "run_id": "L1_pos_s0",
+    "wandb_project": "UR3_pick_ppo",
+    "video_every_evals": 6,
+    "render_every": 1,
+    "episode_length": 400,
+    "wandb_tags": [
+      "DR_ladder",
+      "L1",
+      "position",
+      "s0"
+    ]
+  }
+}
