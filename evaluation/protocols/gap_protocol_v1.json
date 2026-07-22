@@ -56,17 +56,17 @@
     {
       "episode_id": 1,
       "arm_qpos": [
-        0.03470342233777046,
-        -1.0899259012988587,
-        1.0824368635760706,
-        -1.6277791462340296,
-        -1.4013469854937952,
-        0.12342648208141327
+        -0.14836150804628545,
+        -1.7620488605894984,
+        2.1164873282061976,
+        -2.7432457409300746,
+        -1.3682392279254358,
+        -0.11396390596498662
       ],
-      "finger": 0.006744667844096758,
+      "finger": 0.016261481906695407,
       "box_marker": "A1",
-      "notes": "place box roughly on marker A1",
-      "source_pose_index": 1
+      "notes": "place box roughly on marker A1 (ep1 pose swapped 2026-07-22: was a 0.06deg near-duplicate of ep0)",
+      "source_pose_index": 29
     },
     {
       "episode_id": 2,
@@ -189,5 +189,5 @@
       "source_pose_index": 18
     }
   ],
-  "poses_sha256": "76ac2186a68cc45c490b2dfa3d3c8eeec5bf5689aeaa7c9082914fcd73094530"
+  "poses_sha256": "c7ad7014f7344e1527a0f032778d39a04fe430eeea7e30a8462ea55a73a75b99"
 }
