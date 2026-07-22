@@ -1,4 +1,4 @@
-"""Eight sim-to-real gap figures over evaluation/gap_metrics.csv (+ a few
+"""Nine sim-to-real gap figures over evaluation/gap_metrics.csv (+ a few
 sibling artifacts: dynamics-replay error, timing logs, LOO sim returns).
 
 Style mirrors the repo's existing plotting conventions (evaluation/
@@ -10,15 +10,23 @@ categorical colors, png+pdf at dpi=300, `_MK_FORMATTER` for large step counts,
 
 No metric math lives here -- every number plotted is read from
 evaluation/gap_metrics.py's functions (retention, noise_floor, term_retention,
-sim_selection_regret, gate_against_noise_floor) or from a sibling module
-(evaluation/ur3_dynamics_replay.time_to_divergence). This module only
+sim_selection_regret, abort_rate, gate_against_noise_floor) or from a sibling
+module (evaluation/ur3_dynamics_replay.time_to_divergence). This module only
 arranges axes.
+
+D17 cube_size: F1's headline rendering (`f1_dose_response_cube_split`)
+overlays the 3cm in-distribution result (solid) and the 4cm OOD probe
+(dashed) on one figure; F9 (`f9_abort_rate_bar`) is a new grouped bar chart
+of abort rate by (policy, cube_size). Every 4cm-cube panel/figure/caption
+carries an explicit OOD label (`OOD_CAPTION_4CM`) -- 4cm is never averaged
+with 3cm anywhere (gap_metrics.py's `_filter_cube_size` guard already
+enforces this at the data layer; the figures additionally make it visible).
 
 --demo fabricates a plausible synthetic gap_metrics.csv (reusing
 gap_metrics.make_synthetic_long -- the SAME fabrication gap_metrics.py's own
 --selftest uses, not a second one) plus small synthetic inputs for the 3
 figures gap_metrics.csv alone cannot feed (F3's per-step curves, F6's replay-
-error series, F7's timing logs), and renders all 8 figures end to end so the
+error series, F7's timing logs), and renders all 9 figures end to end so the
 layout is inspectable before any real data exists.
 
 Local usage:
@@ -87,22 +95,26 @@ def _savefig(fig, out_path: str):
 # F1 -- dose-response curve.
 # ===========================================================================
 
+# D17: the size-DR axis (on in L2/L3) is hard-clamped to a 0.018 half-extent
+# = 3.6cm cross-section for graspability -- the 4x4x4cm physical cube's 4cm
+# cross-section (half-extent 0.020) sits OUTSIDE that clamp even for the
+# configs that randomize size. Every 4cm-cube panel/figure/caption in this
+# module states this explicitly (Task 6).
+OOD_CAPTION_4CM = (
+    "4cm cube is OUT-OF-DISTRIBUTION: outside the trained cube_size DR range "
+    "(hard-clamped to 0.018 half-extent / 3.6cm cross-section, D17) -- not "
+    "averaged with the 3cm in-distribution result."
+)
 
-def f1_dose_response(df, levels, out_path, failed_configs=(), cube_size=None):
-    """x = DR level (levels, in order), two lines: mean sim / mean real
-    return, seed-spread shaded band (sim, min-max across seeds), noise-floor
-    error bars on the real line. `failed_configs`: levels that never trained
-    (marked with an 'x', excluded from both lines so they don't fake a dip).
 
-    `cube_size` (D17): pin to "3cm"/"4cm" -- required if `df` mixes both (see
-    gap_metrics._filter_cube_size). Single-cube only; a cube-split rendering
-    (3cm solid / 4cm dashed, OOD-labelled, D17) is a separate figure.
+def _f1_series(df, levels, failed_configs, cube_size):
+    """Shared data prep for f1_dose_response / f1_dose_response_cube_split:
+    per-level (sim_mean, sim_lo, sim_hi, real_mean, real_err) arrays for one
+    cube_size. No plotting here -- see the module docstring's "no metric math
+    lives here" (the arrays are means/min/max/D9-floor read straight from
+    gap_metrics.py, not new statistics).
     """
-    fig, ax = plt.subplots(figsize=(9, 6))
-    x = np.arange(len(levels))
-
-    sub_all = gm._filter_cube_size(df, cube_size, "f1_dose_response")
-    ok_idx = [i for i, c in enumerate(levels) if c not in failed_configs]
+    sub_all = gm._filter_cube_size(df, cube_size, "_f1_series")
     sim_mean, sim_lo, sim_hi, real_mean, real_err = [], [], [], [], []
     for c in levels:
         if c in failed_configs:
@@ -117,9 +129,26 @@ def f1_dose_response(df, levels, out_path, failed_configs=(), cube_size=None):
         r = gm.retention(sub_all, c, cube_size=cube_size)
         real_mean.append(r["R_real"])
         real_err.append(gm.noise_floor(sub_all, c, cube_size=cube_size)["noise_floor"])
+    return tuple(map(np.array, (sim_mean, sim_lo, sim_hi, real_mean, real_err)))
 
-    sim_mean, sim_lo, sim_hi = map(np.array, (sim_mean, sim_lo, sim_hi))
-    real_mean, real_err = np.array(real_mean), np.array(real_err)
+
+def f1_dose_response(df, levels, out_path, failed_configs=(), cube_size=None):
+    """x = DR level (levels, in order), two lines: mean sim / mean real
+    return, seed-spread shaded band (sim, min-max across seeds), noise-floor
+    error bars on the real line. `failed_configs`: levels that never trained
+    (marked with an 'x', excluded from both lines so they don't fake a dip).
+
+    `cube_size` (D17): pin to "3cm"/"4cm" -- required if `df` mixes both (see
+    gap_metrics._filter_cube_size). Single-cube only -- see
+    `f1_dose_response_cube_split` for the 3cm-solid/4cm-dashed overlay (D17)
+    that is the actual headline F1 figure.
+    """
+    fig, ax = plt.subplots(figsize=(9, 6))
+    x = np.arange(len(levels))
+
+    sim_mean, sim_lo, sim_hi, real_mean, real_err = _f1_series(
+        df, levels, failed_configs, cube_size)
+    ok_idx = [i for i, c in enumerate(levels) if c not in failed_configs]
 
     ax.plot(x[ok_idx], sim_mean[ok_idx], "-o", color=_SIM_COLOR, label="sim (mean)")
     ax.fill_between(x[ok_idx], sim_lo[ok_idx], sim_hi[ok_idx], color=_SIM_COLOR,
@@ -141,8 +170,70 @@ def f1_dose_response(df, levels, out_path, failed_configs=(), cube_size=None):
     ax.set_xticklabels(levels, rotation=30, ha="right")
     ax.set_xlabel("DR level")
     ax.set_ylabel("episode return")
-    ax.set_title("F1 -- dose-response: return vs. DR level", fontweight="bold")
+    title = "F1 -- dose-response: return vs. DR level"
+    if cube_size == "4cm":
+        title += "  [OOD -- 4cm cube]"
+    ax.set_title(title, fontweight="bold")
+    if cube_size == "4cm":
+        ax.text(0.5, -0.16, OOD_CAPTION_4CM, transform=ax.transAxes,
+                ha="center", va="top", fontsize=7.5, style="italic")
     ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    return _savefig(fig, out_path)
+
+
+def f1_dose_response_cube_split(df, levels, out_path, failed_configs=(),
+                                cube_sizes=("3cm", "4cm")):
+    """D17: the headline F1 rendering -- 3cm (in-distribution, solid) and
+    4cm (OOD probe, dashed) overlaid on ONE dose-response figure, so the
+    reader sees both the primary result and the OOD generalization probe on
+    the same axes. 4cm is never averaged into 3cm anywhere (gap_metrics.py's
+    `_filter_cube_size` guard, D17) -- this figure OVERLAYS the two, it does
+    not pool them.
+    """
+    fig, ax = plt.subplots(figsize=(10, 6.5))
+    x = np.arange(len(levels))
+    ok_idx = [i for i, c in enumerate(levels) if c not in failed_configs]
+    fail_idx = [i for i, c in enumerate(levels) if c in failed_configs]
+    linestyles = {"3cm": "-", "4cm": "--"}
+    markers = {"3cm": "o", "4cm": "^"}
+
+    for cube in cube_sizes:
+        sim_mean, sim_lo, sim_hi, real_mean, real_err = _f1_series(
+            df, levels, failed_configs, cube)
+        ls = linestyles.get(cube, "-")
+        mk = markers.get(cube, "o")
+        ood_tag = " [OOD]" if cube == "4cm" else ""
+
+        ax.plot(x[ok_idx], sim_mean[ok_idx], linestyle=ls, marker=mk,
+               color=_SIM_COLOR, alpha=1.0 if cube == "3cm" else 0.75,
+               label=f"sim, {cube}{ood_tag}")
+        if cube == "3cm":  # seed-spread band only for the primary cube -- a
+            # dashed+shaded 4cm band on top would clutter the overlay.
+            ax.fill_between(x[ok_idx], sim_lo[ok_idx], sim_hi[ok_idx],
+                            color=_SIM_COLOR, alpha=0.15,
+                            label="sim seed spread (3cm, min-max)")
+        ax.errorbar(x[ok_idx], real_mean[ok_idx], yerr=real_err[ok_idx],
+                   fmt=ls + mk, color=_REAL_COLOR, capsize=4,
+                   alpha=1.0 if cube == "3cm" else 0.75,
+                   label=f"real, {cube}{ood_tag} (mean +/- noise floor)")
+
+    if fail_idx:
+        ax.scatter(x[fail_idx], np.zeros(len(fail_idx)), **_FAILED_MARKER,
+                  label="failed to train (excluded)")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(levels, rotation=30, ha="right")
+    ax.set_xlabel("DR level")
+    ax.set_ylabel("episode return")
+    ax.set_title(
+        "F1 -- dose-response: return vs. DR level, 3cm (solid) vs. 4cm (dashed, OOD)",
+        fontweight="bold",
+    )
+    ax.text(0.5, -0.16, OOD_CAPTION_4CM, transform=ax.transAxes,
+           ha="center", va="top", fontsize=7.5, style="italic")
+    ax.legend(fontsize=7.5, ncol=2)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     return _savefig(fig, out_path)
@@ -485,7 +576,51 @@ def f8_loo_attribution(df, full_config, loo_configs, out_path, cube_size=None):
 
 
 # ===========================================================================
-# --demo: fabricate everything and render all 8 figures.
+# F9 -- abort rate by (policy, cube_size) (D16/D17, Task 6).
+# ===========================================================================
+
+
+def f9_abort_rate_bar(df, configs, out_path, cube_sizes=("3cm", "4cm")):
+    """Grouped bar chart, one group per policy, one bar per cube_size:
+    fraction of real runs with stop_reason == "abort" (gap_metrics.
+    abort_rate, D16/D17). D17 explicitly predicts this will be HIGH for the
+    4cm cube (Hand-E clearance drops to ~0.5cm/side, right at the mechanical
+    grasp limit) -- expect it and report it as a finding, not a bug.
+    """
+    n_cube = len(cube_sizes)
+    width = 0.8 / max(n_cube, 1)
+    x = np.arange(len(configs))
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+
+    for i, cube in enumerate(cube_sizes):
+        rates = [gm.abort_rate(df, c, cube_size=cube)["abort_rate"] for c in configs]
+        xpos = x + i * width - 0.4 + width / 2
+        hatch = "///" if cube == "4cm" else None
+        label = f"{cube}" + (" [OOD]" if cube == "4cm" else "")
+        ax.bar(xpos, rates, width=width, color=_config_color(i), hatch=hatch,
+              edgecolor="black", linewidth=0.5, label=label)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(configs, rotation=20, ha="right")
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("abort rate (fraction of real runs, stop_reason == abort)")
+    ax.set_title("F9 -- abort rate by policy x cube_size", fontweight="bold")
+    ax.text(
+        0.5, -0.32,
+        "D16/D17: abort = protective stop / RTDE error / mocap loss / hang watchdog\n"
+        "(real robot only -- sim never aborts). 4cm is OOD (hatched, outside the\n"
+        "trained cube_size DR range, D17); a high 4cm abort rate is an expected,\n"
+        "reportable finding, not a bug.",
+        transform=ax.transAxes, ha="center", va="top", fontsize=7.5, style="italic",
+    )
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3, axis="y")
+    plt.tight_layout()
+    return _savefig(fig, out_path)
+
+
+# ===========================================================================
+# --demo: fabricate everything and render all 9 figures.
 # ===========================================================================
 
 _DEMO_LADDER = ["L0_none", "L1_pos", "L2_pos_cube", "L3_pos_cube_robot",
@@ -519,12 +654,23 @@ _DEMO_BASE_SIM = {
 }
 
 
+# D17: "expect a high 4cm failure/abort rate -- that is itself a result, not
+# a bug" (Hand-E clearance drops to ~0.5cm/side at 4cm, right at the
+# mechanical grasp limit). The demo injects a low background abort rate for
+# 3cm and a much higher one for 4cm, consistently across configs -- just
+# enough structure that F9's bar chart isn't flat.
+_DEMO_ABORT_FRAC_3CM = 0.05
+_DEMO_ABORT_FRAC_4CM = 0.35
+
+
 def _make_demo_gap_metrics_csv(rng):
     """Reuses gap_metrics.make_synthetic_long -- the SAME fabrication
     gap_metrics.py's own --selftest uses, not a second one. Builds BOTH cube
     sizes (D17): a 3cm (in-distribution) table and a 4cm (OOD probe) table,
     concatenated -- exercises gap_metrics.py's cube_size grouping guard end
-    to end, the same shape a real merged gap_metrics.csv will have.
+    to end, the same shape a real merged gap_metrics.csv will have. Real rows
+    get a synthetic abort rate (low for 3cm, high for 4cm, D17) so F9's
+    abort-rate bar chart has something to show.
     """
     specs_3cm = {
         cid: {"sim_total": float(s), "real_total": float(s * _DEMO_RETENTION_FRAC_3CM[cid])}
@@ -536,11 +682,13 @@ def _make_demo_gap_metrics_csv(rng):
     }
     df_3cm = gm.make_synthetic_long(
         specs_3cm, n_episodes=10, seeds=(0, 1, 2), repeats=(1, 2, 3),
-        ep_noise=6.0, repeat_noise=2.5, seed_noise=3.0, cube_size="3cm", rng=rng,
+        ep_noise=6.0, repeat_noise=2.5, seed_noise=3.0, cube_size="3cm",
+        abort_frac=_DEMO_ABORT_FRAC_3CM, rng=rng,
     )
     df_4cm = gm.make_synthetic_long(
         specs_4cm, n_episodes=10, seeds=(0, 1, 2), repeats=(1, 2, 3),
-        ep_noise=6.0, repeat_noise=4.0, seed_noise=3.0, cube_size="4cm", rng=rng,
+        ep_noise=6.0, repeat_noise=4.0, seed_noise=3.0, cube_size="4cm",
+        abort_frac=_DEMO_ABORT_FRAC_4CM, rng=rng,
     )
     return pd.concat([df_3cm, df_4cm], ignore_index=True)
 
@@ -609,8 +757,12 @@ def run_demo(out_dir: str):
     PRIMARY_CUBE = "3cm"
 
     outputs = []
-    outputs.append(f1_dose_response(df, _DEMO_LADDER, os.path.join(out_dir, "f1_dose_response"),
-                                    failed_configs=_DEMO_FAILED, cube_size=PRIMARY_CUBE))
+    # D17/Task 6: F1's headline rendering is now the 3cm/4cm cube-split
+    # overlay (solid vs. dashed, OOD-labelled) -- supersedes a single-cube
+    # f1_dose_response() call as the "f1_dose_response" output.
+    outputs.append(f1_dose_response_cube_split(
+        df, _DEMO_LADDER, os.path.join(out_dir, "f1_dose_response"),
+        failed_configs=_DEMO_FAILED))
     outputs.append(f2_term_retention(df, _DEMO_LADDER[:4], os.path.join(out_dir, "f2_term_retention"),
                                      cube_size=PRIMARY_CUBE))
     step_curves = _make_demo_step_curves(rng, D14_REAL_POLICIES)
@@ -625,6 +777,9 @@ def run_demo(out_dir: str):
     outputs.append(f7_timing_honesty(timing, os.path.join(out_dir, "f7_timing_honesty")))
     outputs.append(f8_loo_attribution(df, "L5_full_obs", _DEMO_LOO, os.path.join(out_dir, "f8_loo_attribution"),
                                       cube_size=PRIMARY_CUBE))
+    # Task 6: new abort-rate-by-(policy, cube_size) grouped bar chart (D16/D17).
+    outputs.append(f9_abort_rate_bar(df, _DEMO_LADDER[:4],
+                                     os.path.join(out_dir, "f9_abort_rate_bar")))
 
     print(f"\n--demo wrote {len(outputs)} figures (png+pdf each) to {out_dir}:")
     for png in outputs:
