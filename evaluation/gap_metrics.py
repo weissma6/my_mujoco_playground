@@ -213,34 +213,133 @@ def retention(df, config, subset="exact", episodes=None, cube_size=None,
 
 
 def noise_floor(df, config, episodes=None, cube_size=None):
-    """Within-episode real spread across the k repeats (D9's measurement floor).
+    """D9's measurement floor -- spread of the k repeats' PAIRED sim-real
+    gaps (corrected 2026-07-22), NOT the spread of the k raw real returns.
 
-    For each episode: std of the real total return over its repeats. The floor
-    is the mean of those per-episode stds (return units); nothing smaller than
-    it is reportable. Returns per-episode detail too.
+    Why pairing matters: a D9 repeat holds the arm pose and lift target
+    fixed and re-places ONLY the physical cube, so the k repeats' real
+    returns differ for two reasons that are otherwise inseparable: (1) the
+    cube landed at a slightly different spot on the marker each time
+    (placement-to-placement variance -- a property of the WORKSPACE, not a
+    measurement artifact), and (2) genuine run-to-run measurement noise
+    (control-loop timing, actuation, contact dynamics -- what "measurement
+    resolution" should mean). run_gap_protocol_sim.py mirrors each real
+    repeat's OWN measured placement into its own deterministic sim rollout
+    (not one sim rollout per episode) specifically so this can be
+    disentangled: for repeat r, `g_r = R_real_r - R_sim_r` subtracts a
+    deterministic sim rollout that saw the IDENTICAL placement, so the
+    placement effect present in both `R_real_r` and `R_sim_r` cancels out of
+    `g_r`, leaving only the irreducible real-side noise. The floor is then
+    the spread (std) of the k paired `g_r`, averaged over episodes -- the
+    OLD computation (std of the k raw `R_real_r`) left the placement
+    variance in and so overstated the floor by however much the workspace
+    itself varies placement to placement.
+
+    Sim rows are matched to each real repeat by (episode_id, repeat) (in
+    addition to the config_id/cube_size filter already applied). If the
+    input's sim domain has NO per-repeat granularity for an episode (e.g.
+    only a repeat=0 seed-ensemble row, no real-repeat mirror was rolled
+    out), that episode's single available sim value is reused as a
+    repeat-INVARIANT stand-in for every one of its repeats' pairing.
+    Subtracting the SAME constant from every repeat never changes a spread
+    (std(x - c) == std(x)), so this fallback makes the "paired" floor
+    numerically identical to the old raw-return floor -- the honest
+    behaviour when no genuine per-repeat sim mirror exists to cancel
+    anything against, not a bug. See --selftest for a case with genuine
+    per-repeat sim data, where the two floors provably differ.
+
     `cube_size` (D17): pin to "3cm"/"4cm" when `df` mixes both -- see
     `_filter_cube_size`.
     """
-    sub = _filter_cube_size(
+    real = _filter_cube_size(
         df[(df["config_id"] == config) & (df["domain"] == "real")],
         cube_size, "noise_floor",
     )
-    tot = _run_totals(sub)
-    if episodes is not None:
-        tot = tot[tot["episode_id"].isin(episodes)]
-    per_ep = (
-        tot.groupby("episode_id")["total"]
-        .agg(["mean", "std", "count", "min", "max"])
-        .rename(columns={"std": "repeat_std"})
+    sim = _filter_cube_size(
+        df[(df["config_id"] == config) & (df["domain"] == "sim")],
+        cube_size, "noise_floor",
     )
-    per_ep["repeat_std"] = per_ep["repeat_std"].fillna(0.0)
-    floor = float(per_ep["repeat_std"].mean())
+    real_tot = _run_totals(real)  # one row per (episode_id, repeat[, cube_size])
+    if episodes is not None:
+        real_tot = real_tot[real_tot["episode_id"].isin(episodes)]
+
+    sim_tot = _run_totals(sim)
+    # Genuine per-repeat sim mirror, where present: mean sim total for the
+    # EXACT (episode_id, repeat) pair (mean is a no-op unless the input has
+    # >1 sim row for that exact pair, e.g. duplicate/seed rows).
+    sim_per_repeat = sim_tot.groupby(["episode_id", "repeat"])["total"].mean()
+    # Fallback: episode-level mean sim total, ignoring repeat -- used only
+    # when no exact (episode_id, repeat) match exists (see docstring).
+    sim_per_episode = sim_tot.groupby("episode_id")["total"].mean()
+
+    def _matched_sim(episode_id, repeat):
+        key = (episode_id, repeat)
+        if key in sim_per_repeat.index:
+            return float(sim_per_repeat.loc[key])
+        if episode_id in sim_per_episode.index:
+            return float(sim_per_episode.loc[episode_id])
+        return np.nan
+
+    real_tot = real_tot.copy()
+    real_tot["sim_matched"] = [
+        _matched_sim(ep, rp)
+        for ep, rp in zip(real_tot["episode_id"], real_tot["repeat"])
+    ]
+    real_tot["paired_gap"] = real_tot["total"] - real_tot["sim_matched"]
+
+    per_ep = real_tot.groupby("episode_id").agg(
+        mean_gap=("paired_gap", "mean"), gap_std=("paired_gap", "std"),
+        count=("paired_gap", "count"),
+        min_gap=("paired_gap", "min"), max_gap=("paired_gap", "max"),
+    )
+    per_ep["gap_std"] = per_ep["gap_std"].fillna(0.0)
+    floor = float(per_ep["gap_std"].mean())
     return {
         "config_id": config, "cube_size": cube_size,
-        "noise_floor": floor,                 # mean within-episode repeat std
+        "noise_floor": floor,                 # mean within-episode PAIRED-GAP std (D9)
         "noise_floor_band": (-floor, floor),  # symmetric reportability band
         "per_episode": per_ep,
         "mean_repeats": float(per_ep["count"].mean()),
+    }
+
+
+def abort_rate(df, config, cube_size):
+    """Fraction of REAL runs with stop_reason == "abort" for (config,
+    cube_size) -- a reported result in its own right (D16/D17): a policy
+    that protective-stops or loses the cube often is telling you something,
+    and D17 explicitly expects this to be HIGH for the 4cm OOD cube (Hand-E
+    clearance drops to ~0.5cm/side at 4cm, right at the mechanical grasp
+    limit). Real-only: sim rollouts never abort (run_gap_protocol_sim.py's
+    stop_reason is always "horizon_complete" -- D16's abort concept, hang
+    watchdog / RTDE error / mocap loss, is a real-robot-only failure mode).
+
+    `cube_size` has NO default (unlike the other functions' optional
+    cube_size=) -- an abort rate is only ever meaningful FOR one physical
+    cube (D17: "report the abort/failure rate per (policy, cube)"), so there
+    is no sensible "unpinned" call to fall back to.
+
+    Counted at the RUN level: one (episode_id, repeat) pair is one run, and
+    every one of its ~10 term rows in the long table carries that same run's
+    stop_reason, so de-duplicating to runs before counting (rather than
+    counting raw rows) is the honest computation, even though the ratio
+    would come out identical either way (every run contributes the same
+    row-multiplicity to numerator and denominator).
+    """
+    sub = df[(df["config_id"] == config) & (df["domain"] == "real")]
+    sub = _filter_cube_size(sub, cube_size, "abort_rate")
+    if "stop_reason" not in sub.columns:
+        raise ValueError("abort_rate: no 'stop_reason' column in df.")
+    key_cols = [c for c in ("episode_id", "repeat") if c in sub.columns]
+    runs = (
+        sub.drop_duplicates(subset=key_cols)[key_cols + ["stop_reason"]]
+        if key_cols else sub[["stop_reason"]].drop_duplicates()
+    )
+    n = len(runs)
+    n_abort = int((runs["stop_reason"] == "abort").sum()) if n else 0
+    return {
+        "config_id": config, "cube_size": cube_size,
+        "abort_rate": float(n_abort / n) if n else float("nan"),
+        "n_runs": n, "n_aborted": n_abort,
     }
 
 
@@ -397,7 +496,7 @@ def gate_against_noise_floor(value, ci, floor):
 def make_synthetic_long(
     config_specs, n_episodes=10, seeds=(0, 1, 2), repeats=(1, 2, 3),
     ep_noise=0.0, repeat_noise=0.0, seed_noise=0.0, protocol_hash="demo_hash",
-    cube_size="3cm", rng=None,
+    cube_size="3cm", abort_frac=0.0, rng=None,
 ):
     """Fabricate a plausible long-format table.
 
@@ -412,6 +511,14 @@ def make_synthetic_long(
     (e.g. plots_gap.py's --demo) call this twice -- once per cube_size -- and
     concatenate; this function itself never mixes cube sizes in one call, so
     its own output never trips `_filter_cube_size`'s "which cube?" guard.
+
+    `stop_reason` uses the REAL D16 vocabulary: sim rows are always
+    "horizon_complete" (matches run_gap_protocol_sim.py's sim_meta.json --
+    sim never aborts, D16); real rows are "complete" unless synthetically
+    marked "abort" with per-run probability `abort_frac` (default 0.0, no
+    aborts -- preserves old behaviour byte for byte). Abort marking is
+    per-(episode, repeat) RUN, not per term row, matching the real convention
+    that every term row of one run shares that run's stop_reason.
     """
     if rng is None:
         rng = np.random.default_rng(0)
@@ -435,17 +542,24 @@ def make_synthetic_long(
                         cube_size=cube_size,
                         term=term, domain="sim", scaled_return_H=tot * f,
                         achieved_hz=np.nan, overrun_count=0,
-                        stop_reason="rollout", protocol_hash=protocol_hash,
+                        stop_reason="horizon_complete", protocol_hash=protocol_hash,
                     ))
             for rp in repeats:
                 tot = ep_real + rng.normal(0, repeat_noise)
+                # Only draws from `rng` when abort_frac > 0, so the default
+                # (no aborts) consumes exactly the same rng sequence as
+                # before abort_frac existed -- byte-for-byte reproducible.
+                run_stop_reason = (
+                    "abort" if abort_frac > 0.0 and rng.random() < abort_frac
+                    else "complete"
+                )
                 for term, f in frac.items():
                     rows.append(dict(
                         config_id=cid, seed=-1, episode_id=ep, repeat=rp,
                         cube_size=cube_size,
                         term=term, domain="real", scaled_return_H=tot * f,
                         achieved_hz=50.4, overrun_count=0,
-                        stop_reason="timeout", protocol_hash=protocol_hash,
+                        stop_reason=run_stop_reason, protocol_hash=protocol_hash,
                     ))
     return pd.DataFrame(rows, columns=LONG_COLUMNS)
 
@@ -589,6 +703,119 @@ def _selftest():
     assert r3["R_real"] != r4["R_real"]
     print(f"OK  (3cm R_real={r3['R_real']:.1f}, 4cm R_real={r4['R_real']:.1f}, "
           f"mixed input correctly refused)")
+
+    # ---- (g) noise_floor (D9, corrected): paired-gap spread != raw-return
+    # spread when a genuine per-repeat sim mirror is present -- this is the
+    # regression guard against reverting to the old raw-return-std floor ----
+    print("(g) noise_floor: paired-gap spread != raw real-return spread "
+          "(genuine per-repeat sim mirror) ...", end=" ")
+    # One config, one episode, 3 repeats. A shared per-repeat "placement
+    # effect" [0, +8, -8] is present in BOTH real and sim (mirrors the SAME
+    # measured placement each repeat, D9's mechanics); real additionally
+    # carries small irreducible noise [+1, -1, +2] sim never sees (sim is
+    # deterministic). Pairing must cancel the (dominant) placement effect and
+    # leave only that small irreducible noise.
+    placement = [0.0, 8.0, -8.0]
+    irreducible_noise = [1.0, -1.0, 2.0]
+    base_sim, base_real = 80.0, 75.0
+    real_vals = [base_real + p + n for p, n in zip(placement, irreducible_noise)]
+    sim_vals = [base_sim + p for p in placement]  # deterministic, no noise
+    rows = []
+    for rp, (rv, sv) in enumerate(zip(real_vals, sim_vals), start=1):
+        rows.append(dict(
+            config_id="Lpaired", seed=-1, episode_id=0, repeat=rp,
+            cube_size="3cm", term="gripper_box", domain="real",
+            scaled_return_H=rv, achieved_hz=50.4, overrun_count=0,
+            stop_reason="complete", protocol_hash="paired_test",
+        ))
+        rows.append(dict(
+            config_id="Lpaired", seed=0, episode_id=0, repeat=rp,
+            cube_size="3cm", term="gripper_box", domain="sim",
+            scaled_return_H=sv, achieved_hz=np.nan, overrun_count=0,
+            stop_reason="horizon_complete", protocol_hash="paired_test",
+        ))
+    df_paired = pd.DataFrame(rows, columns=LONG_COLUMNS)
+
+    nf_paired = noise_floor(df_paired, "Lpaired")
+    raw_std = float(np.std(real_vals, ddof=1))
+    paired_gaps = [rv - sv for rv, sv in zip(real_vals, sim_vals)]
+    expected_paired_std = float(np.std(paired_gaps, ddof=1))
+    assert abs(nf_paired["noise_floor"] - expected_paired_std) < 1e-9, (
+        nf_paired["noise_floor"], expected_paired_std)
+    # The regression guard: if someone reverts noise_floor to std(raw real
+    # returns), this assertion fails -- the placement effect (std~6.5) must
+    # NOT survive pairing (std~1.5 here).
+    assert nf_paired["noise_floor"] < 0.4 * raw_std, (
+        f"paired floor {nf_paired['noise_floor']} is not clearly smaller than "
+        f"the raw-return std {raw_std} -- looks like the OLD (pre-D9-fix) "
+        f"raw-return computation, not the paired-gap one")
+    print(f"OK  (paired floor={nf_paired['noise_floor']:.3f} << "
+          f"raw real-return std={raw_std:.3f}; placement effect cancelled)")
+
+    # ---- noise_floor fallback: no per-repeat sim mirror (only a repeat=0
+    # seed-ensemble row) -> paired floor degrades EXACTLY to the raw-return
+    # std (subtracting a constant never changes a spread) -- documents the
+    # honest degradation path make_synthetic_long's general demo tables hit ----
+    print("    noise_floor fallback (no per-repeat sim mirror) == raw std ...",
+          end=" ")
+    df_no_mirror = make_synthetic_long(
+        {"L1": {"sim_total": 100.0, "real_total": 90.0}},
+        n_episodes=3, ep_noise=5.0, repeat_noise=4.0,
+        rng=np.random.default_rng(11),
+    )
+    nf_fallback = noise_floor(df_no_mirror, "L1")
+    raw_per_ep = (
+        _run_totals(df_no_mirror[(df_no_mirror["config_id"] == "L1")
+                                 & (df_no_mirror["domain"] == "real")])
+        .groupby("episode_id")["total"].std().fillna(0.0).mean()
+    )
+    assert abs(nf_fallback["noise_floor"] - float(raw_per_ep)) < 1e-9, (
+        nf_fallback["noise_floor"], raw_per_ep)
+    print(f"OK  (fallback floor={nf_fallback['noise_floor']:.3f} == "
+          f"raw-return floor={raw_per_ep:.3f})")
+
+    # ---- (h) abort_rate (D16/D17) ----
+    print("(h) abort_rate: all-abort, no-abort, and an exact partial count ...",
+          end=" ")
+    df_all_abort = make_synthetic_long(
+        {"L1": {"sim_total": 100.0, "real_total": 80.0}},
+        n_episodes=4, repeats=(1, 2, 3), abort_frac=1.0, cube_size="4cm",
+        rng=np.random.default_rng(5),
+    )
+    ar_all = abort_rate(df_all_abort, "L1", cube_size="4cm")
+    assert ar_all["n_runs"] == 12, ar_all
+    assert ar_all["n_aborted"] == 12, ar_all
+    assert ar_all["abort_rate"] == 1.0, ar_all
+
+    df_no_abort = make_synthetic_long(
+        {"L1": {"sim_total": 100.0, "real_total": 80.0}},
+        n_episodes=4, repeats=(1, 2, 3), abort_frac=0.0, cube_size="3cm",
+        rng=np.random.default_rng(6),
+    )
+    ar_none = abort_rate(df_no_abort, "L1", cube_size="3cm")
+    assert ar_none["n_runs"] == 12, ar_none
+    assert ar_none["n_aborted"] == 0, ar_none
+    assert ar_none["abort_rate"] == 0.0, ar_none
+
+    # Exact partial count: 6 runs (2 episodes x 3 repeats), exactly 2 aborted.
+    partial_rows = []
+    abort_flags = {(0, 1): True, (0, 2): False, (0, 3): False,
+                   (1, 1): True, (1, 2): False, (1, 3): False}
+    for (ep, rp), is_abort in abort_flags.items():
+        partial_rows.append(dict(
+            config_id="L2", seed=-1, episode_id=ep, repeat=rp,
+            cube_size="4cm", term="gripper_box", domain="real",
+            scaled_return_H=50.0, achieved_hz=50.4, overrun_count=0,
+            stop_reason="abort" if is_abort else "complete",
+            protocol_hash="abort_test",
+        ))
+    df_partial = pd.DataFrame(partial_rows, columns=LONG_COLUMNS)
+    ar_partial = abort_rate(df_partial, "L2", cube_size="4cm")
+    assert ar_partial["n_runs"] == 6, ar_partial
+    assert ar_partial["n_aborted"] == 2, ar_partial
+    assert abs(ar_partial["abort_rate"] - 2 / 6) < 1e-9, ar_partial
+    print(f"OK  (all-abort=1.0, no-abort=0.0, partial={ar_partial['abort_rate']:.3f} "
+          f"== 2/6)")
 
     # ---- gate_against_noise_floor sanity ----
     print("gate_against_noise_floor ...", end=" ")
