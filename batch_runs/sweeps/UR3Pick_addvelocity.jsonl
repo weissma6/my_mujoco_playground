@@ -1,0 +1,20 @@
+# addvelocity experiment -- "Plan - Add Velocity" (VT2-SimToReal-Robotics).
+# ONE run: L1_pos (position DR on, all other DR off) at action_scale=0.04
+# (the value confirmed correct for real-robot deployment, see
+# run_gap_protocol.py's 2026-07-22 action_scale fix) WITH obs_include_velocity
+# =true (26D obs -> 33D: + arm qvel(6) + finger qvel(1)).
+#
+# Hypothesis: the policy only ever observes POSITION state, so it cannot
+# anticipate its own momentum -- this may cap how fast+accurate the real
+# approach/grasp can be, independent of action_scale. Isolate the velocity
+# effect: single seed, no other DR axis touched, no velocity-channel noise
+# (obs_noise is not extended to velocity yet).
+#
+# Compare against L1_pos_s1 (gap_protocol_policy_map.json's deployed L1
+# checkpoint, action_scale=0.04 per its own metadata.json, obs_include_velocity
+# =false/26D) as the same-DR-level, same-action_scale, velocity-vs-no-velocity
+# baseline.
+#
+# episode_length=400 is set explicitly (NOT inherited from default_config()'s
+# stale 250) -- see gen_dr_ladder.py's docstring for why this matters.
+{"env_name": "UR3Pick", "seed": 0, "run_id": "L1_pos_vel_as04_s0", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "episode_length": 400, "action_scale": 0.04, "obs_include_velocity": true, "wandb_tags": ["addvelocity", "L1", "position", "action_scale0.04", "velocity", "s0"]}

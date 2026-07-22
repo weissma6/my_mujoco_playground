@@ -323,6 +323,13 @@ class UR3RealRobotPick:
         """Returns dict with joint state, TCP, currents, control output, force."""
         r = self.connect()
         q = r.getActualQ()
+        # addvelocity: hardware-provided arm joint velocity (rad/s), same
+        # convention/order as q (RTDE joint order == UR3Base._ARM_JOINTS
+        # order). Clean signal, no finite-differencing needed -- unlike the
+        # finger, which has no RTDE-equivalent readback (see
+        # policy_step_ctrl_update's finger_pos_est plant + build_obs_from_
+        # feedback's finger-velocity finite-difference for the 33D obs path).
+        qd = r.getActualQd()
         tcp_pose = r.getActualTCPPose()
         # X/Y negated to match the MuJoCo base-frame orientation (same
         # convention as the UR10 reach loop).
@@ -333,6 +340,7 @@ class UR3RealRobotPick:
         tcp_force = r.getActualTCPForce()
         return {
             "q": list(q),
+            "qd": list(qd),
             "tcp_xyz": list(tcp_pose[:3]),
             "tcp_pose": list(tcp_pose),
             "current": list(current),
@@ -709,11 +717,13 @@ class UR3RealRobotPick:
         last_action: Optional[np.ndarray] = None,
         obs_dim: Optional[int] = None,
         dtype=np.float32,
+        dt: Optional[float] = None,
     ) -> np.ndarray:
         """Build the obs to match the canonical UR3Base/UR3Pick _get_obs,
         branching on `obs_dim` (13 for the legacy orientation-free policies,
-        26 for the grasp-frame-aligned policies e.g. AGATE250) so BOTH policy
-        families in POLICY_REGISTRY deploy correctly through one method.
+        26 for the grasp-frame-aligned policies e.g. AGATE250, 33 for the
+        addvelocity policies) so all three policy families in POLICY_REGISTRY
+        deploy correctly through one method.
 
         13D (unchanged from before this branch was added):
             [arm_q(6), gripper(1), (box-tcp)(3), (target-box)(3)]
@@ -721,6 +731,20 @@ class UR3RealRobotPick:
         26D (= 13D + 6D grasp-frame orientation features + 7D last_action,
         matching ur3_pick.py's UR3Pick._get_obs EXACTLY):
             [ ...13D above..., jaw_proj(3), app_proj(3), last_action(7) ]
+
+        33D (= 26D + 6D arm joint velocity + 1D finger velocity, matching
+        ur3_pick.py's addvelocity _get_obs branch EXACTLY):
+            [ ...26D above..., arm_qvel(6), finger_qvel(1) ]
+        arm_qvel comes straight from RTDE getActualQd() (fb["qd"]) -- clean,
+        hardware-provided, same order as arm_q. finger_qvel has no RTDE
+        equivalent (the Hand-E is a separate XML-RPC device with no velocity
+        readback), so it is finite-differenced from the SAME finger_pos_est
+        plant estimate that already feeds the finger POSITION obs
+        (policy_step_ctrl_update's low-pass of the tendon integrator) --
+        this is the noisiest/laggiest of the new channels, flagged as a risk
+        in the addvelocity plan. `dt` (control period, s) is required for
+        this branch; defaults to self._loop_dt if set by run_policy_loop,
+        else 0.02 (ctrl_dt).
         where jaw_proj/app_proj are the gripper's jaw axis (finger
         separation) and approach axis (palm->fingertips), each projected
         onto the box's three world-frame axes -- computed via ONE mj_forward
@@ -771,12 +795,12 @@ class UR3RealRobotPick:
             obs = np.concatenate([arm_q, gripper, box_to_tcp, target_to_box])
             return obs[None, :]  # (1, 13)
 
-        if obs_dim == 26:
+        if obs_dim in (26, 33):
             if getattr(self, "_fk_model", None) is None:
                 raise RuntimeError(
-                    "26D obs requires init_fk_model() to have been called "
-                    "(the grasp-frame orientation features need the FK "
-                    "scene's finger-touch sites + box body)."
+                    f"{obs_dim}D obs requires init_fk_model() to have been "
+                    "called (the grasp-frame orientation features need the "
+                    "FK scene's finger-touch sites + box body)."
                 )
             bq = (np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
                   if box_quat is None else np.asarray(box_quat, dtype=float))
@@ -789,14 +813,37 @@ class UR3RealRobotPick:
             app_proj = (geo["app_axis"] @ geo["box_axes"]).astype(dtype)  # 3
             la = (np.zeros(7, dtype=dtype) if last_action is None
                   else np.asarray(last_action, dtype=dtype).reshape(7))   # 7
-            obs = np.concatenate([
+            obs26 = np.concatenate([
                 arm_q, gripper, box_to_tcp, target_to_box,
                 jaw_proj, app_proj, la,
             ])
-            return obs[None, :]  # (1, 26)
+            if obs_dim == 26:
+                return obs26[None, :]  # (1, 26)
+
+            # addvelocity: obs_dim == 33. arm_qvel is RTDE-clean; finger_qvel
+            # is finite-differenced from finger_pos_est (the same plant
+            # estimate the finger POSITION obs above already uses) -- there
+            # is no hardware velocity readback for the Hand-E. First call
+            # (no previous estimate cached) returns 0.0, matching sim's
+            # convention of a well-defined start rather than NaN/undefined.
+            arm_qvel = (np.array(fb["qd"], dtype=dtype) if "qd" in fb
+                        else np.zeros(6, dtype=dtype))               # 6
+            step_dt = float(dt if dt is not None
+                            else getattr(self, "_loop_dt", 0.02))
+            prev_finger = getattr(self, "_prev_finger_pos_est", None)
+            finger_pos_2x = float(gripper[0])  # sim sums both fingers; match
+            if prev_finger is None or step_dt <= 0.0:
+                finger_qvel = np.zeros(1, dtype=dtype)
+            else:
+                finger_qvel = np.array(
+                    [(finger_pos_2x - prev_finger) / step_dt], dtype=dtype
+                )
+            self._prev_finger_pos_est = finger_pos_2x
+            obs33 = np.concatenate([obs26, arm_qvel, finger_qvel])
+            return obs33[None, :]  # (1, 33)
 
         raise ValueError(f"build_obs_from_feedback: unsupported obs_dim={obs_dim} "
-                          "(expected 13 or 26)")
+                          "(expected 13, 26, or 33)")
 
     # =========================================================================
     # F2 — Mocap base-frame calibration (mocap world -> policy/base frame)
@@ -1046,6 +1093,12 @@ class UR3RealRobotPick:
         # the start of the run).
         self._gripper_ctrl = float(getattr(self, "_gripper_ctrl", 0.0))
         self._finger_pos_est = 0.0
+        # addvelocity: reset the finger-velocity finite-difference state per
+        # rollout too, so a fresh run never diffs against the previous run's
+        # last finger position. build_obs_from_feedback returns 0.0 velocity
+        # on the first call when this is None (matches sim's zero-init).
+        self._prev_finger_pos_est = None
+        self._loop_dt = dt
 
         log = []
         step_count = 0
@@ -1179,6 +1232,7 @@ class UR3RealRobotPick:
                     box_quat=box_quat,
                     last_action=last_action,
                     dtype=dtype,
+                    dt=dt,  # addvelocity: finger finite-difference period
                 )
                 t1_obs = time.perf_counter()
 

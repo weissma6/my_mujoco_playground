@@ -147,6 +147,20 @@ def default_config() -> config_dict.ConfigDict:
         # travel is 0.025, which needs >=2.5 steps at 0.01. This is what keeps
         # the hand open on approach independent of the swept arm action_scale.
         gripper_action_scale=0.02,
+        # addvelocity (2026-07-22): append arm joint velocity (6D) + finger
+        # velocity (1D) to the obs, AFTER the existing 26D layout (base_obs +
+        # jaw_proj + app_proj + last_action) -> 33D total when enabled. STATIC
+        # gate: default False reproduces the 26D obs byte-for-byte (see the
+        # regression test in ur3_pick_test.py). Motivation: the policy only
+        # ever sees POSITION state, so it cannot anticipate its own momentum --
+        # hypothesis is this caps how fast+accurate the approach/grasp can be,
+        # independent of action_scale. Velocity is read from data.qvel (sim,
+        # exact) / RTDE getActualQd + a finger finite-difference (real, see
+        # robots/UR3e/ur3_realrobot_dependencies.py's build_obs_from_feedback).
+        # No noise is added to these channels in this first run (obs_noise
+        # above is not extended to velocity yet) -- isolate the effect of
+        # having velocity at all before adding robustness DR on top of it.
+        obs_include_velocity=False,
         reward_config=config_dict.create(
             scales=config_dict.create(
                 ## Staged reward scaling factors (sequenced by sticky latches).
@@ -1664,7 +1678,23 @@ class UR3Pick(ur3_base.UR3Base):
         jaw_proj = jaw_axis @ box_axes  # [jaw·b0, jaw·b1, jaw·b2]
         app_proj = app_axis @ box_axes  # [app·b0, app·b1, app·b2]
         last_action = info["last_action"]
-        return jp.concatenate([base_obs, jaw_proj, app_proj, last_action])
+        obs = jp.concatenate([base_obs, jaw_proj, app_proj, last_action])
+
+        # addvelocity: appended LAST so the first 26D of the obs are IDENTICAL
+        # (same values, same order) whether or not this is enabled -- a
+        # deployed 26D policy's obs-builder can never accidentally pick up
+        # trailing velocity dims, and a 33D policy's obs-builder just appends
+        # 7 more numbers after everything else. TRUE state always (no noise
+        # wired to these channels yet, see default_config's obs_include_velocity
+        # docstring) -- exact in sim (data.qvel), matched on real by RTDE
+        # getActualQd + a finger finite-difference (see
+        # ur3_realrobot_dependencies.py's build_obs_from_feedback).
+        if self._config.obs_include_velocity:
+            arm_qvel = data.qvel[self._robot_arm_dofadr]        # 6
+            finger_qvel = data.qvel[self._robot_finger_dofadr].sum().reshape(1)  # 1
+            obs = jp.concatenate([obs, arm_qvel, finger_qvel])
+
+        return obs
 
     def _get_reward(
         self, data: mjx.Data, info: Dict[str, Any], action: jax.Array

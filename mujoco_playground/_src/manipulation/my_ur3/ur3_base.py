@@ -109,6 +109,18 @@ class UR3Base(mjx_env.MjxEnv):
         self._robot_qposadr = np.array(
             [self._mj_model.jnt_qposadr[self._mj_model.joint(j).id] for j in all_joints]
         )
+        # addvelocity: DOF (qvel) addresses, NOT qpos addresses -- for hinge
+        # joints qpos/dof addresses coincide in WIDTH (1 each) but not
+        # necessarily in absolute index once a free joint (the box, 7 qpos /
+        # 6 dof) is present earlier in the model, so qposadr must never be
+        # reused to index qvel. jnt_dofadr is the correct address space for
+        # data.qvel.
+        self._robot_arm_dofadr = np.array(
+            [self._mj_model.jnt_dofadr[self._mj_model.joint(j).id] for j in _ARM_JOINTS]
+        )
+        self._robot_finger_dofadr = np.array(
+            [self._mj_model.jnt_dofadr[self._mj_model.joint(j).id] for j in finger_joints]
+        )
         # ------------------------------------------------------------------------------------
         # The end-effector site (TCP)
         geom_names = [self._mj_model.geom(i).name for i in range(self._mj_model.ngeom)]

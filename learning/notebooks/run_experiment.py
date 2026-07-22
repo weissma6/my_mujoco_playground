@@ -148,6 +148,7 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "box_xy_jitter",
         "target_z_jitter",
         "finger_random_init",
+        "obs_include_velocity",
     }
     overrides: Dict[str, Any] = {}
     for k, v in cfg.items():
@@ -950,6 +951,12 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         if "gripper_action_scale" in cfg:
             env_overrides["gripper_action_scale"] = float(
                 cfg["gripper_action_scale"]
+            )
+        if "obs_include_velocity" in cfg:
+            # addvelocity: appends arm qvel(6)+finger qvel(1) to the obs
+            # (26D -> 33D). Default False reproduces the 26D obs exactly.
+            env_overrides["obs_include_velocity"] = bool(
+                cfg["obs_include_velocity"]
             )
         if "action_rate" in cfg:
             # action_rate is nested under reward_config.scales; ConfigDict
