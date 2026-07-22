@@ -105,16 +105,22 @@ TIMEOUT_S = 15.0
 
 # Control (must match training: 50 Hz -> ctrl_dt=0.02).
 CONTROL_HZ = 50.0
-# ARM per-step delta scale. MUST match the run's trained action_scale (metadata
-# .json "action_scale"; this policy = 0.025).
-ACTION_SCALE = 0.025
+# ARM per-step delta scale. MUST match the run's trained action_scale. Read it
+# from the run's sweep line, or — if the sweep does not override it, as with this
+# policy — the ur3_pick default_config at the run's git_commit.
+# For DR_cube_mass_light (1636c989) = 0.015.
+# For L2_pos_cube (DR-ladder, 2026-07-22): metadata.json says "action_scale":
+# 0.04, confirmed correct (this is the value the DR-ladder policies were
+# ACTUALLY trained with, per run_gap_protocol.py's 2026-07-22 fix -- the env
+# default was later lowered to 0.015, which made every ladder policy on the
+# real robot ~2.7x too slow to reach the cube until this was caught).
+ACTION_SCALE = 0.03
 # GRIPPER per-step delta scale — DECOUPLED from the arm in the new setup. MUST
-# match the env's gripper_action_scale (ur3_pick default_config = 0.01, never
-# swept). Kept small so the finger can't snap shut in one step; using the arm's
-# 0.025 here would integrate the gripper ~2.5x too fast (out-of-distribution ->
-# hand snaps closed on approach). load_policy_fn prints the training value as
-# "Env gripper_action_scale" — this must equal it.
-GRIPPER_ACTION_SCALE = 0.01
+# match the env's gripper_action_scale (ur3_pick default_config at the run's
+# commit). L2_pos_cube (and every DR-ladder config) trains with 0.02 -- printed
+# as "Env gripper_action_scale (training source of truth): 0.02" by
+# run_gap_protocol.py for this exact policy.
+GRIPPER_ACTION_SCALE = 0.02
 LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
 SERVOJ_A = 0.3                    # max joint accel [rad/s^2]
@@ -142,6 +148,7 @@ MODEL_PATH = os.path.join(
 # WANDB_PROJECT below adjusted. The selected policy is loaded from
 # evaluation/downloaded_policies/{run_id}/ if present, else downloaded from W&B.
 POLICY_REGISTRY = {
+    "DR_cube_mass_light_1636c989": "DR_cube_mass_light_20260715_133502_2201",
     "Align_logic_easy_052d79fb30eeff144a0e3b1e3ef8cf495b070f9b": "Align_logic_easy_20260710_132446_2201",
     "Align_logic_mid_052d79fb30eeff144a0e3b1e3ef8cf495b070f9b": "Align_logic_mid_20260710_132449_2201",
     "more_rot_weight_e919791fe2e332b8fe2a1ad345b2528570730727": "DIAGHOLD300_posemid_hard_offON_AS0.025_LR6e-4_2048env_25M_s1_20260710_084027_2201",
@@ -153,10 +160,12 @@ POLICY_REGISTRY = {
     "base90_lr4e-10": "base90_j10_fin25_20M_lr4e-4_20260626_101918_6311",
     "reasonable starting positions": "Reso_Pos_lr6e-4_20260626_110022_7585",
     "pick_12M_rand_base85_fin25": "Pick_12M_rand_base85_fin25_20260626_094554_6311",
+    "L2_pos_cube": "L2_pos_cube_s2_20260717_131601_926",
+    "L1_pos": "L1_pos_s0_20260717_121957_6311",
     "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
     "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
 }
-POLICY_NAME =  "Align_logic_easy_052d79fb30eeff144a0e3b1e3ef8cf495b070f9b"  # pick policy to run
+POLICY_NAME =  "L1_pos"  # pick policy to run (was DR_cube_mass_light_1636c989)
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
@@ -256,8 +265,8 @@ print(f"\nDrop target : {target.tolist()}")
 print(f"Starting pick loop at {CONTROL_HZ} Hz ...")
 
 # ── Move to start ──────────────────────────────────────────────────────
-# print(f"\nMoving to start pose {Q_START}")
-# robot.send_movej(Q_START, a=1.0, v=0.5, asynchronous=False)  # blocking moveJ
+print(f"\nMoving to start pose {Q_START}")
+robot.send_movej(Q_START, a=1.0, v=0.5, asynchronous=False)  # blocking moveJ
 
 # ── Download policy from W&B if missing (cache-aware, run-id keyed) ─────
 download_policy(
