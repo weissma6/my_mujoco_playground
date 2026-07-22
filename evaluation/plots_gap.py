@@ -63,6 +63,11 @@ _SIM_COLOR = _TAB10[0]    # blue
 _REAL_COLOR = _TAB10[3]   # red
 _FAILED_MARKER = dict(marker="x", s=90, color="black", zorder=5)
 
+# D14: the 4 real-deployed DR-ladder configs (L4_full/L5_full_obs never
+# trained -- excluded everywhere downstream). Default panel set for the F3
+# per-step trace (D15's 4-panel small multiple).
+D14_REAL_POLICIES = ["L0_none", "L1_pos", "L2_pos_cube", "L3_pos_cube_robot"]
+
 
 def _config_color(i: int):
     return _TAB20[i % len(_TAB20)]
@@ -83,15 +88,20 @@ def _savefig(fig, out_path: str):
 # ===========================================================================
 
 
-def f1_dose_response(df, levels, out_path, failed_configs=()):
+def f1_dose_response(df, levels, out_path, failed_configs=(), cube_size=None):
     """x = DR level (levels, in order), two lines: mean sim / mean real
     return, seed-spread shaded band (sim, min-max across seeds), noise-floor
     error bars on the real line. `failed_configs`: levels that never trained
     (marked with an 'x', excluded from both lines so they don't fake a dip).
+
+    `cube_size` (D17): pin to "3cm"/"4cm" -- required if `df` mixes both (see
+    gap_metrics._filter_cube_size). Single-cube only; a cube-split rendering
+    (3cm solid / 4cm dashed, OOD-labelled, D17) is a separate figure.
     """
     fig, ax = plt.subplots(figsize=(9, 6))
     x = np.arange(len(levels))
 
+    sub_all = gm._filter_cube_size(df, cube_size, "f1_dose_response")
     ok_idx = [i for i, c in enumerate(levels) if c not in failed_configs]
     sim_mean, sim_lo, sim_hi, real_mean, real_err = [], [], [], [], []
     for c in levels:
@@ -99,14 +109,14 @@ def f1_dose_response(df, levels, out_path, failed_configs=()):
             sim_mean.append(np.nan); sim_lo.append(np.nan); sim_hi.append(np.nan)
             real_mean.append(np.nan); real_err.append(0.0)
             continue
-        sub = df[(df["config_id"] == c) & (df["domain"] == "sim")]
+        sub = sub_all[(sub_all["config_id"] == c) & (sub_all["domain"] == "sim")]
         per_seed = gm._run_totals(sub).groupby("seed")["total"].mean()
         sim_mean.append(float(per_seed.mean()))
         sim_lo.append(float(per_seed.min()))
         sim_hi.append(float(per_seed.max()))
-        r = gm.retention(df, c)
+        r = gm.retention(sub_all, c, cube_size=cube_size)
         real_mean.append(r["R_real"])
-        real_err.append(gm.noise_floor(df, c)["noise_floor"])
+        real_err.append(gm.noise_floor(sub_all, c, cube_size=cube_size)["noise_floor"])
 
     sim_mean, sim_lo, sim_hi = map(np.array, (sim_mean, sim_lo, sim_hi))
     real_mean, real_err = np.array(real_mean), np.array(real_err)
@@ -143,11 +153,13 @@ def f1_dose_response(df, levels, out_path, failed_configs=()):
 # ===========================================================================
 
 
-def f2_term_retention(df, configs, out_path):
+def f2_term_retention(df, configs, out_path, cube_size=None):
     """Grouped bars, one group per term (gm.TERM_ORDER, which already starts
     gripper_box -> approach_open -> gripper_align -> grasp -> lift ->
     box_target), one bar per config within a group. Proxy terms
     (gm.PROXY_TERMS: grasp, no_floor_collision) are hatched.
+
+    `cube_size` (D17): pin to "3cm"/"4cm" -- required if `df` mixes both.
     """
     n_cfg = len(configs)
     terms = gm.TERM_ORDER
@@ -155,7 +167,7 @@ def f2_term_retention(df, configs, out_path):
     fig, ax = plt.subplots(figsize=(14, 6))
 
     for i, c in enumerate(configs):
-        tr = gm.term_retention(df, c)["per_term"].reindex(terms)
+        tr = gm.term_retention(df, c, cube_size=cube_size)["per_term"].reindex(terms)
         xpos = np.arange(len(terms)) + i * width - 0.4 + width / 2
         hatches = ["///" if t in gm.PROXY_TERMS else None for t in terms]
         for j, (xp, val, h) in enumerate(zip(xpos, tr["retention"].to_numpy(), hatches)):
@@ -178,40 +190,71 @@ def f2_term_retention(df, configs, out_path):
 
 
 # ===========================================================================
-# F3 -- the grid: one row per config, [MuJoCo | Real] cumulative return.
+# F3 -- per-step exact-parity reward trace (D15; replaces the old cumulative
+# grid, formerly `f3_grid`).
 # ===========================================================================
 
 
-def f3_grid(step_curves, out_path):
-    """step_curves: {config_id: {"sim": (n_ep, H) array, "real": (n_ep, H)
-    array}} of CUMULATIVE return per step. Same y-axis across all subplots.
+def f3_per_step_trace(step_reward, out_path, policies=None):
+    """Per-step EXACT-PARITY reward vs. timestep (D15's respec of the old
+    cumulative-return grid) -- 4-panel small multiple, one panel per policy,
+    sim vs. real overlaid: mean line + shaded +/-1 std band across the
+    protocol's episodes. Cumulative return R = sum_t r_t (mean +/- std across
+    episodes -- the RECORDED scalar, D15) is annotated as text per panel, so
+    the per-step "where does the gap open" story and the per-episode
+    magnitude both read off the same figure without conflating the two.
+
+    step_reward: {config_id: {"sim": (n_episodes, H) array, "real":
+    (n_episodes, H) array}} of PER-STEP (NOT cumulative) exact-parity reward
+    -- i.e. each row already sums gap_metrics.EXACT_PARITY_TERMS (D8) for
+    that step; this function does no term selection or summation of its own
+    (no metric math lives here, per the module docstring). sim and real may
+    have different n_episodes (aborted real repeats are excluded upstream,
+    D16) but must share H.
+
+    `policies`: ordered config_ids, one panel each -- default
+    D14_REAL_POLICIES (the 4 real-deployed ladder rungs), restricted to keys
+    actually present in `step_reward`.
     """
-    configs = list(step_curves.keys())
-    fig, axes = plt.subplots(len(configs), 2, figsize=(10, 2.6 * len(configs)),
+    if policies is None:
+        policies = [c for c in D14_REAL_POLICIES if c in step_reward]
+    if not policies:
+        raise ValueError("f3_per_step_trace: no policies to plot (step_reward "
+                          "is empty or shares no keys with D14_REAL_POLICIES / "
+                          "the given `policies`).")
+
+    fig, axes = plt.subplots(1, len(policies), figsize=(4.6 * len(policies), 4.4),
                              sharex=True, sharey=True, squeeze=False)
+    axes = axes[0]
 
-    ymax = max(np.nanmax(v[dom]) for v in step_curves.values() for dom in ("sim", "real"))
-    ymin = min(np.nanmin(v[dom]) for v in step_curves.values() for dom in ("sim", "real"))
+    for ax, cid in zip(axes, policies):
+        for dom, color, y_txt in (("sim", _SIM_COLOR, 0.96), ("real", _REAL_COLOR, 0.86)):
+            arr = np.asarray(step_reward[cid][dom], dtype=float)  # (n_ep, H)
+            H = arr.shape[1]
+            x = np.arange(H)
+            mean = arr.mean(axis=0)
+            std = arr.std(axis=0)
+            ax.plot(x, mean, color=color, linewidth=2.0, label=dom)
+            ax.fill_between(x, mean - std, mean + std, color=color, alpha=0.2)
 
-    for row, c in enumerate(configs):
-        for col, (dom, color) in enumerate((("sim", _SIM_COLOR), ("real", _REAL_COLOR))):
-            ax = axes[row][col]
-            curves = step_curves[c][dom]
-            H = curves.shape[1]
-            for ep in range(curves.shape[0]):
-                ax.plot(np.arange(H), curves[ep], color=color, alpha=0.25, linewidth=0.7)
-            ax.plot(np.arange(H), curves.mean(axis=0), color=color, linewidth=2.2)
-            ax.set_ylim(ymin, ymax)
-            if row == 0:
-                ax.set_title("MuJoCo" if dom == "sim" else "Real", fontweight="bold")
-            if col == 0:
-                ax.set_ylabel(c, fontsize=9)
-            if row == len(configs) - 1:
-                ax.set_xlabel("step")
-            ax.grid(True, alpha=0.3)
+            cum_R = arr.sum(axis=1)  # per-episode cumulative return
+            R_mean, R_std = float(cum_R.mean()), float(cum_R.std())
+            ax.text(0.03, y_txt, f"R_{dom} = {R_mean:.1f} +/- {R_std:.1f}",
+                   transform=ax.transAxes, fontsize=8, color=color,
+                   va="top", ha="left")
 
-    fig.suptitle("F3 -- cumulative return per episode, MuJoCo vs. Real "
-                 "(thin = per-episode, bold = mean)", fontweight="bold", y=1.0)
+        ax.set_title(cid, fontweight="bold", fontsize=10)
+        ax.set_xlabel("step")
+        ax.grid(True, alpha=0.3)
+
+    axes[0].set_ylabel("per-step exact-parity reward")
+    axes[0].legend(fontsize=8, loc="lower right")
+    fig.suptitle(
+        "F3 -- per-step exact-parity reward trace, sim vs. real "
+        "(mean +/- 1 std across episodes; D15) -- shows WHEN in the episode "
+        "the gap opens; R annotated per panel is the recorded cumulative scalar",
+        fontweight="bold", fontsize=10, y=1.06,
+    )
     plt.tight_layout()
     return _savefig(fig, out_path)
 
@@ -221,10 +264,11 @@ def f3_grid(step_curves, out_path):
 # ===========================================================================
 
 
-def f4_paired_scatter(df, config, out_path, n_boot=10000, seed=0):
-    piv = gm.per_episode_returns(df, config)
+def f4_paired_scatter(df, config, out_path, cube_size=None, n_boot=10000, seed=0):
+    """`cube_size` (D17): pin to "3cm"/"4cm" -- required if `df` mixes both."""
+    piv = gm.per_episode_returns(df, config, cube_size=cube_size)
     sim, real = piv["sim"].to_numpy(), piv["real"].to_numpy()
-    floor = gm.noise_floor(df, config)["noise_floor"]
+    floor = gm.noise_floor(df, config, cube_size=cube_size)["noise_floor"]
 
     rng = np.random.default_rng(seed)
     idx = gm._boot_episode_indices(len(piv), n_boot, rng)
@@ -263,9 +307,13 @@ def f4_paired_scatter(df, config, out_path, n_boot=10000, seed=0):
 # ===========================================================================
 
 
-def f5_selection_regret(df, configs, out_path, n_boot=10000, seed=0):
-    res = gm.sim_selection_regret(df, configs=configs, n_boot=n_boot, seed=seed)
-    floor = float(np.mean([gm.noise_floor(df, c)["noise_floor"] for c in configs]))
+def f5_selection_regret(df, configs, out_path, cube_size=None, n_boot=10000, seed=0):
+    """`cube_size` (D17): pin to "3cm"/"4cm" -- required if `df` mixes both."""
+    res = gm.sim_selection_regret(df, configs=configs, cube_size=cube_size,
+                                  n_boot=n_boot, seed=seed)
+    floor = float(np.mean([
+        gm.noise_floor(df, c, cube_size=cube_size)["noise_floor"] for c in configs
+    ]))
 
     fig = plt.figure(figsize=(13, 8))
     gs = fig.add_gridspec(3, 2, height_ratios=[3, 1, 3], hspace=0.55, wspace=0.3)
@@ -401,14 +449,18 @@ def f7_timing_honesty(timing_by_condition, out_path):
 # ===========================================================================
 
 
-def f8_loo_attribution(df, full_config, loo_configs, out_path):
+def f8_loo_attribution(df, full_config, loo_configs, out_path, cube_size=None):
     """Sim-return drop for each leave-one-cluster-out config vs. the full
     config. SIM ONLY -- see the caption (no real-robot LOO data collected).
+
+    `cube_size` (D17): pin to "3cm"/"4cm" -- required if `df` mixes both (the
+    LOO sim rollouts are cube-agnostic in practice, but the guard still
+    applies if the table happens to carry both).
     """
-    r_full = gm.retention(df, full_config)["R_sim"]
+    r_full = gm.retention(df, full_config, cube_size=cube_size)["R_sim"]
     drops, labels = [], []
     for c in loo_configs:
-        r_c = gm.retention(df, c)["R_sim"]
+        r_c = gm.retention(df, c, cube_size=cube_size)["R_sim"]
         drops.append(r_full - r_c)
         labels.append(c)
 
@@ -442,37 +494,72 @@ _DEMO_LOO = ["LOO_no_pos", "LOO_no_cube", "LOO_no_robot", "LOO_no_env"]
 _DEMO_FAILED = {"L3_pos_cube_robot"}  # marked visually distinct in F1
 
 
+_DEMO_RETENTION_FRAC_3CM = {
+    "L0_none": 0.85, "L1_pos": 0.75, "L2_pos_cube": 0.65,
+    "L3_pos_cube_robot": 0.5, "L4_full": 0.55, "L5_full_obs": 0.60,
+    "LOO_no_pos": 0.62, "LOO_no_cube": 0.58, "LOO_no_robot": 0.64,
+    "LOO_no_env": 0.61,
+}
+# D17 OOD probe: sim_total is UNCHANGED from 3cm (the policy has no size
+# channel in obs and cannot perceive which physical cube it faces -- same
+# simulated behaviour either way). Real retention drops further everywhere,
+# but less so for the size-DR-on configs (L2/L3 saw +/-10% size jitter in
+# training) than the position-DR-only ones -- the story this probe tests.
+_DEMO_RETENTION_FRAC_4CM = {
+    "L0_none": 0.35, "L1_pos": 0.30, "L2_pos_cube": 0.45,
+    "L3_pos_cube_robot": 0.38, "L4_full": 0.20, "L5_full_obs": 0.22,
+    "LOO_no_pos": 0.25, "LOO_no_cube": 0.22, "LOO_no_robot": 0.24,
+    "LOO_no_env": 0.26,
+}
+_DEMO_BASE_SIM = {
+    "L0_none": 140, "L1_pos": 150, "L2_pos_cube": 155,
+    "L3_pos_cube_robot": 60, "L4_full": 160, "L5_full_obs": 158,
+    "LOO_no_pos": 145, "LOO_no_cube": 150, "LOO_no_robot": 148,
+    "LOO_no_env": 152,
+}
+
+
 def _make_demo_gap_metrics_csv(rng):
     """Reuses gap_metrics.make_synthetic_long -- the SAME fabrication
-    gap_metrics.py's own --selftest uses, not a second one.
+    gap_metrics.py's own --selftest uses, not a second one. Builds BOTH cube
+    sizes (D17): a 3cm (in-distribution) table and a 4cm (OOD probe) table,
+    concatenated -- exercises gap_metrics.py's cube_size grouping guard end
+    to end, the same shape a real merged gap_metrics.csv will have.
     """
-    # Roughly monotone-ish dose-response with a dip at the "failed" config
-    # and retention degrading as DR increases (a plausible sim-to-real story).
-    specs = {}
-    base_sim = {"L0_none": 140, "L1_pos": 150, "L2_pos_cube": 155,
-               "L3_pos_cube_robot": 60, "L4_full": 160, "L5_full_obs": 158,
-               "LOO_no_pos": 145, "LOO_no_cube": 150, "LOO_no_robot": 148,
-               "LOO_no_env": 152}
-    retention_frac = {"L0_none": 0.85, "L1_pos": 0.75, "L2_pos_cube": 0.65,
-                      "L3_pos_cube_robot": 0.5, "L4_full": 0.55, "L5_full_obs": 0.60,
-                      "LOO_no_pos": 0.62, "LOO_no_cube": 0.58, "LOO_no_robot": 0.64,
-                      "LOO_no_env": 0.61}
-    for cid, sim_total in base_sim.items():
-        specs[cid] = {"sim_total": float(sim_total),
-                     "real_total": float(sim_total * retention_frac[cid])}
-    return gm.make_synthetic_long(
-        specs, n_episodes=10, seeds=(0, 1, 2), repeats=(1, 2, 3),
-        ep_noise=6.0, repeat_noise=2.5, seed_noise=3.0, rng=rng,
+    specs_3cm = {
+        cid: {"sim_total": float(s), "real_total": float(s * _DEMO_RETENTION_FRAC_3CM[cid])}
+        for cid, s in _DEMO_BASE_SIM.items()
+    }
+    specs_4cm = {
+        cid: {"sim_total": float(s), "real_total": float(s * _DEMO_RETENTION_FRAC_4CM[cid])}
+        for cid, s in _DEMO_BASE_SIM.items()
+    }
+    df_3cm = gm.make_synthetic_long(
+        specs_3cm, n_episodes=10, seeds=(0, 1, 2), repeats=(1, 2, 3),
+        ep_noise=6.0, repeat_noise=2.5, seed_noise=3.0, cube_size="3cm", rng=rng,
     )
+    df_4cm = gm.make_synthetic_long(
+        specs_4cm, n_episodes=10, seeds=(0, 1, 2), repeats=(1, 2, 3),
+        ep_noise=6.0, repeat_noise=4.0, seed_noise=3.0, cube_size="4cm", rng=rng,
+    )
+    return pd.concat([df_3cm, df_4cm], ignore_index=True)
 
 
 def _make_demo_step_curves(rng, configs, n_episodes=10, H=400):
+    """PER-STEP (NOT cumulative) synthetic exact-parity reward for
+    f3_per_step_trace: a single approach/hold-shaped bump (so the trace has
+    structure instead of being flat noise), real a scaled-down and noisier
+    version of sim -- a plausible per-step sim-to-real gap. n_episodes/H
+    match the frozen protocol (10 episodes, H=400).
+    """
+    t = np.linspace(0.0, 1.0, H)
+    shape = np.exp(-((t - 0.55) ** 2) / (2 * 0.12 ** 2))
     out = {}
     for cid in configs:
         curves = {}
-        for dom, scale in (("sim", 1.0), ("real", 0.7)):
-            step_reward = rng.normal(0.4 * scale, 0.15, size=(n_episodes, H))
-            curves[dom] = np.cumsum(step_reward, axis=1)
+        for dom, scale, noise in (("sim", 1.0, 0.05), ("real", 0.75, 0.09)):
+            base = shape * scale
+            curves[dom] = base[None, :] + rng.normal(0, noise, size=(n_episodes, H))
         out[cid] = curves
     return out
 
@@ -515,20 +602,29 @@ def run_demo(out_dir: str):
 
     df = _make_demo_gap_metrics_csv(rng)
     all_configs = _DEMO_LADDER + _DEMO_LOO
+    # D17: the demo table now carries both 3cm and 4cm rows (gap_metrics.py's
+    # cube_size guard would otherwise refuse to run any of these). f2/f4/f5/f8
+    # are not cube-split figures (only F1 + the abort-rate bar are, D17/Task
+    # 6) -- pin to the primary in-distribution cube here.
+    PRIMARY_CUBE = "3cm"
 
     outputs = []
     outputs.append(f1_dose_response(df, _DEMO_LADDER, os.path.join(out_dir, "f1_dose_response"),
-                                    failed_configs=_DEMO_FAILED))
-    outputs.append(f2_term_retention(df, _DEMO_LADDER[:4], os.path.join(out_dir, "f2_term_retention")))
-    step_curves = _make_demo_step_curves(rng, _DEMO_LADDER[:3])
-    outputs.append(f3_grid(step_curves, os.path.join(out_dir, "f3_grid")))
-    outputs.append(f4_paired_scatter(df, "L1_pos", os.path.join(out_dir, "f4_paired_scatter")))
-    outputs.append(f5_selection_regret(df, _DEMO_LADDER, os.path.join(out_dir, "f5_selection_regret")))
+                                    failed_configs=_DEMO_FAILED, cube_size=PRIMARY_CUBE))
+    outputs.append(f2_term_retention(df, _DEMO_LADDER[:4], os.path.join(out_dir, "f2_term_retention"),
+                                     cube_size=PRIMARY_CUBE))
+    step_curves = _make_demo_step_curves(rng, D14_REAL_POLICIES)
+    outputs.append(f3_per_step_trace(step_curves, os.path.join(out_dir, "f3_per_step_trace")))
+    outputs.append(f4_paired_scatter(df, "L1_pos", os.path.join(out_dir, "f4_paired_scatter"),
+                                     cube_size=PRIMARY_CUBE))
+    outputs.append(f5_selection_regret(df, _DEMO_LADDER, os.path.join(out_dir, "f5_selection_regret"),
+                                       cube_size=PRIMARY_CUBE))
     one_step, open_loop = _make_demo_replay_dfs(rng)
     outputs.append(f6_replay_error(one_step, open_loop, os.path.join(out_dir, "f6_replay_error")))
     timing = _make_demo_timing(rng)
     outputs.append(f7_timing_honesty(timing, os.path.join(out_dir, "f7_timing_honesty")))
-    outputs.append(f8_loo_attribution(df, "L5_full_obs", _DEMO_LOO, os.path.join(out_dir, "f8_loo_attribution")))
+    outputs.append(f8_loo_attribution(df, "L5_full_obs", _DEMO_LOO, os.path.join(out_dir, "f8_loo_attribution"),
+                                      cube_size=PRIMARY_CUBE))
 
     print(f"\n--demo wrote {len(outputs)} figures (png+pdf each) to {out_dir}:")
     for png in outputs:

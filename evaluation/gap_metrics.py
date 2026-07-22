@@ -1,11 +1,21 @@
 """Sim-to-real gap metrics over a tidy long-format results table.
 
 The table (gap_metrics.csv) is LONG: one row per
-(config_id, seed, episode_id, repeat, term, domain) with the episode-summed
-scaled reward `scaled_return_H` for that term, plus per-run bookkeeping
-(achieved_hz, overrun_count, stop_reason, protocol_hash). `domain` is "sim" or
-"real". A run's total return is the sum of its term rows; a term's stage is
-fixed by STAGE_MAP.
+(config_id, seed, episode_id, repeat, cube_size, term, domain) with the
+episode-summed scaled reward `scaled_return_H` for that term, plus per-run
+bookkeeping (achieved_hz, overrun_count, stop_reason, protocol_hash).
+`domain` is "sim" or "real". A run's total return is the sum of its term
+rows; a term's stage is fixed by STAGE_MAP.
+
+`cube_size` (D17, "3cm"/"4cm") is a grouping key like `config_id`, NOT an
+axis to average over: 3cm is the in-distribution probe, 4cm is a deliberate
+OOD probe (outside even the training-time size-DR clamp), and averaging the
+two together would silently blend an in-distribution result with an OOD one.
+Every function below that pools rows into a mean therefore takes an optional
+`cube_size=` filter, and REFUSES to run (raises) if the input has more than
+one distinct `cube_size` and the caller did not pin one -- see
+`_filter_cube_size`. This is the code-level enforcement of D17's "3cm and 4cm
+must always be reported/grouped separately, never averaged together".
 
 Deliberate NON-features (this project's primary result is a LEVEL SHIFT between
 sim and real return, and these would hide or misreport it):
@@ -60,9 +70,13 @@ STAGE_ORDER = ["approach", "grasp", "lift", "transport", "regularizer"]
 # proxy signal). Flagged for the diagnostic caption in F2; not treated
 # differently numerically.
 PROXY_TERMS = {"grasp", "no_floor_collision"}
+# D8: the "exact-parity" headline subset -- everything geometrically exact,
+# i.e. TERM_ORDER minus the proxies above. This is the subset the per-step
+# reward trace (plots_gap.f3_per_step_trace) is built from.
+EXACT_PARITY_TERMS = [t for t in TERM_ORDER if t not in PROXY_TERMS]
 
 LONG_COLUMNS = [
-    "config_id", "seed", "episode_id", "repeat", "term", "domain",
+    "config_id", "seed", "episode_id", "repeat", "cube_size", "term", "domain",
     "scaled_return_H", "achieved_hz", "overrun_count", "stop_reason",
     "protocol_hash",
 ]
@@ -87,8 +101,14 @@ def load_long(csv_path: str) -> pd.DataFrame:
 
 
 def _run_totals(df: pd.DataFrame) -> pd.DataFrame:
-    """Sum term rows -> one total per (config, domain, seed, episode, repeat)."""
-    keys = ["config_id", "domain", "seed", "episode_id", "repeat"]
+    """Sum term rows -> one total per (config, domain, seed, episode, repeat,
+    cube_size). `cube_size` MUST be a grouping key here, not just a filter
+    upstream: real repeat numbers restart at 1 for each cube_size (D16/D17's
+    campaign schedule), so "episode_id, repeat" alone collides a 3cm and a
+    4cm run of the same repeat index -- dropping cube_size from the group-by
+    would silently sum/pool their term rows into one fabricated "run".
+    """
+    keys = ["config_id", "domain", "seed", "episode_id", "repeat", "cube_size"]
     keys = [k for k in keys if k in df.columns]
     return (
         df.groupby(keys, dropna=False)["scaled_return_H"].sum()
@@ -96,16 +116,40 @@ def _run_totals(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _filter_cube_size(df: pd.DataFrame, cube_size, fn_name: str) -> pd.DataFrame:
+    """D17 enforcement: 3cm (in-distribution) and 4cm (OOD probe) must never
+    be silently averaged together. If `cube_size` is given, filter to it
+    (no-op if the column is absent). If not given and the column IS present
+    with more than one distinct value, raise -- forces the caller to pick one
+    explicitly instead of pooling an in-distribution result with an OOD one.
+    """
+    if "cube_size" not in df.columns:
+        return df
+    if cube_size is not None:
+        return df[df["cube_size"] == cube_size]
+    values = sorted(df["cube_size"].dropna().unique())
+    if len(values) > 1:
+        raise ValueError(
+            f"{fn_name}: input has multiple cube_size values {values} and no "
+            f"cube_size= was given -- refusing to silently average 3cm "
+            f"(in-distribution) with 4cm (OOD probe, D17). Pass "
+            f"cube_size='3cm' or cube_size='4cm' explicitly."
+        )
+    return df
+
+
 def per_episode_returns(
-    df: pd.DataFrame, config: str, episodes=None
+    df: pd.DataFrame, config: str, episodes=None, cube_size=None
 ) -> pd.DataFrame:
-    """Paired per-episode returns for one config.
+    """Paired per-episode returns for one config (+ one cube_size, D17).
 
     Returns a DataFrame indexed by episode_id with columns ['sim','real'] --
     each the mean total return over that episode's seeds (sim) / repeats (real).
     Only episodes present in BOTH domains are kept (pairing requirement).
     """
-    tot = _run_totals(df[df["config_id"] == config])
+    sub = _filter_cube_size(df[df["config_id"] == config], cube_size,
+                             "per_episode_returns")
+    tot = _run_totals(sub)
     if episodes is not None:
         tot = tot[tot["episode_id"].isin(episodes)]
     piv = (
@@ -139,15 +183,18 @@ def _percentile_ci(samples, lo=2.5, hi=97.5):
 # ===========================================================================
 
 
-def retention(df, config, subset="exact", episodes=None, n_boot=10000, seed=0):
+def retention(df, config, subset="exact", episodes=None, cube_size=None,
+              n_boot=10000, seed=0):
     """Real/sim return retention for one config + paired-bootstrap 95% CI.
 
     ratio = mean_episode(real) / mean_episode(sim), on RAW returns (no
     normalisation -- see module docstring). CI resamples episodes.
     `subset` is a label recorded in the result (e.g. "exact" = exact-init
     matched episodes); pass `episodes` to restrict to a subset's episode_ids.
+    `cube_size` (D17): pin to "3cm"/"4cm" when `df` mixes both -- see
+    `_filter_cube_size`.
     """
-    piv = per_episode_returns(df, config, episodes=episodes)
+    piv = per_episode_returns(df, config, episodes=episodes, cube_size=cube_size)
     real = piv["real"].to_numpy()
     sim = piv["sim"].to_numpy()
     n = len(piv)
@@ -158,20 +205,27 @@ def retention(df, config, subset="exact", episodes=None, n_boot=10000, seed=0):
     ratios = np.mean(real[idx], axis=1) / np.mean(sim[idx], axis=1)
     lo, hi = _percentile_ci(ratios)
     return {
-        "config_id": config, "subset": subset, "n_episodes": n,
+        "config_id": config, "subset": subset, "cube_size": cube_size,
+        "n_episodes": n,
         "R_sim": float(np.mean(sim)), "R_real": float(np.mean(real)),
         "retention": point, "ci95": (lo, hi),
     }
 
 
-def noise_floor(df, config, episodes=None):
+def noise_floor(df, config, episodes=None, cube_size=None):
     """Within-episode real spread across the k repeats (D9's measurement floor).
 
     For each episode: std of the real total return over its repeats. The floor
     is the mean of those per-episode stds (return units); nothing smaller than
     it is reportable. Returns per-episode detail too.
+    `cube_size` (D17): pin to "3cm"/"4cm" when `df` mixes both -- see
+    `_filter_cube_size`.
     """
-    tot = _run_totals(df[(df["config_id"] == config) & (df["domain"] == "real")])
+    sub = _filter_cube_size(
+        df[(df["config_id"] == config) & (df["domain"] == "real")],
+        cube_size, "noise_floor",
+    )
+    tot = _run_totals(sub)
     if episodes is not None:
         tot = tot[tot["episode_id"].isin(episodes)]
     per_ep = (
@@ -182,7 +236,7 @@ def noise_floor(df, config, episodes=None):
     per_ep["repeat_std"] = per_ep["repeat_std"].fillna(0.0)
     floor = float(per_ep["repeat_std"].mean())
     return {
-        "config_id": config,
+        "config_id": config, "cube_size": cube_size,
         "noise_floor": floor,                 # mean within-episode repeat std
         "noise_floor_band": (-floor, floor),  # symmetric reportability band
         "per_episode": per_ep,
@@ -190,13 +244,16 @@ def noise_floor(df, config, episodes=None):
     }
 
 
-def term_retention(df, config, episodes=None):
+def term_retention(df, config, episodes=None, cube_size=None):
     """Per-term AND per-stage real/sim retention ratios for one config.
 
     Each ratio = mean real term (stage) return / mean sim term (stage) return,
     over episodes and seeds/repeats. Raw returns, no normalisation.
+    `cube_size` (D17): pin to "3cm"/"4cm" when `df` mixes both -- see
+    `_filter_cube_size`.
     """
-    sub = df[df["config_id"] == config]
+    sub = _filter_cube_size(df[df["config_id"] == config], cube_size,
+                             "term_retention")
     if episodes is not None:
         sub = sub[sub["episode_id"].isin(episodes)]
     means = (
@@ -222,7 +279,7 @@ def term_retention(df, config, episodes=None):
 
     order = [t for t in TERM_ORDER if t in means.index]
     return {
-        "config_id": config,
+        "config_id": config, "cube_size": cube_size,
         "per_term": means.reindex(order),
         "per_stage": stage.reindex([s for s in STAGE_ORDER if s in stage.index]),
     }
@@ -243,7 +300,7 @@ def _config_returns_matrix(df, configs):
     return np.array(common), sim, real
 
 
-def sim_selection_regret(df, configs=None, n_boot=10000, seed=0):
+def sim_selection_regret(df, configs=None, cube_size=None, n_boot=10000, seed=0):
     """Sim-selection regret R = R_real(c*) - R_real(argmax_c R_sim).
 
     c*      = argmax_c R_real (the config you WOULD have picked with real data)
@@ -255,7 +312,13 @@ def sim_selection_regret(df, configs=None, n_boot=10000, seed=0):
     uncertainty (which dominates at ~6 configs) and understates the CI. Both the
     resampled-argmax CI and the (narrower) fixed-chat_sim CI are returned so the
     understatement is visible; the reportable CI is the resampled one.
+
+    `cube_size` (D17): pin to "3cm"/"4cm" when `df` mixes both -- see
+    `_filter_cube_size`. The config *set* to select over is always the 4
+    D14-surviving real-deployed rungs (or whatever `configs` names); cube_size
+    only says which physical-cube dataset that selection is scored against.
     """
+    df = _filter_cube_size(df, cube_size, "sim_selection_regret")
     if configs is None:
         configs = sorted(df["config_id"].unique())
     configs = list(configs)
@@ -290,7 +353,7 @@ def sim_selection_regret(df, configs=None, n_boot=10000, seed=0):
     }).sort_values("R_sim", ascending=False).reset_index(drop=True)
 
     return {
-        "configs": configs,
+        "configs": configs, "cube_size": cube_size,
         "chat_sim": configs[chat], "c_star": configs[cstar],
         "regret": regret,
         "ci95_resampled_argmax": ci_full,   # REPORTABLE
@@ -334,7 +397,7 @@ def gate_against_noise_floor(value, ci, floor):
 def make_synthetic_long(
     config_specs, n_episodes=10, seeds=(0, 1, 2), repeats=(1, 2, 3),
     ep_noise=0.0, repeat_noise=0.0, seed_noise=0.0, protocol_hash="demo_hash",
-    rng=None,
+    cube_size="3cm", rng=None,
 ):
     """Fabricate a plausible long-format table.
 
@@ -343,6 +406,12 @@ def make_synthetic_long(
     Per-episode base drawn N(total, ep_noise); sim seeds jitter by seed_noise;
     real repeats jitter by repeat_noise. Totals are split across terms by
     term_frac (default: an approach-heavy split summing to 1).
+
+    `cube_size` (D17): every row is tagged with this single value (default
+    "3cm", the in-distribution probe). Callers that want a mixed-cube table
+    (e.g. plots_gap.py's --demo) call this twice -- once per cube_size -- and
+    concatenate; this function itself never mixes cube sizes in one call, so
+    its own output never trips `_filter_cube_size`'s "which cube?" guard.
     """
     if rng is None:
         rng = np.random.default_rng(0)
@@ -363,6 +432,7 @@ def make_synthetic_long(
                 for term, f in frac.items():
                     rows.append(dict(
                         config_id=cid, seed=sd, episode_id=ep, repeat=0,
+                        cube_size=cube_size,
                         term=term, domain="sim", scaled_return_H=tot * f,
                         achieved_hz=np.nan, overrun_count=0,
                         stop_reason="rollout", protocol_hash=protocol_hash,
@@ -372,6 +442,7 @@ def make_synthetic_long(
                 for term, f in frac.items():
                     rows.append(dict(
                         config_id=cid, seed=-1, episode_id=ep, repeat=rp,
+                        cube_size=cube_size,
                         term=term, domain="real", scaled_return_H=tot * f,
                         achieved_hz=50.4, overrun_count=0,
                         stop_reason="timeout", protocol_hash=protocol_hash,
@@ -482,6 +553,43 @@ def _selftest():
     print(f"OK  (width_full={w_full:.2f} > width_fixed={w_fixed:.2f}; "
           f"sel_freq={ {k: round(v,2) for k,v in res_e['selection_freq'].items()} })")
 
+    # ---- (f) cube_size (D17): mixed-cube input refuses to average silently,
+    # and pinning cube_size recovers the two DISTINCT per-cube numbers ----
+    print("(f) cube_size grouping: mixed input raises, pinned recovers per-cube "
+          "values ...", end=" ")
+    cube_specs = {
+        "L1": {"sim_total": 120.0, "real_total": 110.0},  # same sim for both
+    }
+    df_3cm = make_synthetic_long(cube_specs, n_episodes=10, ep_noise=0.0,
+                                 cube_size="3cm", rng=np.random.default_rng(2))
+    cube_specs_4cm = {
+        "L1": {"sim_total": 120.0, "real_total": 40.0},  # OOD: real collapses
+    }
+    df_4cm = make_synthetic_long(cube_specs_4cm, n_episodes=10, ep_noise=0.0,
+                                 cube_size="4cm", rng=np.random.default_rng(3))
+    df_mixed = pd.concat([df_3cm, df_4cm], ignore_index=True)
+    # No cube_size given, 2 distinct values present -> every threaded function
+    # must refuse rather than silently pool 110 (3cm) with 40 (4cm).
+    for fn, kwargs in (
+        (retention, dict(config="L1")),
+        (noise_floor, dict(config="L1")),
+        (term_retention, dict(config="L1")),
+        (sim_selection_regret, dict(configs=["L1"])),
+    ):
+        try:
+            fn(df_mixed, **kwargs)
+            raise AssertionError(f"{fn.__name__} did not raise on mixed cube_size")
+        except ValueError:
+            pass
+    # Pinned: recovers the two distinct real_totals exactly (no averaging).
+    r3 = retention(df_mixed, "L1", cube_size="3cm")
+    r4 = retention(df_mixed, "L1", cube_size="4cm")
+    assert abs(r3["R_real"] - 110.0) < 1e-6, r3
+    assert abs(r4["R_real"] - 40.0) < 1e-6, r4
+    assert r3["R_real"] != r4["R_real"]
+    print(f"OK  (3cm R_real={r3['R_real']:.1f}, 4cm R_real={r4['R_real']:.1f}, "
+          f"mixed input correctly refused)")
+
     # ---- gate_against_noise_floor sanity ----
     print("gate_against_noise_floor ...", end=" ")
     assert gate_against_noise_floor(10.0, (6.0, 14.0), floor=5.0) == "reportable"
@@ -497,6 +605,9 @@ def _cli():
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--csv", default=None)
     ap.add_argument("--config", default=None)
+    ap.add_argument("--cube_size", default=None, choices=[None, "3cm", "4cm"],
+                    help="D17: pin the cube-size grouping key. Required if the "
+                         "CSV mixes 3cm and 4cm rows -- see _filter_cube_size.")
     ap.add_argument("--n_boot", type=int, default=10000)
     args = ap.parse_args()
 
@@ -508,18 +619,19 @@ def _cli():
     configs = sorted(df["config_id"].unique())
     print(f"Loaded {len(df)} rows, configs={configs}")
     if args.config:
-        r = retention(df, args.config, n_boot=args.n_boot)
-        nf = noise_floor(df, args.config)
-        print(f"\nretention({args.config}) = {r['retention']:.3f} "
-              f"CI{tuple(round(x,3) for x in r['ci95'])}  "
+        r = retention(df, args.config, cube_size=args.cube_size, n_boot=args.n_boot)
+        nf = noise_floor(df, args.config, cube_size=args.cube_size)
+        print(f"\nretention({args.config}, cube_size={args.cube_size}) = "
+              f"{r['retention']:.3f} CI{tuple(round(x,3) for x in r['ci95'])}  "
               f"[R_sim={r['R_sim']:.1f} R_real={r['R_real']:.1f}]")
-        print(f"noise_floor({args.config}) = {nf['noise_floor']:.3f} (return units)")
+        print(f"noise_floor({args.config}, cube_size={args.cube_size}) = "
+              f"{nf['noise_floor']:.3f} (return units)")
         print(f"gate: {gate_against_noise_floor(r['R_real']-r['R_sim'], r['ci95'], nf['noise_floor'])}")
         print("\nterm_retention:")
-        print(term_retention(df, args.config)["per_stage"])
+        print(term_retention(df, args.config, cube_size=args.cube_size)["per_stage"])
     if len(configs) >= 2:
-        res = sim_selection_regret(df, n_boot=args.n_boot)
-        print(f"\nsim_selection_regret: R={res['regret']:.2f} "
+        res = sim_selection_regret(df, cube_size=args.cube_size, n_boot=args.n_boot)
+        print(f"\nsim_selection_regret(cube_size={args.cube_size}): R={res['regret']:.2f} "
               f"CI{tuple(round(x,2) for x in res['ci95_resampled_argmax'])}  "
               f"chat_sim={res['chat_sim']} c*={res['c_star']}")
         print(res["table"])
