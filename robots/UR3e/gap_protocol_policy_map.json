@@ -1,0 +1,7 @@
+{
+  "_comment": "D10 median-seed selection for the gap protocol. Deviation from D10's letter (which prefers sim return on the 10 protocol poses): these median seeds were picked by max W&B eval/episode_reward across the 3 seeds, chosen 2026-07-22 to avoid any sim-before-real run per Matthias's 'real first' prerequisite. Only for choosing 1-of-3 seeds; the matched-init sim mirror still runs after the real campaign. Scores (max eval return): L0_none {s0:8323,s1:7633,s2:9079}->s0; L1_pos {s0:7140,s1:7040,s2:6900}->s1; L2_pos_cube {s0:7394,s1:6942,s2:7043}->s2; L3_pos_cube_robot {s0:4543,s1:4276,s2:4655}->s0. All 4 verified to have trained_policy/best_params.msgpack + inference_config.json.",
+  "L0_none": "L0_none_s0_20260717_121358_6311",
+  "L1_pos": "L1_pos_s1_20260717_124401_2201",
+  "L2_pos_cube": "L2_pos_cube_s2_20260717_131601_926",
+  "L3_pos_cube_robot": "L3_pos_cube_robot_s0_20260717_131805_6311"
+}
