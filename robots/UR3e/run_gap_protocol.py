@@ -246,9 +246,22 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def resolve_loop_kwargs(config_id: str) -> dict:
-    """action_scale/gripper_action_scale for this config: sweep override if
-    present, else the baked default -- see the module docstring."""
+def resolve_loop_kwargs(config_id, policy_path=None, override_action_scale=None):
+    """action_scale/gripper_action_scale for this config.
+
+    Resolution order for action_scale (highest priority first):
+      1. --action_scale CLI override (`override_action_scale`), if given.
+      2. the POLICY's own metadata.json ("action_scale") -- the value it was
+         ACTUALLY TRAINED WITH. This is authoritative and per-policy.
+      3. the sweep override for this config.
+      4. the env default_config() -- the last-resort fallback.
+
+    2026-07-22 fix: the DR-ladder policies were trained at action_scale=0.04
+    (commit b170af56); the env default was later lowered to 0.015. Reading the
+    current default made the real arm command deltas 2.7x too small -> it could
+    not reach the cube. metadata.json records the real training scale, so read
+    it and restore sim-real parity.
+    """
     if config_id not in _LADDER_OVERRIDES:
         raise ValueError(
             f"unknown config_id {config_id!r}; not one of "
@@ -256,11 +269,38 @@ def resolve_loop_kwargs(config_id: str) -> dict:
         )
     overrides = _LADDER_OVERRIDES[config_id]
     cfg = ur3_pick.default_config()
-    action_scale = float(overrides.get("action_scale", cfg.action_scale))
+
+    # metadata.json training value (if the policy is already downloaded)
+    meta_action_scale = None
+    if policy_path is not None:
+        meta_path = os.path.join(policy_path, "metadata.json")
+        if os.path.exists(meta_path):
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta_action_scale = json.load(f).get("action_scale")
+
+    if override_action_scale is not None:
+        action_scale = float(override_action_scale)
+        src = "--action_scale override"
+    elif meta_action_scale is not None:
+        action_scale = float(meta_action_scale)
+        src = "policy metadata.json (training value)"
+    elif "action_scale" in overrides:
+        action_scale = float(overrides["action_scale"])
+        src = "sweep override"
+    else:
+        action_scale = float(cfg.action_scale)
+        src = "env default_config (FALLBACK -- may not match training!)"
+
+    default_as = float(cfg.action_scale)
+    if abs(action_scale - default_as) > 1e-9 and src.startswith("policy metadata"):
+        print(f"  [action_scale] using {action_scale} from {src} "
+              f"(env default is {default_as})")
+
     gripper_action_scale = float(
         overrides.get("gripper_action_scale", cfg.gripper_action_scale)
     )
-    return {"action_scale": action_scale, "gripper_action_scale": gripper_action_scale}
+    return {"action_scale": action_scale,
+            "gripper_action_scale": gripper_action_scale}
 
 
 def resolve_policy_run_id(config_id: str, explicit: str) -> str:
@@ -284,8 +324,10 @@ def confirm(prompt: str, auto_yes: bool) -> bool:
     if auto_yes:
         print(f"{prompt} [auto-yes]")
         return True
-    resp = input(f"{prompt} [y/N] ").strip().lower()
-    return resp in ("y", "yes")
+    # Enter (empty input) = proceed with the move; only an explicit 'n'/'no'
+    # skips the pose. Operator never has to type 'y'.
+    resp = input(f"{prompt} [Enter=move / n=skip] ").strip().lower()
+    return resp not in ("n", "no")
 
 
 def press_enter(prompt: str, auto_yes: bool) -> None:
@@ -416,7 +458,8 @@ def run_episode_repeat(
         print("  Skipped (move declined).")
         return False
     robot.send_movej(
-        list(episode.arm_qpos), a=0.3, v=0.4, asynchronous=False,
+        list(episode.arm_qpos), a=args.movej_a, v=args.movej_v,
+        asynchronous=False,
         textmsg=f"gap-protocol ep{episode.episode_id} rep{repeat} {cube_size}",
     )
 
@@ -497,7 +540,7 @@ def run_episode_repeat(
         reach_tol=None,  # D6/D16: no early termination on reach, ever
         dwell_time_s=0.0,
         mocap_stale_s=args.mocap_stale_s,
-        box_z_offset=0.0,
+        box_z_offset=args.box_z_offset,
     )
 
     loop_stopped_reason = stats.get("stopped_reason", "completed")
@@ -537,6 +580,7 @@ def run_episode_repeat(
         "gripper_action_scale": loop_kwargs["gripper_action_scale"],
         "servoj_a": args.servoj_a,
         "servoj_v": args.servoj_v,
+        "box_z_offset": args.box_z_offset,  # deploy calibration nudge (m)
         "lookahead_time": args.lookahead_time,
         "gain": args.gain,
         "gripper_tau": args.gripper_tau,
@@ -598,7 +642,8 @@ def build_campaign_schedule(episode_ids, configs, repeats, cube_sizes, order):
     return entries
 
 
-def _resolve_config_ctx(config_ids, explicit_policy_run_id=None):
+def _resolve_config_ctx(config_ids, explicit_policy_run_id=None,
+                        override_action_scale=None):
     """{config_id: {loop_kwargs, policy_run_id, policy_path, checkpoint_hash}}
     for every config in `config_ids` -- resolved and downloaded up front so
     the campaign can hot-swap policies between runs without re-downloading.
@@ -608,18 +653,23 @@ def _resolve_config_ctx(config_ids, explicit_policy_run_id=None):
     """
     ctx = {}
     for cid in config_ids:
-        loop_kwargs = resolve_loop_kwargs(cid)
         policy_run_id = resolve_policy_run_id(
             cid, explicit_policy_run_id if len(config_ids) == 1 else None
         )
         policy_path = default_policy_dir(policy_run_id)
         print(f"Config {cid}: policy {policy_run_id}")
-        print(f"  action_scale={loop_kwargs['action_scale']}, "
-              f"gripper_action_scale={loop_kwargs['gripper_action_scale']}")
+        # Download FIRST so metadata.json (the training action_scale) is on disk
+        # before we resolve loop kwargs from it.
         download_policy(
             policy_run_id, out_dir=policy_path, entity=WANDB_ENTITY,
             project=WANDB_PROJECT,
         )
+        loop_kwargs = resolve_loop_kwargs(
+            cid, policy_path=policy_path,
+            override_action_scale=override_action_scale,
+        )
+        print(f"  action_scale={loop_kwargs['action_scale']}, "
+              f"gripper_action_scale={loop_kwargs['gripper_action_scale']}")
         checkpoint_hash = sha256_file(os.path.join(policy_path, "params.msgpack"))
         ctx[cid] = {
             "loop_kwargs": loop_kwargs,
@@ -747,7 +797,9 @@ def run_single_config(args):
     repeats = args.repeats or protocol.real_repeats
     cube_sizes = args.cube_sizes or list(CUBE_SIZES)
 
-    config_ctx = _resolve_config_ctx([args.config_id], args.policy_run_id)
+    config_ctx = _resolve_config_ctx(
+        [args.config_id], args.policy_run_id,
+        override_action_scale=args.action_scale)
 
     full_schedule = build_campaign_schedule(
         sorted(episode_ids), [args.config_id], repeats, cube_sizes, args.order
@@ -798,7 +850,8 @@ def run_campaign(args):
           f"{len(configs) * len(episode_ids) * repeats * len(cube_sizes)} runs "
           f"(order={args.order}).")
 
-    config_ctx = _resolve_config_ctx(configs)
+    config_ctx = _resolve_config_ctx(
+        configs, override_action_scale=args.action_scale)
 
     full_schedule = build_campaign_schedule(
         sorted(episode_ids), configs, repeats, cube_sizes, args.order
@@ -873,6 +926,26 @@ def _build_argparser():
                          "know why")
     ap.add_argument("--lookahead_time", type=float, default=0.1)
     ap.add_argument("--gain", type=int, default=300)
+    ap.add_argument("--box_z_offset", type=float, default=0.0,
+                    help="metres added to the mocap-derived box Z before it "
+                         "feeds the policy obs. +0.01 makes the policy believe "
+                         "the box sits 1cm higher, so it aims higher and stops "
+                         "short of driving the gripper into the floor. Deploy "
+                         "calibration nudge; recorded in meta.json. 0.0 = off.")
+    ap.add_argument("--action_scale", type=float, default=None,
+                    help="override the per-step arm action_scale for ALL "
+                         "configs. Default None = read each policy's TRAINING "
+                         "value from its metadata.json (correct; restores "
+                         "sim-real parity). The DR-ladder policies trained at "
+                         "0.04; the stale env default is 0.015. Only set this "
+                         "to experiment.")
+    ap.add_argument("--movej_v", type=float, default=1.5,
+                    help="between-episode repositioning moveJ joint speed "
+                         "(rad/s); only the reset move, NOT the policy rollout. "
+                         "UR3e joint max ~3.14 rad/s. Default 1.5 (~86 deg/s).")
+    ap.add_argument("--movej_a", type=float, default=1.5,
+                    help="between-episode repositioning moveJ joint accel "
+                         "(rad/s^2); reset move only.")
     ap.add_argument("--servoj_a", type=float, default=0.3)
     ap.add_argument("--servoj_v", type=float, default=1.0)
     ap.add_argument("--settle_s", type=float, default=1.0,
