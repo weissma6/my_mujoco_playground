@@ -110,6 +110,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 
@@ -132,6 +133,19 @@ from policy_downloader import default_policy_dir, download_policy  # noqa: E402
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
+
+# D17: exact geometry (confirmed 2026-07-22, see the plan's D17). "3cm" is the
+# sim's existing nominal box (Cube A, 3x3x4 cm) -- passing it through
+# reset_to_state's cube_half_extents override is a NO-OP vs. not passing an
+# override at all, since it equals the model's baked nominal size. "4cm" is
+# Cube B (4x4x4 cm), the deliberate OOD probe -- +33% cross-section, outside
+# even the training-time _dr_max_box_half_xy=0.018 graspability clamp. Both
+# physical cubes are 4cm tall and share a mocap-rig centre (D17), so z stays
+# 0.02 for both -- only x,y differ.
+CUBE_HALF_EXTENTS = {
+    "3cm": (0.015, 0.015, 0.02),
+    "4cm": (0.020, 0.020, 0.020),
+}
 
 MODEL_PATH = os.path.join(
     REPO_ROOT, "mujoco_playground", "_src", "manipulation", "my_ur3", "xmls",
@@ -264,20 +278,28 @@ def build_env(meta: dict, horizon: int):
 
 
 def rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos, box_quat,
-                 target_pos, horizon: int) -> pd.DataFrame:
+                 target_pos, horizon: int, cube_half_extents=None) -> pd.DataFrame:
     """H deterministic step() calls from an EXACT reset_to_state() init.
 
     Collects state.metrics[term] * SCALES[term] for every reward term (same
     pattern as ur3_reward_replay.sim_rollout_reward), plus box_target_dist/
     success/reward_total. Never checks `done` -- see the module docstring's
     "Fixed horizon" note.
+
+    `cube_half_extents` (D17): optional (3,) box geom half-extents override,
+    forwarded verbatim to `env.reset_to_state` -- None (the default, and
+    every --protocol_only call) reproduces the pre-D17 nominal-box rollout
+    byte-for-byte; see ur3_pick.UR3Pick.reset_to_state's docstring for why
+    this is unclamped and additive.
     """
     import jax
 
     jit_step = jax.jit(env.step)
     jit_reset_to_state = jax.jit(env.reset_to_state)
 
-    state = jit_reset_to_state(rng, arm_qpos, finger, box_pos, box_quat, target_pos)
+    state = jit_reset_to_state(
+        rng, arm_qpos, finger, box_pos, box_quat, target_pos, cube_half_extents
+    )
     rows = []
     for t in range(horizon):
         rng, act_rng = jax.random.split(rng)
@@ -296,14 +318,14 @@ def rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos, box_quat,
 
 
 def _check_determinism(env, inference_fn, rng, arm_qpos, finger, box_pos,
-                        box_quat, target_pos, horizon: int):
+                        box_quat, target_pos, horizon: int, cube_half_extents=None):
     """Same init run twice -> must produce IDENTICAL summed return. Fires
     once per `main()` invocation, on the first processed folder.
     """
     df1 = rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos,
-                       box_quat, target_pos, horizon)
+                       box_quat, target_pos, horizon, cube_half_extents)
     df2 = rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos,
-                       box_quat, target_pos, horizon)
+                       box_quat, target_pos, horizon, cube_half_extents)
     r1, r2 = float(df1["reward_total"].sum()), float(df2["reward_total"].sum())
     if not np.isclose(r1, r2, rtol=0.0, atol=1e-9):
         raise AssertionError(
@@ -331,15 +353,56 @@ def _find_real_run_dirs(real_root: str, config_id: str, protocol_id: str,
     return dirs
 
 
+_EP_REP_RE = re.compile(r"^ep(\d+)_rep(\d+)(?:_(.+))?$")
+
+
 def _parse_ep_rep(dirname: str):
-    base = os.path.basename(dirname)  # "ep{ID}_rep{K}"
-    ep_str, rep_str = base.split("_rep")
-    return int(ep_str[2:]), int(rep_str)
+    """Parse both the pre-D17 "ep{ID}_rep{K}" and the D17
+    "ep{ID}_rep{K}_{cube_size}" real-run folder names (robots/UR3e/
+    run_gap_protocol.py's `run_dir`). Returns (episode_id, repeat, cube_size)
+    -- cube_size is None for a pre-D17 folder (no suffix).
+    """
+    base = os.path.basename(dirname)
+    m = _EP_REP_RE.match(base)
+    if not m:
+        raise ValueError(
+            f"real run folder name {base!r} doesn't match ep<ID>_rep<K> or "
+            f"ep<ID>_rep<K>_<cube_size> -- unexpected directory under "
+            f"{os.path.dirname(dirname)}."
+        )
+    episode_id, repeat, cube_size = m.groups()
+    return int(episode_id), int(repeat), cube_size
+
+
+def _real_run_stop_reason(run_dir: str):
+    """Read the D16 stop_reason out of the real runner's ur3_pick_meta.json.
+
+    Returns None if the meta file is absent or predates D16 (no "stop_reason"
+    key) -- old-format logs are NOT skipped (there was no abort concept to
+    check), matching the pre-D16 behaviour exactly.
+    """
+    meta_path = os.path.join(run_dir, "ur3_pick_meta.json")
+    if not os.path.exists(meta_path):
+        return None
+    with open(meta_path) as f:
+        meta = json.load(f)
+    return meta.get("stop_reason")
 
 
 def process_real_run(run_dir, env, inference_fn, meta, protocol, config_id,
                       policy_run_id, checkpoint_hash, horizon, rng,
                       run_determinism_check=False):
+    """Returns None (SKIPPED -- caller must not write output) if the real run
+    folder's ur3_pick_meta.json says stop_reason == "abort" (D16): an aborted
+    real episode has no full-length pair to mirror against, per D16/D17.
+    """
+    stop_reason = _real_run_stop_reason(run_dir)
+    if stop_reason == "abort":
+        print(f"  SKIPPING {run_dir}: real run aborted (stop_reason='abort', "
+              f"see its ur3_pick_meta.json) -- no full-length real pair to "
+              f"mirror. Not written to sim_results/ (D16).")
+        return None
+
     with open(os.path.join(run_dir, "measured_init.json")) as f:
         m = json.load(f)
 
@@ -348,6 +411,24 @@ def process_real_run(run_dir, env, inference_fn, meta, protocol, config_id,
     finger = float(m["commanded_finger"])
     box_pos = np.asarray(m["box_pos"], dtype=float)
     box_quat = np.asarray(m["box_quat_wxyz"], dtype=float)
+
+    # D17: cube_size drives the box geom override -- see CUBE_HALF_EXTENTS.
+    # Missing key (pre-D17 measured_init.json) defaults to "3cm" (the sim
+    # nominal, a no-op) -- flagged loudly rather than silently assumed, since
+    # a genuinely-4cm run with a missing/stale cube_size field would silently
+    # mirror the wrong geometry otherwise.
+    if "cube_size" not in m:
+        print(f"  WARNING: {run_dir}'s measured_init.json has no 'cube_size' "
+              f"field (pre-D17 log) -- defaulting to '3cm' (nominal, a "
+              f"no-op override). If this run actually used the 4cm cube, "
+              f"this mirror will be WRONG.")
+    cube_size = m.get("cube_size", "3cm")
+    if cube_size not in CUBE_HALF_EXTENTS:
+        raise SystemExit(
+            f"{run_dir}'s measured_init.json has cube_size={cube_size!r}, not "
+            f"one of {sorted(CUBE_HALF_EXTENTS)} -- refusing to guess a geometry."
+        )
+    cube_half_extents = np.asarray(CUBE_HALF_EXTENTS[cube_size], dtype=float)
 
     target_pos, _components = gap_target.target_for_episode(
         protocol.protocol_id, episode_id, config_id,
@@ -364,16 +445,17 @@ def process_real_run(run_dir, env, inference_fn, meta, protocol, config_id,
 
     if run_determinism_check:
         _check_determinism(env, inference_fn, rng, arm_qpos, finger, box_pos,
-                            box_quat, target_pos, horizon)
+                            box_quat, target_pos, horizon, cube_half_extents)
 
     df = rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos,
-                      box_quat, target_pos, horizon)
+                      box_quat, target_pos, horizon, cube_half_extents)
     return episode_id, repeat, df, {
         "protocol_id": protocol.protocol_id,
         "poses_sha256": protocol.poses_sha256,
         "config_id": config_id,
         "episode_id": episode_id,
         "repeat": repeat,
+        "cube_size": cube_size,  # D17 -- NEW
         "policy_run_id": policy_run_id,
         "checkpoint": "best_params.msgpack",
         "checkpoint_hash_sha256": checkpoint_hash,
@@ -437,6 +519,13 @@ def process_protocol_episode(episode, env, inference_fn, protocol, config_id,
         "config_id": config_id,
         "episode_id": episode.episode_id,
         "repeat": repeat,
+        # D17: --protocol_only has no real measured_init.json to read a
+        # cube_size from (no real run exists yet -- see the module
+        # docstring's D10-bootstrap note); it always uses the nominal 3cm
+        # box (cube_half_extents=None -> reset_to_state's pre-D17 default),
+        # so this is recorded as "3cm" for schema consistency with
+        # process_real_run's output, not read from anywhere.
+        "cube_size": "3cm",
         "policy_run_id": policy_run_id,
         "checkpoint": "best_params.msgpack",
         "checkpoint_hash_sha256": checkpoint_hash,
@@ -457,8 +546,17 @@ def process_protocol_episode(episode, env, inference_fn, protocol, config_id,
 # ===========================================================================
 
 
-def run_dir_out(out_root, config_id, protocol_id, episode_id, repeat):
-    return os.path.join(out_root, config_id, protocol_id, f"ep{episode_id}_rep{repeat}")
+def run_dir_out(out_root, config_id, protocol_id, episode_id, repeat, cube_size=None):
+    """D17: mirrors the real runner's folder key exactly (`cube_size` suffix
+    when given) so a 3cm and a 4cm sim mirror of the same (config, episode,
+    repeat) can never collide -- same rationale as robots/UR3e/
+    run_gap_protocol.py's `run_dir`. `cube_size=None` (the --protocol_only
+    path, and any pre-D17 caller) keeps the old "ep{ID}_rep{K}" layout.
+    """
+    base = f"ep{episode_id}_rep{repeat}"
+    if cube_size is not None:
+        base = f"{base}_{cube_size}"
+    return os.path.join(out_root, config_id, protocol_id, base)
 
 
 def main():
@@ -507,9 +605,9 @@ def main():
                                         protocol.protocol_id, args.episodes)
         pending = []
         for rd in run_dirs:
-            episode_id, repeat = _parse_ep_rep(rd)
+            episode_id, repeat, cube_size = _parse_ep_rep(rd)
             out_dir = run_dir_out(args.out_root, args.config_id, protocol.protocol_id,
-                                   episode_id, repeat)
+                                   episode_id, repeat, cube_size)
             if os.path.exists(out_dir) and not args.force:
                 continue
             pending.append((rd, out_dir))
@@ -517,9 +615,20 @@ def main():
               f"under {args.real_root}/{args.config_id}/{protocol.protocol_id}/.")
 
     if args.dry_run:
+        n_abort = 0
         for item, out_dir in pending:
             src = item if isinstance(item, str) else f"protocol ep{item.episode_id}"
-            print(f"  {src}  ->  {out_dir}")
+            tag = ""
+            if isinstance(item, str):
+                # Pure JSON read (no jax/mjx import) -- safe under --dry_run.
+                sr = _real_run_stop_reason(item)
+                if sr == "abort":
+                    tag = "  [will be SKIPPED: real run aborted (D16)]"
+                    n_abort += 1
+            print(f"  {src}  ->  {out_dir}{tag}")
+        if n_abort:
+            print(f"({n_abort}/{len(pending)} pending folders are aborted real "
+                  f"runs -- D16, no full-length pair to mirror.)")
         print("(--dry_run: stopping before any jax/mjx import.)")
         return
     if not pending:
@@ -539,30 +648,39 @@ def main():
     base_rng = jax.random.PRNGKey(args.seed)
 
     completed = 0
+    skipped_aborted = 0
     for i, (item, out_dir) in enumerate(pending):
         rng = jax.random.fold_in(base_rng, i)  # distinct-but-deterministic per folder
         run_determinism_check = (i == 0)
         if args.protocol_only:
-            episode_id, repeat, df, meta_out = process_protocol_episode(
+            result = process_protocol_episode(
                 item, env, inference_fn, protocol, args.config_id,
                 args.policy_run_id, checkpoint_hash, protocol.horizon, rng,
                 run_determinism_check=run_determinism_check,
             )
         else:
-            episode_id, repeat, df, meta_out = process_real_run(
+            # D16: None means the real run folder was aborted -- no
+            # full-length pair to mirror, nothing written for it.
+            result = process_real_run(
                 item, env, inference_fn, meta, protocol, args.config_id,
                 args.policy_run_id, checkpoint_hash, protocol.horizon, rng,
                 run_determinism_check=run_determinism_check,
             )
+        if result is None:
+            skipped_aborted += 1
+            continue
+        episode_id, repeat, df, meta_out = result
         os.makedirs(out_dir, exist_ok=True)
         df.to_csv(os.path.join(out_dir, "sim_states.csv"), index=False)
         with open(os.path.join(out_dir, "sim_meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta_out, f, indent=2, default=str)
         print(f"  ep{episode_id}_rep{repeat}: return={meta_out['episode_return']:.2f} "
-              f"success={meta_out['success']}  ->  {out_dir}")
+              f"success={meta_out['success']}  cube_size={meta_out.get('cube_size')} "
+              f"->  {out_dir}")
         completed += 1
 
-    print(f"\nDone: {completed}/{len(pending)} pending runs completed.")
+    print(f"\nDone: {completed}/{len(pending)} pending runs completed "
+          f"({skipped_aborted} skipped: real run aborted, D16).")
 
 
 if __name__ == "__main__":

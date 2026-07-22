@@ -42,6 +42,13 @@ _LIFTER_HALF_THICKNESS = 0.0025  # 5 mm plate -> half-extent
 _LIFTER_HEIGHT_MIN = 0.003
 _BOX_HALF_EXTENT = 0.02  # half the box HEIGHT (3x3x4 cm box, 4 cm tall) -> rest offset
 
+# D17 cube-size probe: the info-dict key reset_to_state() stashes an OPTIONAL
+# eval-only box geom half-extents override under, and step() reads back to
+# apply it UNCLAMPED (bypassing _dr_max_box_half_xy) every substep. See
+# reset_to_state()'s docstring. Absent (the default) -> no D17 override, step()
+# behaves exactly as before this axis existed.
+_DR17_EVAL_CUBE_HALF_EXTENTS_KEY = "eval_cube_half_extents"
+
 # Per-episode domain-randomization factors logged to W&B (terminal-gated, see
 # step()). Realized scale per axis + the gravity z-component.
 _DR_METRIC_KEYS = (
@@ -1146,6 +1153,7 @@ class UR3Pick(ur3_base.UR3Base):
         box_pos: jax.Array,
         box_quat: jax.Array,
         target_pos: jax.Array,
+        cube_half_extents: Optional[jax.Array] = None,
     ) -> State:
         """EVAL-ONLY reset to an EXACT given state -- bypasses reset()'s random
         sampling entirely. Used by evaluation/run_gap_protocol_sim.py (the
@@ -1178,6 +1186,24 @@ class UR3Pick(ur3_base.UR3Base):
             MUST obtain this from evaluation/gap_target.target_for_episode()
             (never re-derived here) so a real run and this sim mirror can never
             disagree about which target they were scored against (D2).
+          cube_half_extents: OPTIONAL (3,) world m, box geom half-extents
+            (x, y, z). D17 cube-size probe -- ADDITIVE, defaults to None,
+            which is the pre-D17 behaviour: the box geom stays at its nominal
+            XML size (or whatever `_randomize_physics` would apply, which is
+            identity here since physics DR is bypassed above -- so `None`
+            reproduces this method's exact pre-D17 output byte-for-byte).
+            When given, it is applied UNCLAMPED and bypasses BOTH (a) this
+            method's own physics-DR-identity path (which never touched
+            geom_size to begin with) and (b) step()'s `_randomize_physics`
+            `_dr_max_box_half_xy = 0.018` graspability clamp -- that clamp
+            exists to keep *training* domain-randomization draws graspable;
+            the 4cm eval cube is a deliberate one-off OOD override applied
+            only at eval time by evaluation/run_gap_protocol_sim.py, not a DR
+            draw, and must not be silently clamped back down. See
+            `_DR17_EVAL_CUBE_HALF_EXTENTS_KEY` in step() for how the override
+            is threaded through -- it lives in `info`, so it is per-episode
+            (this call), not a mutation of `self._mjx_model` (which would
+            leak across envs/episodes under vmap).
 
         What is and is NOT bypassed
         ----------------------------------------------------------------------
@@ -1333,6 +1359,19 @@ class UR3Pick(ur3_base.UR3Base):
                 }
             )
 
+        # D17: OPTIONAL eval-only box-geometry override (cube-size probe).
+        # Stashed in `info` (per-episode, not a self._mjx_model mutation) so
+        # step() can apply it every substep -- see the docstring above and
+        # the matching block in step(). `cube_half_extents is None` (the
+        # default, and every non-D17 caller) means this key is simply absent
+        # from `info`, which keeps this reset_to_state's pytree structure --
+        # and therefore step()'s behaviour -- byte-for-byte identical to
+        # before this parameter existed.
+        if cube_half_extents is not None:
+            info[_DR17_EVAL_CUBE_HALF_EXTENTS_KEY] = jp.asarray(
+                cube_half_extents, dtype=float
+            )
+
         obs = self._get_obs(data, info)
         reward, done = jp.zeros(2)
         return State(data, obs, reward, done, metrics, info)
@@ -1373,6 +1412,22 @@ class UR3Pick(ur3_base.UR3Base):
             if self._dr_enable
             else self._mjx_model
         )
+
+        # D17 cube-size probe: OPTIONAL eval-only override, applied AFTER the
+        # normal physics-DR path above and UNCLAMPED -- deliberately bypasses
+        # _randomize_physics's `_dr_max_box_half_xy` graspability clamp (that
+        # clamp guards *training* DR draws; the 4cm eval cube is a one-off OOD
+        # override, not a DR draw -- see reset_to_state()'s docstring). Gated
+        # on the key's presence in `info`, which is only ever set by
+        # reset_to_state(cube_half_extents=...) -- absent for every training
+        # rollout and every eval call that doesn't pass the override, so this
+        # branch is a true no-op (not even a tree_replace) in those cases.
+        if _DR17_EVAL_CUBE_HALF_EXTENTS_KEY in info:
+            model = model.tree_replace({
+                "geom_size": model.geom_size.at[self._obj_geom].set(
+                    info[_DR17_EVAL_CUBE_HALF_EXTENTS_KEY]
+                ),
+            })
 
         # Per-step environment DR: a fresh random 3D force on the box, drawn
         # from info["rng"] and re-split EVERY step (unlike action_delay, this
