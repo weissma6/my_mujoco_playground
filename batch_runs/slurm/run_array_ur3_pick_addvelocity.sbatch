@@ -65,6 +65,6 @@ podman run --rm \
     python -c 'import jax; print(\"jax devices:\", jax.devices())' || true
     python batch_runs/scripts/run_one_ur3.py \
       --jsonl batch_runs/sweeps/UR3Pick_addvelocity.jsonl \
-      --index \$SLURM_ARRAY_TASK_ID \
+      --index $SLURM_ARRAY_TASK_ID \
       --out_root results
   "
