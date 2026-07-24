@@ -19,4 +19,5 @@ base_frame_calibration.png
 *.mov
 *.mp4
 *.MP4
-robots/UR3e/real_robot_results/gap_plots_demo/
+robots/UR3e/real_robot_results/
+evaluation/gap_plots_demo/
