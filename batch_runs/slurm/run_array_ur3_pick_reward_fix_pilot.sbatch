@@ -1,14 +1,17 @@
 #!/bin/bash
 #SBATCH --job-name=UR3Pick_reward_fix_pilot
 #SBATCH --account=cai_iai
-#SBATCH --partition=sanfrancisco
+#SBATCH --partition=gpu_ia
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
-# Reward-fix pilots (2026-07-26). Two L1_pos_vel runs that test the terminal
-# success_bonus, with and without hold_target:
-#   index 1 = L1_pos_vel_pilotA_s0  success_bonus=5000, hold_target=6.0 (default)
-#   index 2 = L1_pos_vel_pilotB_s0  success_bonus=5000, hold_target=0.0
-# The 2026-07-24 ladder ran ~30 min/run, so 2h is a generous cap.
+# Reward-fix pilots (2026-07-26). Two L1_pos_vel runs, now that `success` no
+# longer terminates the episode (episodes always run to episode_length):
+#   index 1 = L1_pos_vel_pilotA_s0  hold_target=6.0 (default)
+#   index 2 = L1_pos_vel_pilotB_s0  hold_target=0.0
+# success_bonus defaults to 0.0 in ur3_pick.py and is left at that default in
+# both lines -- it's edge-triggered dead weight now that there's nothing to
+# forfeit by succeeding; kept in the code only in case termination ever comes
+# back. The 2026-07-24 ladder ran ~30 min/run, so 2h is a generous cap.
 #
 # NOTE (2026-07-26): this deliberately passes NO `--device` to podman. The
 # cluster wraps podman (`podman_original version 4.9.3`) and INJECTS
@@ -17,12 +20,17 @@
 # The manual `--device` line in run_array_ur3_pick_dr_ladder_velocity.sbatch is
 # what killed 24 of job 38501's 30 tasks -- MUST be deleted there too.
 #
-# Partition pinned to sanfrancisco: verified 2026-07-26 that its
-# /etc/cdi/nvidia.yaml declares devices "0".."7" (+UUIDs, +all), the image
-# loads, and `nvidia-smi -L` inside the container reports a Tesla V100-SXM2-32GB.
-# Job 38501's gpu=1 / gpu=2 "unresolvable CDI devices" failures were on
-# gpu-partition nodes whose CDI specs were missing or partial -- CDI health is
-# PER-NODE, so verify before trusting a different partition.
+# Partition: gpu_ia (NOT the node name -- an earlier version of this file used
+# `--partition=sanfrancisco`, which is the NODE `givemeagpushell sanfrancisco`
+# happened to allocate, not a real partition; sbatch rejected it outright with
+# "invalid partition specified"). Verified 2026-07-26 on the sanfrancisco node
+# that its /etc/cdi/nvidia.yaml declares devices "0".."7" (+UUIDs, +all), the
+# image loads, and `nvidia-smi -L` inside the container reports a Tesla
+# V100-SXM2-32GB. Job 38501's gpu=1 / gpu=2 "unresolvable CDI devices"
+# failures were most likely OTHER nodes in gpu_ia with missing/partial CDI
+# specs -- CDI health is per-node, not per-partition, so if this still fails
+# with the same error, request an interactive shell, run `hostname`, and
+# check that node's /etc/cdi/nvidia.yaml directly.
 #SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G

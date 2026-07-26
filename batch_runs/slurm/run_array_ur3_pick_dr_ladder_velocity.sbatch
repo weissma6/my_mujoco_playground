@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=UR3Pick_DR_ladder_velocity
 #SBATCH --account=cai_iai
-#SBATCH --partition=sanfrancisco
+#SBATCH --partition=gpu_ia
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 # Velocity-obs variant of the DR ladder (see the vault's "Plan - Add
@@ -12,6 +12,15 @@
 # untouched) -- 12h is the same safe upper bound the sibling scripts use,
 # even though the one pilot run so far converged much earlier (~10M steps);
 # left at the standard budget until the whole ladder confirms that holds.
+#
+# NOTE (2026-07-26): this deliberately passes NO `--device` to podman -- the
+# cluster wraps it (`podman_original version 4.9.3`) and injects
+# `--device nvidia.com/gpu=$CUDA_VISIBLE_DEVICES` itself, rejecting manual use
+# outright. Passing --device manually is what killed 24 of job 38501's 30
+# tasks ("unresolvable CDI devices"). Partition is `gpu_ia` (the actual
+# partition name -- not a node name; see
+# run_array_ur3_pick_reward_fix_pilot.sbatch for the full story and the CDI
+# spec verified on the sanfrancisco node within gpu_ia on 2026-07-26).
 #SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
