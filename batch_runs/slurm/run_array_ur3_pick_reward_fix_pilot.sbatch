@@ -1,22 +1,33 @@
 #!/bin/bash
-#SBATCH --job-name=UR3Pick_DR_ladder_velocity
+#SBATCH --job-name=UR3Pick_reward_fix_pilot
 #SBATCH --account=cai_iai
 #SBATCH --partition=sanfrancisco
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
-# Velocity-obs variant of the DR ladder (see the vault's "Plan - Add
-# Velocity"): same 10 configs x 3 seeds = 30 runs as run_array_ur3_pick_dr_
-# ladder.sbatch, this sweep just adds obs_include_velocity=true + explicit
-# action_scale=0.04 to every line (see gen_dr_ladder_velocity.py). Same
-# per-run cost (num_timesteps/num_envs/batch_size/LR/episode_length
-# untouched) -- 12h is the same safe upper bound the sibling scripts use,
-# even though the one pilot run so far converged much earlier (~10M steps);
-# left at the standard budget until the whole ladder confirms that holds.
-#SBATCH --time=12:00:00
+# Reward-fix pilots (2026-07-26). Two L1_pos_vel runs that test the terminal
+# success_bonus, with and without hold_target:
+#   index 1 = L1_pos_vel_pilotA_s0  success_bonus=5000, hold_target=6.0 (default)
+#   index 2 = L1_pos_vel_pilotB_s0  success_bonus=5000, hold_target=0.0
+# The 2026-07-24 ladder ran ~30 min/run, so 2h is a generous cap.
+#
+# NOTE (2026-07-26): this deliberately passes NO `--device` to podman. The
+# cluster wraps podman (`podman_original version 4.9.3`) and INJECTS
+# `--device nvidia.com/gpu=$CUDA_VISIBLE_DEVICES` itself; passing it manually
+# is rejected outright ("Direct use of --device with podman is not allowed").
+# The manual `--device` line in run_array_ur3_pick_dr_ladder_velocity.sbatch is
+# what killed 24 of job 38501's 30 tasks -- MUST be deleted there too.
+#
+# Partition pinned to sanfrancisco: verified 2026-07-26 that its
+# /etc/cdi/nvidia.yaml declares devices "0".."7" (+UUIDs, +all), the image
+# loads, and `nvidia-smi -L` inside the container reports a Tesla V100-SXM2-32GB.
+# Job 38501's gpu=1 / gpu=2 "unresolvable CDI devices" failures were on
+# gpu-partition nodes whose CDI specs were missing or partial -- CDI health is
+# PER-NODE, so verify before trusting a different partition.
+#SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-30%4
+#SBATCH --array=1-2
 
 set -euo pipefail
 
@@ -30,8 +41,8 @@ mkdir -p "$REPO_DIR/logs" "$REPO_DIR/results"
 # Per-task tmp (helps rootless podman)
 export TMPDIR="$HOME/tmp_podman/${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 mkdir -p "$TMPDIR"
+trap 'rm -rf "$TMPDIR"' EXIT
 
-# Ensure podman exists (no module needed on this cluster)
 command -v podman >/dev/null 2>&1 || { echo "ERROR: podman not found on PATH"; exit 2; }
 
 # Load image tar once per node (protect with a lock for arrays)
@@ -55,6 +66,14 @@ fi
 
 cd "$REPO_DIR"
 
+# Preflight: fail LOUDLY and requeueably if the GPU never reaches the
+# container. Job 38501 died exactly here on 24/30 tasks but produced no W&B
+# run, so the failures were invisible until the .err files were read.
+if ! podman run --rm "$IMAGE_TAG" nvidia-smi -L; then
+  echo "ERROR: no GPU inside container on $(hostname) -- not starting training"
+  exit 75
+fi
+
 # Run inside container
 podman run --rm \
   -e WANDB_API_KEY="${WANDB_API_KEY:-}" \
@@ -69,7 +88,7 @@ podman run --rm \
   bash -lc "
     python -c 'import jax; print(\"jax devices:\", jax.devices())' || true
     python batch_runs/scripts/run_one_ur3.py \
-      --jsonl batch_runs/sweeps/UR3Pick_dr_ladder_velocity.jsonl \
+      --jsonl batch_runs/sweeps/UR3Pick_reward_fix_pilot.jsonl \
       --index $SLURM_ARRAY_TASK_ID \
       --out_root results
   "
