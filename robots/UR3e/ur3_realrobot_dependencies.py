@@ -25,6 +25,7 @@ The UR10 reach files are left untouched; this is a sibling, not a replacement.
 """
 
 from typing import Dict, List, Optional, Tuple
+import json
 import os
 import sys
 import threading
@@ -45,6 +46,108 @@ import rtde_receive
 from brax.training.agents.ppo import networks as ppo_networks
 from brax.training.acme import running_statistics
 from mujoco_playground import registry
+
+
+def print_action_scale_banner(
+    policy_path: str,
+    rollout_action_scale: float,
+    rollout_gripper_action_scale: Optional[float] = None,
+) -> dict:
+    """Report trained-vs-rollout action_scale for BOTH arm and gripper.
+
+    The rollout scales stay MANUAL -- this only reports, it never overrides.
+    Call it immediately before run_policy_loop() so any mismatch is on screen
+    before the arm moves.
+
+    Trust model (this is exactly what broke the 2026-07 real campaign):
+      * evaluation/downloaded_policies/policy_downloader.py writes a HARDCODED
+        action_scale=0.04 into metadata.json whenever the training run's config
+        carried no action_scale. UR3Pick_dr_ladder.jsonl sets none, so all 30
+        original-ladder policies CLAIM 0.04 while they actually trained at the
+        env default of the time (0.015 at git_commit b170af5).
+      * A metadata value is only trustworthy if it ALSO appears in
+        env_overrides -- that means the sweep line set it explicitly.
+        UR3Pick_dr_ladder_velocity.jsonl does set it, so _vel policies are fine.
+      * gripper_action_scale is NEVER written to metadata by the downloader,
+        so it can only be confirmed against the sweep line or the env default.
+
+    Returns a dict of the resolved values for logging.
+    """
+    meta: dict = {}
+    meta_path = os.path.join(policy_path, "metadata.json")
+    if os.path.exists(meta_path):
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+
+    overrides = meta.get("env_overrides") or {}
+    train_arm = overrides.get("action_scale", meta.get("action_scale"))
+    arm_trusted = "action_scale" in overrides
+    train_grip = overrides.get("gripper_action_scale")
+    grip_trusted = "gripper_action_scale" in overrides
+
+    roll_arm = float(rollout_action_scale)
+    roll_grip = (
+        roll_arm
+        if rollout_gripper_action_scale is None
+        else float(rollout_gripper_action_scale)
+    )
+
+    def _fmt(val, trusted):
+        if val is None:
+            return "UNKNOWN (never written to metadata)"
+        return f"{float(val):.4f}" + ("" if trusted else "   <-- UNVERIFIED")
+
+    bar = "=" * 70
+    print(bar)
+    print("  ACTION SCALE  --  TRAINING vs ROLLOUT")
+    print(bar)
+    print(f"  policy     : {os.path.basename(os.path.normpath(policy_path))}")
+    print(f"  git_commit : {meta.get('git_commit', '?')}")
+    print(f"  obs_dim    : {meta.get('obs_dim', '?')}"
+          f"   (33 = velocity policy, 26 = position-only)")
+    print("-" * 70)
+    print(f"  ARM       trained : {_fmt(train_arm, arm_trusted)}")
+    print(f"            rollout : {roll_arm:.4f}")
+    print(f"  GRIPPER   trained : {_fmt(train_grip, grip_trusted)}")
+    print(f"            rollout : {roll_grip:.4f}")
+    print("-" * 70)
+
+    warned = False
+    if train_arm is not None:
+        t = float(train_arm)
+        if t > 0 and abs(roll_arm / t - 1.0) > 1e-6:
+            print(f"  !! ARM MISMATCH  rollout = {roll_arm / t:.2f}x trained "
+                  f"({roll_arm:.4f} vs {t:.4f})")
+            warned = True
+    if train_arm is not None and not arm_trusted:
+        print("  !! ARM action_scale is NOT in env_overrides -- this is the")
+        print("     downloader's hardcoded 0.04 fallback, NOT the trained value.")
+        print(f"     Check the env default at commit {meta.get('git_commit', '?')}"
+              " before trusting it.")
+        warned = True
+    if train_grip is None:
+        print("  !! GRIPPER action_scale was never recorded in metadata.")
+        print("     Confirm against the sweep line / env default by hand.")
+        warned = True
+    elif abs(roll_grip - float(train_grip)) > 1e-9:
+        print(f"  !! GRIPPER MISMATCH  rollout {roll_grip:.4f} "
+              f"vs trained {float(train_grip):.4f}")
+        warned = True
+
+    if not warned:
+        print("  OK -- rollout matches training on both channels.")
+    print(bar)
+
+    return {
+        "train_action_scale": train_arm,
+        "train_action_scale_trusted": arm_trusted,
+        "train_gripper_action_scale": train_grip,
+        "train_gripper_action_scale_trusted": grip_trusted,
+        "rollout_action_scale": roll_arm,
+        "rollout_gripper_action_scale": roll_grip,
+        "git_commit": meta.get("git_commit"),
+        "obs_dim": meta.get("obs_dim"),
+    }
 
 
 class MocapRigidBodyLost(RuntimeError):
