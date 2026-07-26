@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=UR3Pick_DR_ladder_velocity
 #SBATCH --account=cai_iai
-#SBATCH --partition=gpu_ia
+#SBATCH --partition=gpu
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 # Velocity-obs variant of the DR ladder (see the vault's "Plan - Add

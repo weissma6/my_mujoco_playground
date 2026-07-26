@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=UR3Pick_reward_fix_pilot
 #SBATCH --account=cai_iai
-#SBATCH --partition=gpu_ia
+#SBATCH --partition=gpu
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 # Reward-fix pilots (2026-07-26). Two L1_pos_vel runs, now that `success` no
@@ -20,18 +20,17 @@
 # The manual `--device` line in run_array_ur3_pick_dr_ladder_velocity.sbatch is
 # what killed 24 of job 38501's 30 tasks -- MUST be deleted there too.
 #
-# Partition: gpu_ia (NOT the node name -- an earlier version of this file used
-# `--partition=sanfrancisco`, which is the NODE `givemeagpushell sanfrancisco`
-# happened to allocate, not a real partition; sbatch rejected it outright with
-# "invalid partition specified"). Verified 2026-07-26 on the sanfrancisco node
-# that its /etc/cdi/nvidia.yaml declares devices "0".."7" (+UUIDs, +all), the
-# image loads, and `nvidia-smi -L` inside the container reports a Tesla
-# V100-SXM2-32GB. Job 38501's gpu=1 / gpu=2 "unresolvable CDI devices"
-# failures were most likely OTHER nodes in gpu_ia with missing/partial CDI
-# specs -- CDI health is per-node, not per-partition, so if this still fails
-# with the same error, request an interactive shell, run `hostname`, and
-# check that node's /etc/cdi/nvidia.yaml directly.
-#SBATCH --time=02:00:00
+# Partition/time are exactly what the DR ladders have always submitted with
+# (partition=gpu, time=12:00:00) -- see b170af5, which ran 30/30 on 2026-07-17.
+# Do not change these without checking `sinfo`: `sanfrancisco` is a NODE name
+# (what givemeagpushell allocates), not a partition, and `gpu_ia` rejects a 12h
+# limit. Both were tried on 2026-07-26 and rejected at submission.
+#
+# CDI health is per-node, not per-partition. If a task fails with
+# "unresolvable CDI devices", get an interactive shell, run `hostname`, and
+# check that node's /etc/cdi/nvidia.yaml -- on the sanfrancisco node it
+# correctly declares devices "0".."7" (+UUIDs, +all).
+#SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
