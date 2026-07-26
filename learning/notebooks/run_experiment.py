@@ -964,6 +964,19 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_overrides["reward_config.scales.action_rate"] = float(
                 cfg["action_rate"]
             )
+        if "hold_target" in cfg:
+            # Same nesting as action_rate. Exposed so the reward-fix pilots can
+            # switch the dwell bonus off (0.0) without a code edit.
+            env_overrides["reward_config.scales.hold_target"] = float(
+                cfg["hold_target"]
+            )
+        if "success_bonus" in cfg:
+            # Terminal bonus paid when the success gate fires; see
+            # ur3_pick.default_config()'s reward_config.scales.success_bonus.
+            # 0.0 restores the pre-2026-07-26 (hover-farming) behaviour.
+            env_overrides["reward_config.scales.success_bonus"] = float(
+                cfg["success_bonus"]
+            )
         if "success_tol" in cfg:
             env_overrides["success_tol"] = float(cfg["success_tol"])
         if "sticky_latches" in cfg:

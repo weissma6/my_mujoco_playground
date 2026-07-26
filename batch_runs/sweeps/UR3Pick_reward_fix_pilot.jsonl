@@ -1,0 +1,4 @@
+# hold_target A/B, no success termination (episodes always run 400).
+# A = hold_target 6.0 (default), B = hold_target 0.0. success_bonus off in both.
+{"env_name": "UR3Pick", "seed": 0, "run_id": "L1_pos_vel_pilotA_s0", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "episode_length": 400, "action_scale": 0.04, "gripper_action_scale": 0.01, "obs_include_velocity": true, "wandb_tags": ["reward_fix_pilot", "pilotA", "velocity", "as0.04", "gas0.01", "s0"], "success_bonus": 0.0}
+{"env_name": "UR3Pick", "seed": 0, "run_id": "L1_pos_vel_pilotB_s0", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "episode_length": 400, "action_scale": 0.04, "gripper_action_scale": 0.01, "obs_include_velocity": true, "wandb_tags": ["reward_fix_pilot", "pilotB", "velocity", "as0.04", "gas0.01", "s0"], "success_bonus": 0.0, "hold_target": 0.0}

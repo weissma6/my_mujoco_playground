@@ -14,13 +14,32 @@ What's DIFFERENT here, on every line:
     ladder's usual ~32M-step budget. This sweep tests whether that holds
     across the whole dose-response ladder, or was specific to the easiest
     rung.
-  - `action_scale: 0.04` -- the value confirmed to match real-robot
-    deployment (see run_gap_protocol.py's 2026-07-22 action_scale fix: the
-    ORIGINAL DR-ladder policies were trained at 0.04 per their metadata.json,
-    but the env's default_config() drifted to 0.015 afterward). Setting it
-    explicitly here, on every line, avoids silently inheriting whatever the
-    env default happens to be later -- the same reasoning gen_dr_ladder.py
-    already applies to episode_length.
+  - `action_scale: 0.04` (arm). Set explicitly on every line so nothing is
+    inherited from a drifting env default -- the same reasoning
+    gen_dr_ladder.py already applies to episode_length.
+
+    CORRECTION (2026-07-26): an earlier version of this docstring claimed the
+    ORIGINAL ladder trained at 0.04 "per their metadata.json". That is wrong
+    and it is what broke the first real-robot campaign. UR3Pick_dr_ladder.jsonl
+    sets NO action_scale, so those 30 runs inherited the env default, which
+    commit 1636c98 (2026-07-15) had set to 0.015 -- two days before the ladder
+    launched at b170af5. The 0.04 in their metadata.json is the hardcoded
+    fallback in policy_downloader.py, written whenever the run config carries
+    no action_scale. Deploying those policies at 0.04 ran them at 2.67x their
+    trained gain. Only a value that also appears in env_overrides is real.
+
+  - `gripper_action_scale: 0.01` (gripper, decoupled from the arm). The finger
+    range is [0, 0.025] m, so one full-magnitude action step travels 40% of the
+    stroke at 0.01, 80% at 0.02, and 160% at 0.04. The env default of 0.02 is
+    already near bang-bang -- its own comment justifies the setting with
+    ">=2.5 steps at 0.01", i.e. the rationale was written for 0.01 and the
+    value was later doubled without updating it. 0.01 restores that intent.
+    This matters more now that velocity is observed: sim's finger qvel stalls
+    to zero when the fingers close on the cube, while the real robot's channel
+    is a finite difference of a tau=0.1 low-passed COMMAND that never stalls.
+    A saturated gripper turns the sim channel into a square wave and maximises
+    that mismatch exactly at grasp -- the observed failure mode ("gripper looks
+    snappy/jerky, box dropped several times before an eventual grasp").
 
 run_id / wandb_tags get a "_vel" / "velocity" marker so these runs are never
 confused with the original (no-velocity) ladder in W&B or in
@@ -44,6 +63,10 @@ from batch_runs.sweeps.gen_dr_ladder import (  # noqa: E402
 )
 
 ACTION_SCALE = 0.04
+# Decoupled gripper scale. See the docstring: 0.01 => ~2.5 steps for the full
+# 0.025 m open->close travel, restoring the env comment's stated design intent
+# (the 0.02 default closes in ~1.25 steps, i.e. effectively bang-bang).
+GRIPPER_ACTION_SCALE = 0.01
 
 _HEADER = f"""\
 # DR-ladder + LOO sweep, VELOCITY-OBS variant -- "Plan - Add Velocity"
@@ -53,12 +76,13 @@ _HEADER = f"""\
 # not re-specified -- single source of truth for the DR cluster mapping).
 #
 # Differs from the original ladder on every line: obs_include_velocity=true
-# (26D obs -> 33D: + arm qvel(6) + finger qvel(1)) and action_scale=0.04
-# (explicit, matching the value confirmed correct for real-robot deployment --
-# see run_gap_protocol.py's action_scale fix). A single L1_pos pilot at this
-# exact setting converged within ~10M steps (vs the ladder's usual ~32M) --
-# this sweep checks whether that speedup holds across the whole dose-response
-# ladder or was specific to the easiest rung (see the vault plan).
+# (26D obs -> 33D: + arm qvel(6) + finger qvel(1)), action_scale={ACTION_SCALE}
+# (arm) and gripper_action_scale={GRIPPER_ACTION_SCALE} (decoupled). Both are
+# set EXPLICITLY so they land in the run config -> env_overrides -> the
+# policy's metadata.json, which is the only way a deploy-time check can tell a
+# real trained value from policy_downloader.py's hardcoded 0.04 fallback.
+# See the module docstring for why that distinction broke the first real
+# campaign, and for the 0.025 m finger-stroke arithmetic behind 0.01.
 #
 # {len(_CONFIGS)} configs x N seeds. Comment/blank lines are skipped by the
 # runner and do NOT count toward the 1-based SLURM_ARRAY_TASK_ID.
@@ -78,9 +102,16 @@ def build_lines(seeds):
                 "render_every": 1,
                 "episode_length": EPISODE_LENGTH,
                 "action_scale": ACTION_SCALE,
+                "gripper_action_scale": GRIPPER_ACTION_SCALE,
                 "obs_include_velocity": True,
                 **overrides,
-                "wandb_tags": [*tags, "velocity", f"as{ACTION_SCALE}", f"s{seed}"],
+                "wandb_tags": [
+                    *tags,
+                    "velocity",
+                    f"as{ACTION_SCALE}",
+                    f"gas{GRIPPER_ACTION_SCALE}",
+                    f"s{seed}",
+                ],
             }
             lines.append(json.dumps(entry))
     return lines
