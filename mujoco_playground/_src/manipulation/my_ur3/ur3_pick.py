@@ -246,6 +246,29 @@ def default_config() -> config_dict.ConfigDict:
                 # then retreated): reward dwelling inside hold_radius, still
                 # < box_target so it cannot out-pay the transport gradient.
                 hold_target=6.0,
+                # One-shot bonus on the rising edge of the 5mm/3-step success
+                # gate. DEFAULT 0.0 -- it is deliberately OFF and should stay
+                # off under the current done= policy.
+                #
+                # It exists for the case where success TERMINATES the episode.
+                # Under that policy, succeeding forfeited every remaining step
+                # of box_target(20)+hold_target(6)+lift(5)+grasp(3) ~= 31
+                # raw/step -- ~3.1k of discounted future reward (gamma=0.99 caps
+                # the geometric sum at 31/0.01). That made hovering in the
+                # 5mm..30mm ring strictly better than succeeding, and the
+                # 2026-07-24 ladder learned exactly that: eval/episode_success
+                # peaked 0.67-0.69 at 60-70% of training then collapsed below
+                # 0.03 while episode reward climbed to its maximum. A value
+                # around 5000 would clear that hover value with margin.
+                #
+                # Since 2026-07-26 episodes always run to episode_length (see
+                # done= in step), so nothing is forfeited and no compensation is
+                # needed -- box_target is strictly maximised at d=0, which is
+                # inside success_tol, so the shaping already points at success.
+                # The term is edge-triggered in step(), so it stays safe (one
+                # payout per episode) if you ever re-enable termination.
+                # Keep any non-zero value under the +-1e4 per-step reward clip.
+                success_bonus=0.0,
             )
         ),
         impl="jax",
@@ -1086,6 +1109,14 @@ class UR3Pick(ur3_base.UR3Base):
             "target_pos": target_pos,
             "step": jp.array(0, dtype=jp.int32),
             "success_counter": jp.array(0, dtype=jp.int32),
+            # Sticky "this episode has succeeded at least once" latch. Needed
+            # because success no longer ends the episode (see done= in step):
+            # the raw `success` flag is true on EVERY step the box stays inside
+            # success_tol, so summing it would measure DWELL, not success rate.
+            # The latch is emitted once, on the terminal step, so the summed
+            # eval/episode_success keeps its old 0/1-per-episode meaning and
+            # stays comparable with the pre-2026-07-26 ladders.
+            "success_ever": jp.array(0.0, dtype=float),
             "reached_box": jp.array(0.0, dtype=float),
             "grasped": jp.array(0.0, dtype=float),
             "lifted": jp.array(0.0, dtype=float),
@@ -1322,6 +1353,14 @@ class UR3Pick(ur3_base.UR3Base):
             "target_pos": target_pos,
             "step": jp.array(0, dtype=jp.int32),
             "success_counter": jp.array(0, dtype=jp.int32),
+            # Sticky "this episode has succeeded at least once" latch. Needed
+            # because success no longer ends the episode (see done= in step):
+            # the raw `success` flag is true on EVERY step the box stays inside
+            # success_tol, so summing it would measure DWELL, not success rate.
+            # The latch is emitted once, on the terminal step, so the summed
+            # eval/episode_success keeps its old 0/1-per-episode meaning and
+            # stays comparable with the pre-2026-07-26 ladders.
+            "success_ever": jp.array(0.0, dtype=float),
             "reached_box": jp.array(0.0, dtype=float),
             "grasped": jp.array(0.0, dtype=float),
             "lifted": jp.array(0.0, dtype=float),
@@ -1478,9 +1517,11 @@ class UR3Pick(ur3_base.UR3Base):
             k: v * self._config.reward_config.scales[k]
             for k, v in raw_rewards.items()
         }
-        reward = jp.clip(sum(rewards.values()), -1e4, 1e4)
-        info["last_action"] = action
 
+        # Success is resolved BEFORE the reward sum so the terminal
+        # success_bonus can be folded into it. This block used to sit AFTER the
+        # sum; moving it up is a pure reordering -- the success logic itself is
+        # unchanged, and nothing between here and the old location read `reward`.
         box_pos = data.xpos[self._obj_body]
         box_target_dist = jp.linalg.norm(info["target_pos"] - box_pos)
 
@@ -1492,6 +1533,26 @@ class UR3Pick(ur3_base.UR3Base):
         )
         success = info["success_counter"] >= 3
 
+        # Rising-edge success bonus. EDGE-TRIGGERED, not level-triggered: since
+        # success no longer terminates the episode, `success` stays true for
+        # every step the box remains inside success_tol, so a level-triggered
+        # bonus would pay out on hundreds of steps. This fires exactly once per
+        # episode regardless of whether success terminates, so the term stays
+        # safe under either done= policy. Default scale is 0.0 (not needed once
+        # the episode always runs to the horizon) -- see the scales entry.
+        newly_succeeded = success & jp.logical_not(info["success_ever"] > 0.5)
+        info["success_ever"] = jp.maximum(
+            info["success_ever"], success.astype(float)
+        )
+        raw_rewards["success_bonus"] = newly_succeeded.astype(float)
+        rewards["success_bonus"] = (
+            raw_rewards["success_bonus"]
+            * self._config.reward_config.scales["success_bonus"]
+        )
+
+        reward = jp.clip(sum(rewards.values()), -1e4, 1e4)
+        info["last_action"] = action
+
         tcp_pos = data.site_xpos[self._gripper_site]
         out_of_bounds = (
             jp.any(jp.abs(tcp_pos[:2]) > 0.6) | (tcp_pos[2] < 0.0)
@@ -1499,7 +1560,23 @@ class UR3Pick(ur3_base.UR3Base):
         invalid_state = (
             jp.isnan(data.qpos).any() | jp.isnan(data.qvel).any()
         )
-        done = (success | out_of_bounds | invalid_state).astype(jp.float32)
+        # NOTE (2026-07-26): `success` deliberately NOT in done. Episodes now
+        # always run the full episode_length, matching the real-robot protocol
+        # (D16: "Success is NOT a termination criterion"). Previously success
+        # ended the episode, which forfeited every remaining step of
+        # box_target(20)+hold_target(6)+lift(5)+grasp(3) ~= 31 raw/step. That
+        # made succeeding strictly worse than parking in the 5mm..30mm ring, and
+        # the 2026-07-24 ladder learned exactly that: eval/episode_success
+        # peaked 0.67-0.69 at 60-70% of training then collapsed below 0.03 while
+        # episode reward climbed to its maximum. With no termination there is
+        # nothing to forfeit, and box_target is strictly maximised at d=0
+        # (inside success_tol), so the shaping now points at success instead of
+        # away from it -- no compensating bonus required.
+        #
+        # out_of_bounds / invalid_state stay: the real protocol also aborts on
+        # cube-out-of-bounds and hardware faults, so keeping them is parity, not
+        # an exception to it.
+        done = (out_of_bounds | invalid_state).astype(jp.float32)
 
         # Non-summed box_target_dist_final/_min diagnostics (see the metrics
         # dict comment in reset()). brax's EvalWrapper.step SUMS every key in
@@ -1526,7 +1603,16 @@ class UR3Pick(ur3_base.UR3Base):
         metrics.update(
             **raw_rewards,
             out_of_bounds=out_of_bounds.astype(jp.float32),
-            success=success.astype(jp.float32),
+            # Emitted ONLY on the terminal step, from the sticky success_ever
+            # latch. brax sums metrics over the episode; now that success no
+            # longer terminates, the raw per-step flag stays true for every step
+            # the box sits inside success_tol, so summing it would report DWELL
+            # STEPS, not a success rate -- and would silently jump from ~0.03 to
+            # ~100+, breaking comparability with every earlier ladder. This form
+            # keeps the old 0/1-per-episode meaning exactly.
+            success=jp.where(
+                is_terminal, info["success_ever"].astype(jp.float32), 0.0
+            ),
             box_target_dist=box_target_dist,
             box_target_dist_final=box_target_dist_final,
             box_target_dist_min=box_target_dist_min,
