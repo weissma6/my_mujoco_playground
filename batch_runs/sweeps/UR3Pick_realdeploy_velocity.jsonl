@@ -1,0 +1,48 @@
+# UR3Pick -- REAL-DEPLOY randomization, re-trained with velocity obs @ action_scale 0.04.
+#
+# GOAL: take the ONE randomization setup that has actually worked on the real
+# UR3 and re-train it with the two changes we now believe in: arm
+# action_scale 0.04 (was 0.015) and obs_include_velocity=true (26D -> 33D).
+# Everything else is held at the deployed policy's values.
+#
+# PROVENANCE of the randomization -- DR_cube_mass_light, deployed 2026-07-17
+# (checkpoint DR_cube_mass_light_1636c989, deploy folder 20260717_132904):
+#   "grasped sustained for 377/750 ticks, box lifted 15 cm, closed to 4.2 cm
+#    from target"  -- Plan - Sim-to-Real Gap Protocol.md:757
+#   "the policy that actually lifted the cube on the real robot today"
+#    -- 05 Daily Notes/2026-07-17.md:41, and ur3_pick.py:126 / gen_dr_ladder.py:59
+# Its FULL DR override, verified via `git show 1636c98:batch_runs/sweeps/
+# UR3Pick_sweep.jsonl`, was cube mass +-15% AND NOTHING ELSE. gravity,
+# cube_size, cube_friction, cube_force, arm_damping, arm_stiffness,
+# action_delay and obs_noise were all OFF. Both lines below reproduce exactly
+# that -- do not "complete" the DR set here, the point is fidelity to the
+# config that transferred.
+#
+# NOTE on action_scale: no policy was ever trained at action_scale=0.02. The
+# deployed run trained at action_scale=0.015 with gripper_action_scale=0.02;
+# the 0.02 is the GRIPPER scale (same mix-up flagged in Method - Ledger.md:27).
+#
+# POSITION randomization is inherited, not set: gen_dr_ladder.py:26-29 -- L1's
+# "on" state IS the baked default_config() values. Verified unchanged between
+# 1636c98 (deployed) and HEAD: box_z_rot_range=6.28319 (2*pi full yaw),
+# box_xy_jitter=(0.15,0.2), lifter_height_max=0.02, lifter_tilt_max=0.08,
+# init_start_random="mid", init_qpos_noise=(0.05 x5, 6.28319, 0.0),
+# target_r 0.25-0.42, target_azim 0.5236-1.0472, action_rate=-0.10.
+# (box_xy_jitter was hardcoded at 1636c98 and later promoted to a config
+# field at the SAME value -- no behavioural drift.)
+#
+# episode_length=400 IS set explicitly on every line and MUST stay that way.
+# default_config() still sits at a stale 250; inheriting it killed all 30 runs
+# of the first ladder. See gen_dr_ladder.py:49-71.
+#
+# THE 2 RUNS = gripper_action_scale A/B, everything else identical (seed 0):
+#   line 1  gas 0.02 -- the deployed value (baked default at 1636c98)
+#   line 2  gas 0.01 -- the value the velocity ladder switched to in 3a5e358
+# This is the one knob left unresolved when porting the deployed config onto
+# the velocity model, so the 2-run budget is spent resolving it rather than on
+# a seed repeat. Whichever wins should be baked before the next full ladder.
+#
+# Comment/blank lines are skipped by the runner and do NOT count toward the
+# 1-based SLURM_ARRAY_TASK_ID -- so this file is --array=1-2.
+{"env_name": "UR3Pick", "seed": 0, "run_id": "RealDR_vel_as04_gas02_s0", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "episode_length": 400, "action_scale": 0.04, "gripper_action_scale": 0.02, "obs_include_velocity": true, "domain_rand.enable": true, "domain_rand.cube_mass.enable": true, "domain_rand.cube_mass.min": 0.85, "domain_rand.cube_mass.max": 1.15, "wandb_tags": ["realdeploy", "velocity", "as0.04", "gas0.02", "cube_mass_light", "s0"]}
+{"env_name": "UR3Pick", "seed": 0, "run_id": "RealDR_vel_as04_gas01_s0", "wandb_project": "UR3_pick_ppo", "video_every_evals": 6, "render_every": 1, "episode_length": 400, "action_scale": 0.04, "gripper_action_scale": 0.01, "obs_include_velocity": true, "domain_rand.enable": true, "domain_rand.cube_mass.enable": true, "domain_rand.cube_mass.min": 0.85, "domain_rand.cube_mass.max": 1.15, "wandb_tags": ["realdeploy", "velocity", "as0.04", "gas0.01", "cube_mass_light", "s0"]}
