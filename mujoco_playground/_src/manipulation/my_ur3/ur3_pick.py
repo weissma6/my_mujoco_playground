@@ -302,7 +302,7 @@ def default_config() -> config_dict.ConfigDict:
         #   0.10  => strong,   ~5.7 deg  (~8.1 deg combined)  -- stickyoff "hard"
         # Keep < ~0.12 rad (~6.9 deg / ~9.7 deg combined) so the cube can't
         # slide/tip off the plate before the grasp.
-        lifter_tilt_max=0.08,  # flat plate (baked from Spheretarget_mid_30M)
+        lifter_tilt_max=0.08,  # moderate ~4.6 deg tilt (NOT flat; flat is 0.0)
         # Box spawn yaw about world Z (rad); yaw ~ uniform(-r, +r). pi/4 covers
         # all yaw thanks to the cube's 4-fold symmetry, so the policy must learn
         # to match the jaw axis to a face rather than getting a free alignment.

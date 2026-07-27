@@ -77,7 +77,7 @@ DROP_TARGET = [0.44, 0.0, 0.215]
 # (e.g. +0.015 = 15 mm) to visually check whether it would still
 # attempt/complete a grasp at that offset, without touching the setup.
 # 0.0 = disabled (raw mocap height, matches training exactly).
-BOX_Z_OFFSET = 0.0
+BOX_Z_OFFSET = -0.015
 
 # Start pose — UR3 "task_home" keyframe arm angles from mjx_single_cube_position_ur3.xml
 # (gripper is opened separately below, since servoJ/moveJ only covers the 6 arm joints)
@@ -99,8 +99,9 @@ MOCAP_STALE_S = 0.25
 ENABLE_GRIPPER = True
 GRIPPER_PORT = 49999              # Robotiq URCapX XML-RPC server (PolyScope X)
 GRIPPER_SLAVE_ID = 9             # this Hand-E = slaveId 9 ("Gripper ID 1")
-GRIPPER_SPEED_PCT = 80           # 30 to 60 low = gentle physical gripper motion (see below)
-GRIPPER_FORCE_PCT = 60           # from 50 to 80 = gentle physical gripper motion (see below)
+GRIPPER_SPEED_PCT = 60           # 30-60 = gentle finger motion; the value the first success ran
+GRIPPER_FORCE_PCT = 80           # 50-80; a Robotiq move ends on the force limit, so keep force high
+                                 # so the fingers clamp the cube instead of stalling short of it
 
 # Convergence
 REACH_TOL = 0.02                  # 2 cm (box-to-target)
@@ -145,10 +146,11 @@ SERVOJ_A = 0.3                    # max joint accel [rad/s^2]
 SERVOJ_V = 1.0                    # max joint vel  [rad/s]
 ALPHA = 1                      # 1.0 = send the policy's full action (no blend; matches training)
 USE_FK_TCP = True                 # compute tcp_pos via MuJoCo FK (matches sim site)
-# Gripper smoothing disabled: the raw integrator target goes straight to the
-# hardware/obs. Physical smoothing now comes from the low GRIPPER_SPEED_PCT above,
-# not a software low-pass (which double-lagged the real Hand-E's own dynamics).
-GRIPPER_TAU = 0.                # s; 0 = no finger-plant low-pass
+# Finger-plant low-pass. The first hardware success (9a6e399) ran TAU=0.1 s and
+# it was part of the winning config, so it is restored here (it was later set to
+# 0.0 justified by a "low GRIPPER_SPEED_PCT", but the speed was actually 80, not
+# low). This re-creates the sim finger lag the policy trained against.
+GRIPPER_TAU = 0.1               # s; the value the first success ran (0 = no low-pass)
 GRIPPER_MAX_RATE = float("inf")  # m/s; inf = no slew cap
 
 # Paths (relative to this script)
@@ -201,7 +203,7 @@ POLICY_REGISTRY = {
 # ONE-LINE change here. Paste each run's W&B id above after training. Switch
 # back to "L1_pos" etc. for the older 26D policies (those have no
 # env_overrides, so they still need the manual constants set).
-POLICY_NAME =  "RealDR_vel_as04_gas02_s0"  # pick policy to run
+POLICY_NAME =  "RealDR_vel_as04_gas01_s0"  # pick policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
@@ -301,8 +303,8 @@ print(f"\nDrop target : {target.tolist()}")
 print(f"Starting pick loop at {CONTROL_HZ} Hz ...")
 
 # ── Move to start ──────────────────────────────────────────────────────
-print(f"\nMoving to start pose {Q_START}")
-robot.send_movej(Q_START, a=1.0, v=0.5, asynchronous=False)  # blocking moveJ
+# print(f"\nMoving to start pose {Q_START}")
+# robot.send_movej(Q_START, a=1.0, v=0.5, asynchronous=False)  # blocking moveJ
 
 # ── Download policy from W&B if missing (cache-aware, run-id keyed) ─────
 download_policy(

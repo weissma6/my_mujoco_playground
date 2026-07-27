@@ -1,0 +1,40 @@
+# UR3Pick GRASP-RETRY sweep -- reproduce the first hardware success (052d79f,
+# Align_logic_easy/mid) + the user's deltas + the cube-mass DR that transferred.
+#
+# WHY: the last two velocity trains (RealDR_vel_as04_gas0{1,2}_s0) never fully
+# closed the gripper and burned 31.9M steps. The forensic diff vs the only
+# hardware-proven policy (Align_logic at git 052d79f) found the regressions were
+# NOT the 2pi yaw but: action_rate -0.01 -> -0.10, box_target 8 -> 20 (diluting
+# grasp/align share by 34%), num_minibatches 64 -> 32, target_mode box ->
+# base_polar, tilt 0 -> 0.08, and action_scale 0.04 overshooting the cube. These
+# two lines revert all of that and layer the user's decisions on top.
+#
+# RESTORED to 052d79f: box_target=8, hold_target=3, action_rate=-0.01,
+#   gripper_align (raised, see below), gripper_action_scale=0.01,
+#   num_minibatches=64, target_mode="box", box_z_rot_range=2pi, +-2pi wrist init,
+#   success_tol=0.005, sticky_latches=true, seed=1. LR 6e-4 / gamma 0.99 /
+#   entropy 0.02 / reward_scaling 0.05 / num_envs 2048 / batch_size 512 /
+#   unroll 10 inherit the baked UR3Pick defaults (already == the success).
+# USER DELTAS: action_scale 0.025 -> 0.03; lifter OFF (lifter_height_max=0, which
+#   also disables tilt); lifter_tilt_max=0 explicit; obs_include_velocity=true
+#   (26D -> 33D); init_start_random light (line 1) / mid (line 2); ~14M budget;
+#   gripper_align 5.0 -> 8.0 (the faster 0.03 approach reaches the box sooner, so
+#   the wrist must rotate into the grasp frame EARLIER or it arrives misaligned
+#   and the alignment-gated grasp never fires).
+# DR "as specified before" = the DR that transferred on the real robot
+#   (DR_cube_mass_light, 1636c98): cube mass +-15% and NOTHING ELSE.
+# episode_length=400 (not the success's 250): matches the DR spec + b170af5
+#   ("stale 250 killed the lift"); it's episode truncation, so it does NOT change
+#   the step budget.
+#
+# STEP COUNT (num_resets_per_eval=1, num_minibatches=64):
+#   env_step/step = 512*10*64 = 327,680 ; after_init = 12-1 = 11
+#   nts   = ceil(14,000,000 / (11*327,680)) = 4
+#   TOTAL = 11*4*327,680 = 14,417,920  (~14.4M, >=14M)
+#   videos: video_every_evals=4 -> evals 4,8,12 -> 3 videos ; 512*64 % 2048 = 0
+#
+# 2 data lines -> submit with --array=1-2 (comment/blank lines don't count).
+# box_target and gripper_align are forwarded to the env via run_experiment.py's
+# env_overrides block (whitelisted alongside action_rate/hold_target).
+{"env_name":"UR3Pick","run_id":"Grasp_light_as03_vel_dr_14M_s1","wandb_project":"UR3_pick_ppo","seed":1,"num_timesteps":14000000,"num_evals":12,"num_resets_per_eval":1,"num_minibatches":64,"video_every_evals":4,"render_every":1,"init_keyframe":"task_home","init_start_random":"light","init_qpos_noise":[0.05,0.05,0.05,0.05,0.05,6.28319,0.0],"box_z_rot_range":6.28319,"lifter_height_max":0.0,"lifter_tilt_max":0.0,"target_mode":"box","action_scale":0.03,"gripper_action_scale":0.01,"action_rate":-0.01,"box_target":8.0,"hold_target":3.0,"gripper_align":8.0,"success_tol":0.005,"episode_length":400,"sticky_latches":true,"obs_include_velocity":true,"domain_rand.enable":true,"domain_rand.cube_mass.enable":true,"domain_rand.cube_mass.min":0.85,"domain_rand.cube_mass.max":1.15,"wandb_tags":["grasp_retry","light","as0.03","vel33D","2pi_yaw","nolift","dr_cubemass","14M","s1"]}
+{"env_name":"UR3Pick","run_id":"Grasp_mid_as03_vel_dr_14M_s1","wandb_project":"UR3_pick_ppo","seed":1,"num_timesteps":14000000,"num_evals":12,"num_resets_per_eval":1,"num_minibatches":64,"video_every_evals":4,"render_every":1,"init_keyframe":"task_home","init_start_random":"mid","init_qpos_noise":[0.05,0.05,0.05,0.05,0.05,6.28319,0.0],"box_z_rot_range":6.28319,"lifter_height_max":0.0,"lifter_tilt_max":0.0,"target_mode":"box","action_scale":0.03,"gripper_action_scale":0.01,"action_rate":-0.01,"box_target":8.0,"hold_target":3.0,"gripper_align":8.0,"success_tol":0.005,"episode_length":400,"sticky_latches":true,"obs_include_velocity":true,"domain_rand.enable":true,"domain_rand.cube_mass.enable":true,"domain_rand.cube_mass.min":0.85,"domain_rand.cube_mass.max":1.15,"wandb_tags":["grasp_retry","mid","as0.03","vel33D","2pi_yaw","nolift","dr_cubemass","14M","s1"]}

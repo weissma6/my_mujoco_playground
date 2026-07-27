@@ -131,7 +131,14 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "target_y_center_offset",
         "action_scale",
         "gripper_action_scale",
+        # reward_config.scales.* keys -- forwarded to the env below, never PPO
+        # params. Must be reserved so apply_validated_overrides(strict=True)
+        # doesn't reject them as "Unknown override keys".
         "action_rate",
+        "box_target",
+        "gripper_align",
+        "hold_target",
+        "success_bonus",
         "success_tol",
         "num_eval_envs",
         "seed",
@@ -963,6 +970,20 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             # update_from_flattened_dict handles the dotted key.
             env_overrides["reward_config.scales.action_rate"] = float(
                 cfg["action_rate"]
+            )
+        if "box_target" in cfg:
+            # reward_config.scales.box_target. Exposed so a sweep can restore the
+            # pre-8bb664a budget (8.0, was raised to 20.0) -- the "first success
+            # vs now" note traced the grasp/align dilution to this bump.
+            env_overrides["reward_config.scales.box_target"] = float(
+                cfg["box_target"]
+            )
+        if "gripper_align" in cfg:
+            # reward_config.scales.gripper_align. Exposed so a sweep can raise the
+            # grasp-frame rotation weight -- the wrist must align earlier when the
+            # arm approaches faster (higher action_scale).
+            env_overrides["reward_config.scales.gripper_align"] = float(
+                cfg["gripper_align"]
             )
         if "hold_target" in cfg:
             # Same nesting as action_rate. Exposed so the reward-fix pilots can

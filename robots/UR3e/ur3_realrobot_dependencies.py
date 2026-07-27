@@ -829,6 +829,7 @@ class UR3RealRobotPick:
         box_quat: Optional[np.ndarray] = None,
         last_action: Optional[np.ndarray] = None,
         obs_dim: Optional[int] = None,
+        finger_pos_real: Optional[float] = None,
         dtype=np.float32,
         dt: Optional[float] = None,
     ) -> np.ndarray:
@@ -893,10 +894,23 @@ class UR3RealRobotPick:
                       else getattr(self, "_obs_dim", 13))
 
         arm_q = np.array(fb["q"], dtype=dtype)                      # 6
-        gripper = np.array(
-            [2.0 * float(np.clip(self._finger_pos_est, 0.0, self._finger_hi))],
-            dtype=dtype,
-        )                                                           # 1 (0-0.05)
+        # Finger opening the obs reports (per-finger metres [0, 0.025]). Prefer
+        # the REAL Hand-E readback (finger_pos_real) over the command/plant
+        # estimate: sim observes data.qpos[finger] -- the PHYSICAL finger, which
+        # STALLS when it clamps the cube -- so at the grasp instant the estimate
+        # (which keeps closing to ~0.025) is OOD vs the readback (which stalls at
+        # the cube half-width), exactly the channel the "first success vs now"
+        # note flagged. Falls back to the plant estimate when no valid readback
+        # is available (dry-run / arm-only, or before the gripper worker's first
+        # <=10 Hz poll -> NaN), so those paths are unchanged. NOTE: the readback
+        # is polled at <=10 Hz, so this channel stair-steps under the 50 Hz loop.
+        finger_src = float(
+            self._finger_pos_est
+            if finger_pos_real is None or not np.isfinite(finger_pos_real)
+            else finger_pos_real
+        )
+        finger_src = float(np.clip(finger_src, 0.0, self._finger_hi))
+        gripper = np.array([2.0 * finger_src], dtype=dtype)         # 1 (0-0.05)
         box = np.array(box_pos, dtype=dtype)
         tgt = np.array(target_pos, dtype=dtype)
 
@@ -917,7 +931,11 @@ class UR3RealRobotPick:
                 )
             bq = (np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
                   if box_quat is None else np.asarray(box_quat, dtype=float))
-            finger_m = float(np.clip(self._finger_pos_est, 0.0, self._finger_hi))
+            # Same finger source as the position channel above (readback when
+            # available, else plant estimate) so the FK grasp-frame geometry
+            # matches the reported opening. Jaw/approach axes are normalized, so
+            # this barely moves them, but keeps the two consistent.
+            finger_m = finger_src
             geo = self.compute_obs_geometry(arm_q, finger_m, box_pos, bq)
             tcp = np.array(geo["tcp"], dtype=dtype)
             box_to_tcp = box - tcp                                  # 3
@@ -933,12 +951,16 @@ class UR3RealRobotPick:
             if obs_dim == 26:
                 return obs26[None, :]  # (1, 26)
 
-            # addvelocity: obs_dim == 33. arm_qvel is RTDE-clean; finger_qvel
-            # is finite-differenced from finger_pos_est (the same plant
-            # estimate the finger POSITION obs above already uses) -- there
-            # is no hardware velocity readback for the Hand-E. First call
-            # (no previous estimate cached) returns 0.0, matching sim's
-            # convention of a well-defined start rather than NaN/undefined.
+            # addvelocity: obs_dim == 33. arm_qvel is RTDE-clean; finger_qvel is
+            # finite-differenced from the SAME source as the finger POSITION obs
+            # (gripper[0] = 2*finger_src -- the real readback when available, per
+            # the change above, else the plant estimate) so position and velocity
+            # are consistent. There is no hardware velocity readback for the
+            # Hand-E. First call (no previous estimate cached) returns 0.0,
+            # matching sim's well-defined start. RISK: when finger_src is the
+            # <=10 Hz readback, this finite-difference stair-steps and is noisier
+            # than the smooth plant estimate -- if it destabilizes deploy, keep
+            # the readback for POSITION but diff self._finger_pos_est here instead.
             arm_qvel = (np.array(fb["qd"], dtype=dtype) if "qd" in fb
                         else np.zeros(6, dtype=dtype))               # 6
             step_dt = float(dt if dt is not None
@@ -1174,10 +1196,13 @@ class UR3RealRobotPick:
           gripper_state_fn: optional callable() -> real gripper readback; either a
                       read_state() dict (sim_finger metres [0,0.025] + pos_pct raw
                       native percent [0,100]) or, for back-compat, a plain float
-                      sim_finger. Polled at the same <=10 Hz cadence as the send
-                      (diagnostic only — NOT fed into the obs), logged as
-                      gripper_fb_pos (metres) + gripper_fb_pct (percent). None /
-                      dry-run => both logged as NaN.
+                      sim_finger. Polled at the same <=10 Hz cadence as the send,
+                      logged as gripper_fb_pos (metres) + gripper_fb_pct (percent),
+                      and FED INTO THE OBS's gripper channel (finger_pos_real ->
+                      build_obs_from_feedback: the physical finger stalls on the
+                      cube, matching sim's data.qpos[finger]). None / dry-run =>
+                      readback stays NaN, so build_obs falls back to the plant
+                      estimate and both fields log as NaN.
           gripper_tau: finger-plant low-pass time constant (s) for the gripper
                       command/obs; 0 => no smoothing (the old behavior). See
                       policy_step_ctrl_update.
@@ -1337,13 +1362,20 @@ class UR3RealRobotPick:
 
                 # 3. Build observation (13D or 26D, per the loaded policy's
                 # obs_dim -- see build_obs_from_feedback). box_quat/last_action
-                # are only consumed by the 26D path.
+                # are only consumed by the 26D path. finger_pos_real feeds the
+                # gripper obs channel from the REAL Hand-E readback (latest known
+                # from the <=10 Hz worker; NaN before the first poll / dry-run ->
+                # build_obs falls back to the plant estimate) so the policy sees
+                # the physical finger that stalls on the cube, not the command
+                # estimate that keeps closing.
+                finger_fb_obs = gripper_worker.latest_state()["gripper_fb_pos"]
                 t0_obs = time.perf_counter()
                 obs_batch = self.build_obs_from_feedback(
                     fb, box_pos, drop_target,
                     tcp_pos=tcp_xyz if use_fk_tcp else None,
                     box_quat=box_quat,
                     last_action=last_action,
+                    finger_pos_real=finger_fb_obs,
                     dtype=dtype,
                     dt=dt,  # addvelocity: finger finite-difference period
                 )
@@ -1387,9 +1419,11 @@ class UR3RealRobotPick:
                 )
                 gripper_worker.command(gripper_norm)
                 gstate = gripper_worker.latest_state()
-                # Same carry-forward semantics as before: these hold the most
-                # recently obtained readback (diagnostic only — NOT fed into
-                # the obs) until the worker's next successful <=10 Hz poll.
+                # Same carry-forward semantics: these hold the most recently
+                # obtained readback until the worker's next <=10 Hz poll. The
+                # position readback (gripper_fb_pos) is ALSO fed into the obs's
+                # gripper channel at the top of the next tick (step 3,
+                # finger_pos_real); here it is captured for the CSV log.
                 last_gripper_fb = gstate["gripper_fb_pos"]
                 last_gripper_fb_pct = gstate["gripper_fb_pct"]
                 # Robotiq object-detection flag/bool -- real grasp proxy for
