@@ -17,6 +17,7 @@ Usage:
 For a URSim dry-run set ROBOT_IP=127.0.0.1 and ENABLE_GRIPPER=False.
 """
 
+import json
 import os
 import platform
 import time
@@ -28,7 +29,10 @@ if platform.system() == "Darwin":
 
 import numpy as np
 
-from ur3_realrobot_dependencies import UR3RealRobotPick
+from ur3_realrobot_dependencies import (
+    UR3RealRobotPick,
+    print_action_scale_banner,
+)
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -95,8 +99,8 @@ MOCAP_STALE_S = 0.25
 ENABLE_GRIPPER = True
 GRIPPER_PORT = 49999              # Robotiq URCapX XML-RPC server (PolyScope X)
 GRIPPER_SLAVE_ID = 9             # this Hand-E = slaveId 9 ("Gripper ID 1")
-GRIPPER_SPEED_PCT = 60           # 30 to 60 low = gentle physical gripper motion (see below)
-GRIPPER_FORCE_PCT = 80           # from 50 to 80 = gentle physical gripper motion (see below)
+GRIPPER_SPEED_PCT = 80           # 30 to 60 low = gentle physical gripper motion (see below)
+GRIPPER_FORCE_PCT = 60           # from 50 to 80 = gentle physical gripper motion (see below)
 
 # Convergence
 REACH_TOL = 0.02                  # 2 cm (box-to-target)
@@ -115,23 +119,36 @@ CONTROL_HZ = 50.0
 # default was later lowered to 0.015, which made every ladder policy on the
 # real robot ~2.7x too slow to reach the cube until this was caught).
 # RealDR_vel_as04_gas0{1,2}_s0 (2026-07-27 velocity re-train) train at 0.04.
-ACTION_SCALE = 0.04
+#
+# BOTH scales are now RESOLVED FROM THE CHECKPOINT (see below) -- leave these
+# as None for any policy whose sweep line sets them explicitly. They are only
+# a manual fallback for older policies whose metadata.json carries no
+# env_overrides entry (the 26D pre-2026-07-26 ones).
+#
+# Why: these used to be two hand-edited constants that had to be kept in sync
+# with POLICY_NAME by comment alone. On 2026-07-27 the gas01 policy (trained
+# gripper_action_scale=0.01) was rolled out twice at 0.02 -- 2x the trained
+# finger rate, which ur3_realrobot_dependencies.compute_ctrl documents as
+# driving the finger out-of-distribution. Two of three rollouts were wasted.
+# print_action_scale_banner() existed to catch exactly this but was never
+# actually called from anywhere, so nothing was printed and nothing failed.
+ACTION_SCALE = None              # None => take from metadata env_overrides
 # GRIPPER per-step delta scale — DECOUPLED from the arm in the new setup. MUST
 # match the env's gripper_action_scale (ur3_pick default_config at the run's
 # commit). L2_pos_cube (and every DR-ladder config) trains with 0.02 -- printed
 # as "Env gripper_action_scale (training source of truth): 0.02" by
 # run_gap_protocol.py for this exact policy.
-GRIPPER_ACTION_SCALE = 0.02      # gas02 run = 0.02; set 0.01 for the gas01 run
+GRIPPER_ACTION_SCALE = None      # None => take from metadata env_overrides
 LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
 SERVOJ_A = 0.3                    # max joint accel [rad/s^2]
-SERVOJ_V = 1.4                    # max joint vel  [rad/s]
+SERVOJ_V = 1.0                    # max joint vel  [rad/s]
 ALPHA = 1                      # 1.0 = send the policy's full action (no blend; matches training)
 USE_FK_TCP = True                 # compute tcp_pos via MuJoCo FK (matches sim site)
 # Gripper smoothing disabled: the raw integrator target goes straight to the
 # hardware/obs. Physical smoothing now comes from the low GRIPPER_SPEED_PCT above,
 # not a software low-pass (which double-lagged the real Hand-E's own dynamics).
-GRIPPER_TAU = 0.1                # s; 0 = no finger-plant low-pass
+GRIPPER_TAU = 0.                # s; 0 = no finger-plant low-pass
 GRIPPER_MAX_RATE = float("inf")  # m/s; inf = no slew cap
 
 # Paths (relative to this script)
@@ -171,16 +188,19 @@ POLICY_REGISTRY = {
     # PASTE the full W&B run id after each run finishes -- it is
     #   {run_id}_{YYYYmmdd}_{HHMMSS}_{uid}  (run_experiment.py:904), e.g.
     #   RealDR_vel_as04_gas02_s0_20260727_181500_ab12 -- NOT predictable in advance.
-    # When you select one, ALSO set ACTION_SCALE=0.04 and GRIPPER_ACTION_SCALE to
-    # this run's value (gas02 -> 0.02, gas01 -> 0.01) below.
+    # Both action scales are now read from the checkpoint's metadata
+    # env_overrides -- just switch POLICY_NAME, leave ACTION_SCALE and
+    # GRIPPER_ACTION_SCALE at None.
     "RealDR_vel_as04_gas02_s0": "RealDR_vel_as04_gas02_s0_20260727_161152_6311",  # gripper_action_scale=0.02
     "RealDR_vel_as04_gas01_s0": "RealDR_vel_as04_gas01_s0_20260727_161344_6311",  # gripper_action_scale=0.01
     "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
     "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
 }
-# Velocity re-train OOD check: point at gas02 or gas01 (both need ACTION_SCALE=0.04;
-# gas02 -> GRIPPER_ACTION_SCALE=0.02, gas01 -> 0.01). Paste each run's W&B id above
-# after training. Switch back to "L1_pos" etc. for the older 26D policies.
+# Velocity re-train OOD check: point at gas02 or gas01. Action scales resolve
+# automatically from each checkpoint's metadata, so switching policy is a
+# ONE-LINE change here. Paste each run's W&B id above after training. Switch
+# back to "L1_pos" etc. for the older 26D policies (those have no
+# env_overrides, so they still need the manual constants set).
 POLICY_NAME =  "RealDR_vel_as04_gas02_s0"  # pick policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
@@ -288,6 +308,48 @@ robot.send_movej(Q_START, a=1.0, v=0.5, asynchronous=False)  # blocking moveJ
 download_policy(
     WANDB_RUN_ID, out_dir=POLICY_PATH,
     entity=WANDB_ENTITY, project=WANDB_PROJECT,
+)
+
+# ── Resolve action scales FROM THE CHECKPOINT ──────────────────────────
+# Runs after download_policy (metadata.json is guaranteed on disk) and before
+# any policy-driven motion. A value in metadata's env_overrides means the sweep
+# line set it explicitly, so it is the training source of truth; a bare
+# top-level metadata value is NOT trusted (policy_downloader writes a hardcoded
+# action_scale=0.04 when the run's config carried none).
+def _resolve_scale(name, manual, overrides):
+    trained = overrides.get(name)
+    if trained is None:
+        if manual is None:
+            raise SystemExit(
+                f"FATAL: {name} is not in metadata env_overrides for "
+                f"{os.path.basename(POLICY_PATH)} and no manual value is set.\n"
+                f"       Look up the env default at the run's git_commit and set "
+                f"{name.upper()} explicitly."
+            )
+        print(f"  !! {name}: not in env_overrides -- using MANUAL {manual} "
+              f"(UNVERIFIED against training)")
+        return float(manual)
+    if manual is not None and abs(float(manual) - float(trained)) > 1e-9:
+        raise SystemExit(
+            f"FATAL: {name} mismatch -- manual {manual} vs trained {trained} "
+            f"({float(manual)/float(trained):.2f}x).\n"
+            f"       This is the 2026-07-27 gas01/gas02 bug. Set "
+            f"{name.upper()} = None to use the trained value."
+        )
+    return float(trained)
+
+
+with open(os.path.join(POLICY_PATH, "metadata.json"), "r", encoding="utf-8") as _f:
+    _env_overrides = (json.load(_f).get("env_overrides") or {})
+ACTION_SCALE = _resolve_scale("action_scale", ACTION_SCALE, _env_overrides)
+GRIPPER_ACTION_SCALE = _resolve_scale(
+    "gripper_action_scale", GRIPPER_ACTION_SCALE, _env_overrides)
+
+# Report-only banner (now actually wired in -- it was dead code before).
+print_action_scale_banner(
+    policy_path=POLICY_PATH,
+    rollout_action_scale=ACTION_SCALE,
+    rollout_gripper_action_scale=GRIPPER_ACTION_SCALE,
 )
 
 # ── Load policy + FK model ─────────────────────────────────────────────

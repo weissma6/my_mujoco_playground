@@ -55,9 +55,15 @@ def print_action_scale_banner(
 ) -> dict:
     """Report trained-vs-rollout action_scale for BOTH arm and gripper.
 
-    The rollout scales stay MANUAL -- this only reports, it never overrides.
-    Call it immediately before run_policy_loop() so any mismatch is on screen
-    before the arm moves.
+    This only REPORTS, it never overrides. It is called from
+    ur3_realrobot_pickloop.py right after download_policy(), where the scales
+    have already been resolved from metadata and a mismatch has already raised
+    -- so in the normal path this just prints the confirmation. Keep calling it
+    before run_policy_loop() so the numbers are on screen before the arm moves.
+
+    NOTE: from 2026-07-27 this function is no longer the only guard. It was
+    dead code (defined, never called) up to that date, which is why the gas01
+    policy was rolled out twice at 2x its trained gripper scale unnoticed.
 
     Trust model (this is exactly what broke the 2026-07 real campaign):
       * evaluation/downloaded_policies/policy_downloader.py writes a HARDCODED
@@ -68,8 +74,12 @@ def print_action_scale_banner(
       * A metadata value is only trustworthy if it ALSO appears in
         env_overrides -- that means the sweep line set it explicitly.
         UR3Pick_dr_ladder_velocity.jsonl does set it, so _vel policies are fine.
-      * gripper_action_scale is NEVER written to metadata by the downloader,
-        so it can only be confirmed against the sweep line or the env default.
+      * gripper_action_scale is never written as a TOP-LEVEL metadata key by
+        the downloader, but it DOES appear in env_overrides whenever the sweep
+        line set it (UR3Pick_dr_ladder_velocity.jsonl and
+        UR3Pick_realdeploy_velocity.jsonl both do), and is trustworthy there.
+        Only policies from sweeps that never set it fall back to the env
+        default and must be confirmed by hand.
 
     Returns a dict of the resolved values for logging.
     """
