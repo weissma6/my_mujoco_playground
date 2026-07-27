@@ -114,17 +114,18 @@ CONTROL_HZ = 50.0
 # ACTUALLY trained with, per run_gap_protocol.py's 2026-07-22 fix -- the env
 # default was later lowered to 0.015, which made every ladder policy on the
 # real robot ~2.7x too slow to reach the cube until this was caught).
-ACTION_SCALE = 0.03
+# RealDR_vel_as04_gas0{1,2}_s0 (2026-07-27 velocity re-train) train at 0.04.
+ACTION_SCALE = 0.04
 # GRIPPER per-step delta scale — DECOUPLED from the arm in the new setup. MUST
 # match the env's gripper_action_scale (ur3_pick default_config at the run's
 # commit). L2_pos_cube (and every DR-ladder config) trains with 0.02 -- printed
 # as "Env gripper_action_scale (training source of truth): 0.02" by
 # run_gap_protocol.py for this exact policy.
-GRIPPER_ACTION_SCALE = 0.02
+GRIPPER_ACTION_SCALE = 0.02      # gas02 run = 0.02; set 0.01 for the gas01 run
 LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
 SERVOJ_A = 0.3                    # max joint accel [rad/s^2]
-SERVOJ_V = 1.0                    # max joint vel  [rad/s]
+SERVOJ_V = 1.4                    # max joint vel  [rad/s]
 ALPHA = 1                      # 1.0 = send the policy's full action (no blend; matches training)
 USE_FK_TCP = True                 # compute tcp_pos via MuJoCo FK (matches sim site)
 # Gripper smoothing disabled: the raw integrator target goes straight to the
@@ -162,10 +163,25 @@ POLICY_REGISTRY = {
     "pick_12M_rand_base85_fin25": "Pick_12M_rand_base85_fin25_20260626_094554_6311",
     "L2_pos_cube": "L2_pos_cube_s2_20260717_131601_926",
     "L1_pos": "L1_pos_s0_20260717_121957_6311",
+    # --- 2026-07-27 velocity re-train of the deployed real-robot DR config ---
+    # From batch_runs/sweeps/UR3Pick_realdeploy_velocity.jsonl: the ONE DR setup
+    # that transferred (cube_mass +-15%, nothing else), re-trained with
+    # obs_include_velocity=true (26D -> 33D obs) and action_scale=0.04. The two
+    # runs differ ONLY in gripper_action_scale (gas02=0.02, gas01=0.01).
+    # PASTE the full W&B run id after each run finishes -- it is
+    #   {run_id}_{YYYYmmdd}_{HHMMSS}_{uid}  (run_experiment.py:904), e.g.
+    #   RealDR_vel_as04_gas02_s0_20260727_181500_ab12 -- NOT predictable in advance.
+    # When you select one, ALSO set ACTION_SCALE=0.04 and GRIPPER_ACTION_SCALE to
+    # this run's value (gas02 -> 0.02, gas01 -> 0.01) below.
+    "RealDR_vel_as04_gas02_s0": "RealDR_vel_as04_gas02_s0_20260727_161152_6311",  # gripper_action_scale=0.02
+    "RealDR_vel_as04_gas01_s0": "RealDR_vel_as04_gas01_s0_20260727_161344_6311",  # gripper_action_scale=0.01
     "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
     "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
 }
-POLICY_NAME =  "L1_pos"  # pick policy to run (was DR_cube_mass_light_1636c989)
+# Velocity re-train OOD check: point at gas02 or gas01 (both need ACTION_SCALE=0.04;
+# gas02 -> GRIPPER_ACTION_SCALE=0.02, gas01 -> 0.01). Paste each run's W&B id above
+# after training. Switch back to "L1_pos" etc. for the older 26D policies.
+POLICY_NAME =  "RealDR_vel_as04_gas02_s0"  # pick policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"

@@ -1,0 +1,61 @@
+{
+  "env_name": "UR3Pick",
+  "episode_length": 400,
+  "observation_size": 33,
+  "action_size": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "seed": 0,
+  "env_overrides": {
+    "action_scale": 0.04,
+    "gripper_action_scale": 0.01,
+    "obs_include_velocity": true,
+    "episode_length": 400,
+    "domain_rand.enable": true,
+    "domain_rand.cube_mass.enable": true,
+    "domain_rand.cube_mass.min": 0.85,
+    "domain_rand.cube_mass.max": 1.15
+  },
+  "domain_randomization": {},
+  "git_commit": "21095415",
+  "training_timestamp": "2026-07-27 16:43:10.383754",
+  "full_cfg": {
+    "env_name": "UR3Pick",
+    "seed": 0,
+    "run_id": "RealDR_vel_as04_gas01_s0",
+    "wandb_project": "UR3_pick_ppo",
+    "video_every_evals": 6,
+    "render_every": 1,
+    "episode_length": 400,
+    "action_scale": 0.04,
+    "gripper_action_scale": 0.01,
+    "obs_include_velocity": true,
+    "domain_rand.enable": true,
+    "domain_rand.cube_mass.enable": true,
+    "domain_rand.cube_mass.min": 0.85,
+    "domain_rand.cube_mass.max": 1.15,
+    "wandb_tags": [
+      "realdeploy",
+      "velocity",
+      "as0.04",
+      "gas0.01",
+      "cube_mass_light",
+      "s0"
+    ]
+  }
+}
