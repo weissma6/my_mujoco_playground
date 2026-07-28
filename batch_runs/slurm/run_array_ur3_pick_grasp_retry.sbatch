@@ -5,10 +5,17 @@
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 # GRASP-RETRY: reproduce the first hardware success (052d79f, Align_logic) +
-# user deltas + the cube-mass DR that transferred. 2 runs, init pose A/B,
+# user deltas + the cube-mass DR that transferred, now on the REAL 95 mm lab
+# table (3e67921) with the table height randomized. 2 runs, init pose A/B,
 # everything else identical (seed 1):
-#   index 1 = Grasp_light_as03_vel_dr_14M_s1  init_start_random="light"
-#   index 2 = Grasp_mid_as03_vel_dr_14M_s1    init_start_random="mid"
+#   index 1 = Tablelift_light   init_start_random="light"
+#   index 2 = Tablelift_mid     init_start_random="mid"
+# Both: lifter_height_max=0.02 -> table top ~ U(0.075, 0.115) every episode
+# (95 mm +-20 mm), level (lifter_tilt_max=0). The draw is in the env's reset(),
+# so it applies to the eval/video rollouts too, and the lift target is shifted
+# by the same per-episode deviation -- the cube always spawns resting ON the
+# realized table top and the lift stays a fixed 0.18..0.21 m ABOVE it.
+# results/ dirs are named after run_id, so keep run_ids space-free.
 # See batch_runs/sweeps/UR3Pick_grasp_retry.jsonl for full provenance/config.
 # ~14.4M steps/run (num_minibatches=64, num_evals=12); the 07-24/26 velocity
 # ladders ran ~30 min/run at ~2x this step count, so 12h is a generous cap.
