@@ -47,6 +47,9 @@ from mujoco_playground._src.mjx_env import State  # pylint: disable=g-importing-
 _LIFTER_HALF_THICKNESS = 0.0025  # 5 mm plate -> half-extent
 _LIFTER_HEIGHT_MIN = 0.003
 _BOX_HALF_EXTENT = 0.02  # half the box HEIGHT (3x3x4 cm box, 4 cm tall) -> rest offset
+# Tolerance (m) for the table/box-anchor consistency guards in __init__. See the
+# comment at the lifter check for why this is 1 um and not 0.
+_ANCHOR_TOL = 1e-6
 
 # D17 cube-size probe: the info-dict key reset_to_state() stashes an OPTIONAL
 # eval-only box geom half-extents override under, and step() reads back to
@@ -632,8 +635,13 @@ class UR3Pick(ur3_base.UR3Base):
         # READS the XML value to raise the deployment lift target. If the two ever
         # disagree, the real and sim targets silently differ by that gap -- fail
         # loud instead (same rule as the deploy action scales, see CLAUDE.md).
+        # Tolerance is 1 um, not 0: _init_obj_pos below is a float32 jp.array
+        # (ur3_base.py), so a keyframe that is EXACTLY right still round-trips
+        # with ~2e-9 m of error -- a 1e-9 tolerance rejected the correct scene.
+        # 1 um is far below anything physically meaningful here and still
+        # catches every real desync (the failure this guards is millimetres).
         _xml_lifter_z = float(self._mj_model.body("lifter").pos[2])
-        if abs(_xml_lifter_z - self._lifter_z_nom) > 1e-9:
+        if abs(_xml_lifter_z - self._lifter_z_nom) > _ANCHOR_TOL:
             raise ValueError(
                 f"lifter nominal height mismatch: scene XML body 'lifter' is "
                 f"parked at z={_xml_lifter_z:.6f} but lifter_height_nom="
@@ -649,7 +657,7 @@ class UR3Pick(ur3_base.UR3Base):
         # target would be raised by the wrong amount (or the cube would spawn
         # inside/above the table on any non-reset() path). Fail loud.
         _anchor_want = self._lifter_top_nom + _BOX_HALF_EXTENT
-        if abs(float(self._init_obj_pos[2]) - _anchor_want) > 1e-9:
+        if abs(float(self._init_obj_pos[2]) - _anchor_want) > _ANCHOR_TOL:
             raise ValueError(
                 f"box anchor mismatch: keyframe '{self._config.init_keyframe}' "
                 f"puts the box at z={float(self._init_obj_pos[2]):.6f}, but the "
