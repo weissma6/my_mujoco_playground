@@ -63,13 +63,22 @@ UR_CAP_PORT = 50002
 
 # Lift target — the SAME fixed air-point UR3Pick trains on, NOT a place location.
 # Training anchors the target to the fixed keyframe box pos self._init_obj_pos
-# (task_home box = (0.4, 0, 0.02)) plus uniform([0.02,-0.03,0.18],[0.06,0.03,0.21]);
-# the midpoint => (0.44, 0.0, 0.215) in the base/sim frame. It is a STATIC point
+# (task_home box = (0.4, 0, 0.115)) plus uniform([0.02,-0.03,0.18],[0.06,0.03,0.21]);
+# the midpoint => (0.44, 0.0, 0.310) in the base/sim frame. It is a STATIC point
 # (does not track the live box) and the policy lifts the box straight up into it.
-# No lifter on the real robot, so no lifter-height Z add. The old far-sideways
-# "place" target [0.3,-0.20,0.30] was out-of-distribution and made the policy
-# release mid-grasp (see diagnosis) — drop/place is disabled below; lift-and-hold.
-DROP_TARGET = [0.44, 0.0, 0.215]
+# The anchor's Z is 0.115 (not 0.02) since the "lifter" body became the real lab
+# TABLE: the cube rests on the table's 95 mm top surface + its own 20 mm half-
+# height. Training adds only the table's per-episode deviation from that nominal
+# on top, which is 0 for the real (fixed) table — so the old "no lifter on the
+# real robot, so no lifter-height Z add" note is obsolete; the height is now in
+# the anchor. See evaluation/gap_target.py.
+# WARNING — reach: 0.44 m out at z=0.310 is ~0.538 m from the base, i.e. AT the
+# UR3e's usable limit before the grasp consumes any of it. If the arm stalls
+# short of the target, pull the X in (~0.38) rather than lowering Z.
+# The old far-sideways "place" target [0.3,-0.20,0.30] was out-of-distribution
+# and made the policy release mid-grasp (see diagnosis) — drop/place is disabled
+# below; lift-and-hold.
+DROP_TARGET = [0.44, 0.0, 0.310]
 
 # Diagnostic offset (m) added to the mocap-derived box Z every tick, BEFORE
 # it feeds the obs/gripper-align reward-replay/render -- does NOT move the
@@ -77,7 +86,7 @@ DROP_TARGET = [0.44, 0.0, 0.215]
 # (e.g. +0.015 = 15 mm) to visually check whether it would still
 # attempt/complete a grasp at that offset, without touching the setup.
 # 0.0 = disabled (raw mocap height, matches training exactly).
-BOX_Z_OFFSET = -0.015
+BOX_Z_OFFSET = 0
 
 # Start pose — UR3 "task_home" keyframe arm angles from mjx_single_cube_position_ur3.xml
 # (gripper is opened separately below, since servoJ/moveJ only covers the 6 arm joints)
@@ -183,27 +192,17 @@ POLICY_REGISTRY = {
     "L2_pos_cube": "L2_pos_cube_s2_20260717_131601_926",
     "L1_pos": "L1_pos_s0_20260717_121957_6311",
     # --- 2026-07-27 velocity re-train of the deployed real-robot DR config ---
-    # From batch_runs/sweeps/UR3Pick_realdeploy_velocity.jsonl: the ONE DR setup
-    # that transferred (cube_mass +-15%, nothing else), re-trained with
-    # obs_include_velocity=true (26D -> 33D obs) and action_scale=0.04. The two
-    # runs differ ONLY in gripper_action_scale (gas02=0.02, gas01=0.01).
-    # PASTE the full W&B run id after each run finishes -- it is
-    #   {run_id}_{YYYYmmdd}_{HHMMSS}_{uid}  (run_experiment.py:904), e.g.
-    #   RealDR_vel_as04_gas02_s0_20260727_181500_ab12 -- NOT predictable in advance.
-    # Both action scales are now read from the checkpoint's metadata
-    # env_overrides -- just switch POLICY_NAME, leave ACTION_SCALE and
-    # GRIPPER_ACTION_SCALE at None.
     "RealDR_vel_as04_gas02_s0": "RealDR_vel_as04_gas02_s0_20260727_161152_6311",  # gripper_action_scale=0.02
     "RealDR_vel_as04_gas01_s0": "RealDR_vel_as04_gas01_s0_20260727_161344_6311",  # gripper_action_scale=0.01
-    "pick_un20_env2048":          "Pick_un20_env2048_20260624_160023_6311",
-    "pick_dr_medium":             "ur3pick_DR_MFR_medium_20260603_092056_5305",
+    "Grasp_light_as03_vel":          "Grasp_light_as03_vel_dr_14M_s1_20260727_201658_2201",
+    "Grasp_mid_as03_vel":             "Grasp_mid_as03_vel_dr_14M_s1_20260727_201502_2201",
 }
 # Velocity re-train OOD check: point at gas02 or gas01. Action scales resolve
 # automatically from each checkpoint's metadata, so switching policy is a
 # ONE-LINE change here. Paste each run's W&B id above after training. Switch
 # back to "L1_pos" etc. for the older 26D policies (those have no
 # env_overrides, so they still need the manual constants set).
-POLICY_NAME =  "RealDR_vel_as04_gas01_s0"  # pick policy to run
+POLICY_NAME =  "Grasp_mid_as03_vel"  # pick policy to run
 
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"

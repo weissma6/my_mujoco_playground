@@ -16,8 +16,10 @@
 
 The mocap target is used as the lift goal (a point in the air above the box).
 The 4x4x4 cm box spawns with a random Z-axis yaw (range set by box_z_rot_range).
-Optionally the box spawns on a variable-height "lifter" plate (lifter_height_max)
-so the policy learns to grasp boxes at different heights, and the arm start pose
+The box spawns on the "lifter" body -- the lab TABLE (1.2 x 0.8 m, top surface
+nominally 95 mm above the base origin), whose height and level are randomized per
+episode (lifter_height_nom +- lifter_height_max, lifter_tilt_max) so the policy
+learns to grasp off a table it can't assume the exact pose of. The arm start pose
 can be drawn from a library of hand-collected real-robot poses (init_start_random).
 Mirrors the commented-out reward scaffolding of ur10pick.py.
 """
@@ -34,10 +36,14 @@ from mujoco_playground._src.manipulation.my_ur3 import ur3_base
 from mujoco_playground._src.manipulation.my_ur3.init_poses import load_init_poses
 from mujoco_playground._src.mjx_env import State  # pylint: disable=g-importing-member
 
-# Lifter (box-riser) geometry. A thin static plate placed under the box at reset;
-# its top surface sets the box's starting height so the policy learns to grasp
-# boxes at different heights. Min height keeps the plate bottom above the floor
-# plane (z=0) so it never overlaps the floor (masks alone can't separate them).
+# Lifter geometry. The "lifter" body is the lab TABLE the cube is picked from
+# (1.2 x 0.8 m plate, see xmls/mjx_single_cube_position_ur3.xml): a kinematic
+# mocap body whose top surface sets the box's starting height. reset() places it
+# at lifter_height_nom +- lifter_height_max each episode (plus a slight tilt), so
+# the policy learns to grasp off a table whose height/level it can't assume.
+# _LIFTER_HEIGHT_MIN is a GUARD, not the nominal: it clamps the sampled height so
+# a wide jitter draw can never sink the plate bottom into the floor plane (z=0),
+# which the collision masks alone can't separate.
 _LIFTER_HALF_THICKNESS = 0.0025  # 5 mm plate -> half-extent
 _LIFTER_HEIGHT_MIN = 0.003
 _BOX_HALF_EXTENT = 0.02  # half the box HEIGHT (3x3x4 cm box, 4 cm tall) -> rest offset
@@ -211,7 +217,9 @@ def default_config() -> config_dict.ConfigDict:
                 # more weight than the approach term (gripper_box=4.0), now that
                 # training exposes the full +/-2pi cube-yaw + wrist range.
                 gripper_align=5.0,
-                # Do not collide the gripper with the floor.
+                # Do not collide the gripper with the floor OR THE TABLE. Name
+                # kept for sweep/JSONL compatibility; the sensor set behind it
+                # covers both surfaces (see _floor_hand_found_sensor).
                 no_floor_collision=0.25,
                 # Arm stays close to initial pose. Gated by (1-lifted) in
                 # _get_reward so it only regularizes the pre-lift approach —
@@ -283,9 +291,21 @@ def default_config() -> config_dict.ConfigDict:
         # init_qpos_noise jitter); "light"/"mid"/"hard" = randomly pick one
         # hand-collected pose from init_poses/train/<level>.json each reset.
         init_start_random="mid",
-        # Per-episode box-riser height (m). 0.0 disables the lifter (box on the
-        # floor, legacy). >0 => h ~ uniform(_LIFTER_HEIGHT_MIN, lifter_height_max)
-        # and the box spawns resting on the plate; the lift target is raised by h.
+        # Nominal TOP-SURFACE height (m) of the table the cube is picked from,
+        # measured in the lab: 95 mm above the UR3e base origin. The table is a
+        # permanent fixture -- there is no "off" any more (see lifter_height_max).
+        lifter_height_nom=0.095,
+        # Per-episode table-height jitter (m), SYMMETRIC about lifter_height_nom:
+        # top ~ uniform(nom - v, nom + v), clamped so the plate stays off the
+        # floor plane. Default 0.02 => top in 0.075..0.115.
+        # !! SEMANTICS CHANGED (2026-07-28): this used to be the ABSOLUTE max of a
+        # uniform(0.003, v) draw, and 0.0 meant "no plate, cube on the floor".
+        # It is now a +- jitter and 0.0 means "flat table AT THE NOMINAL 95 mm".
+        # Every pre-existing sweep JSONL that passes lifter_height_max=0.0 (the
+        # DR-ladder L0/LOO lines, UR3Pick_grasp_retry) therefore still loads, but
+        # now trains against a 95 mm table instead of the bare floor -- those runs
+        # are NOT reproducible against this file. Deliberate: the bare-floor scene
+        # was the sim-to-real gap this change exists to close.
         lifter_height_max=0.02,
         # Per-episode SLIGHT plate tilt (rad). roll AND pitch are sampled
         # INDEPENDENTLY, each ~ uniform(-t, +t) about world X and world Y, then
@@ -293,8 +313,9 @@ def default_config() -> config_dict.ConfigDict:
         # tilt is ~sqrt(2)*t when both hit their extremes. The box rests FLUSH on
         # the tilted plate, so it starts both at a variable height and slightly
         # tilted. This is what makes the out-of-plane (approach-axis) component of
-        # the 2-of-3-axis grasp alignment matter. 0.0 => flat plate (legacy).
-        # Only active with the lifter enabled.
+        # the 2-of-3-axis grasp alignment matter. 0.0 => perfectly level table.
+        # Pivots about the body origin == the nominal box XY, so the tilt lever
+        # arm is the box's XY jitter (<=0.2 m), NOT the 0.6 m plate half-length.
         # Reasonable values (per axis; remember the ~1.41x combined worst case):
         #   0.00  => flat (baked default here)
         #   0.05  => mild,     ~2.9 deg  (~4.0 deg combined)  -- gentle start
@@ -325,7 +346,11 @@ def default_config() -> config_dict.ConfigDict:
         # touching this file again. 0.0 => box always at the nominal XY.
         box_xy_jitter=(0.15, 0.2),
         # Lift-target Z-band jitter (m): target_z ~ uniform(*target_z_jitter) +
-        # _init_obj_pos[2] (+ lifter_h). Was a hardcoded [0.18, 0.21] literal,
+        # _init_obj_pos[2] (+ the table's deviation from its nominal height).
+        # NOTE the anchor _init_obj_pos[2] is now the cube resting ON the nominal
+        # table (0.115), not on the floor, so this band is measured from the
+        # table top -- an 0.18‥0.21 draw is a 18‥21 cm lift off the table, the
+        # same lift it always was. Was a hardcoded [0.18, 0.21] literal,
         # shared verbatim by BOTH target_mode paths ("box" and "base_polar");
         # exposed here for the same reason as box_xy_jitter. A zero-width
         # tuple (e.g. (0.195, 0.195)) makes the goal height deterministic.
@@ -344,17 +369,22 @@ def default_config() -> config_dict.ConfigDict:
         #                box's bearing from the base. This supersedes the
         #                box_y_center_offset/target_y_center_offset transport
         #                hack (those still work under "box"); the Z band is
-        #                unchanged (fixed 0.18‥0.21 + lifter_h).
+        #                unchanged (fixed 0.18‥0.21 above the box anchor).
         target_mode="base_polar",
         # Horizontal radius from the ROBOT BASE for base_polar targets (m).
         target_r_min=0.25,
         # Keep the far target reachable WHILE GRASPING a box. At 0.48 the worst
         # target was 0.52-0.54 m from base (at/over the ~0.54 m reach BEFORE the
         # grasp consumes any), so far targets were unreachable and the box
-        # plateaued. 0.42 -> worst ~0.47-0.49 m, ~6-7 cm headroom for the grasp;
-        # drop to 0.40 if success stays 0. Still a real carry (chord up to
-        # ~0.40 m at the 60 deg azimuth cap).
-        target_r_max=0.42,
+        # plateaued. 0.42 restored ~6-7 cm of headroom -- but the 95 mm TABLE
+        # then raised the box anchor (and with it every target) by that much:
+        #   target_z = 0.115 (box on the table) + U(0.18, 0.21) +- the table's
+        #              height deviation (0.02) = 0.275..0.345
+        #   r=0.42 -> sqrt(0.42^2 + 0.345^2) ~= 0.54 m  (no headroom left)
+        #   r=0.35 -> sqrt(0.35^2 + 0.345^2) ~= 0.49 m  (~5 cm, as intended)
+        # Hence 0.42 -> 0.35. Still a real carry (chord up to ~0.35 m at the
+        # 60 deg azimuth cap); drop target_z_jitter before r if success stalls.
+        target_r_max=0.35,
         # Azimuth offset band (rad) from the box's bearing (as seen from the
         # base) for base_polar targets: 30°‥60° to either side, so the target
         # stays in front of the robot (a 90°‥180° band threw it across the base,
@@ -543,13 +573,20 @@ class UR3Pick(ur3_base.UR3Base):
         action_scale_vec[-1] = grip_scale  # gripper actuator is last
         self._action_scale = jp.asarray(action_scale_vec, dtype=float)
 
-        # Floor-collision sensors (Hand-E fingers + hand capsule vs floor).
+        # Floor-collision sensors (Hand-E fingers + hand capsule vs floor AND vs
+        # the table). Both surfaces feed the SAME no_floor_collision penalty: with
+        # the table at 95 mm the gripper never reaches the floor plane any more, so
+        # the floor-only set would be a dead term and nothing would discourage
+        # driving the hand into the table top.
         self._floor_hand_found_sensor = [
             self._mj_model.sensor(name).id
             for name in [
                 "left_finger_pad_floor_found",
                 "right_finger_pad_floor_found",
                 "hand_capsule_floor_found",
+                "left_finger_pad_lifter_found",
+                "right_finger_pad_lifter_found",
+                "hand_capsule_lifter_found",
             ]
         ]
 
@@ -578,12 +615,48 @@ class UR3Pick(ur3_base.UR3Base):
             self._init_pose_lib = None
             self._n_init_poses = 0
 
-        # Variable-height lifter plate. Resolved here (not in the shared
+        # The table ("lifter") plate. Resolved here (not in the shared
         # ur3_base._post_init) because the picknplace sibling loads a scene
-        # without a lifter body. Disabled (parked at its XML default pose) when
-        # lifter_height_max <= 0.
-        self._lifter_enabled = float(self._config.lifter_height_max) > 0.0
+        # without a lifter body. ALWAYS ON: the table is a physical fixture of the
+        # lab cell, not an optional riser, so there is no config gate any more
+        # (lifter_height_max=0 now means "level table at the nominal height").
+        # The flag is kept so the reset()/reset_to_state() branches keep their
+        # shape and a scene without the body stays one edit away.
+        self._lifter_enabled = True
         self._lifter_mocap = self._mj_model.body("lifter").mocapid
+        # Nominal table TOP surface (m) and the matching mocap-body z (the body
+        # origin sits half a plate-thickness below its top face).
+        self._lifter_top_nom = float(self._config.lifter_height_nom)
+        self._lifter_z_nom = self._lifter_top_nom - _LIFTER_HALF_THICKNESS
+        # The XML parks the body at that same nominal, and evaluation/gap_target.py
+        # READS the XML value to raise the deployment lift target. If the two ever
+        # disagree, the real and sim targets silently differ by that gap -- fail
+        # loud instead (same rule as the deploy action scales, see CLAUDE.md).
+        _xml_lifter_z = float(self._mj_model.body("lifter").pos[2])
+        if abs(_xml_lifter_z - self._lifter_z_nom) > 1e-9:
+            raise ValueError(
+                f"lifter nominal height mismatch: scene XML body 'lifter' is "
+                f"parked at z={_xml_lifter_z:.6f} but lifter_height_nom="
+                f"{self._lifter_top_nom:.6f} implies z={self._lifter_z_nom:.6f} "
+                f"(top surface minus the {_LIFTER_HALF_THICKNESS} m half-"
+                f"thickness). evaluation/gap_target.py reads the XML value, so "
+                f"this would desync the real-robot lift target from training."
+            )
+        # ...and the box anchor (task_home keyframe box Z, == _init_obj_pos[2])
+        # must be the cube RESTING ON that nominal table. The anchor carries the
+        # table height, so reset() adds only the per-episode DEVIATION from the
+        # nominal to the lift target; if the anchor drifted off the table the
+        # target would be raised by the wrong amount (or the cube would spawn
+        # inside/above the table on any non-reset() path). Fail loud.
+        _anchor_want = self._lifter_top_nom + _BOX_HALF_EXTENT
+        if abs(float(self._init_obj_pos[2]) - _anchor_want) > 1e-9:
+            raise ValueError(
+                f"box anchor mismatch: keyframe '{self._config.init_keyframe}' "
+                f"puts the box at z={float(self._init_obj_pos[2]):.6f}, but the "
+                f"cube resting on the nominal {self._lifter_top_nom:.4f} m table "
+                f"is z={_anchor_want:.6f} (table top + the {_BOX_HALF_EXTENT} m "
+                f"box half-height). Update the scene XML keyframes."
+            )
 
         # Robot base world XY, SOURCED FROM THE MODEL (not assumed to be the
         # world origin). The UR3 "base" body is a direct child of worldbody, so
@@ -865,12 +938,24 @@ class UR3Pick(ur3_base.UR3Base):
         # policy must reorient the gripper (not just yaw) to grasp it. Disabled ->
         # legacy flat on-floor spawn (yaw only).
         if self._lifter_enabled:
-            lifter_h = jax.random.uniform(
+            # Sample the TOP SURFACE (that is what lifter_height_nom/_max are
+            # measured as, and what the cube rests on), then convert to the mocap
+            # body z so every downstream expression keeps its existing meaning.
+            # Clamped so a wide jitter can't push the plate bottom below z=0.
+            lifter_top = self._lifter_top_nom + jax.random.uniform(
                 rng_lift,
                 (),
-                minval=_LIFTER_HEIGHT_MIN,
+                minval=-float(self._config.lifter_height_max),
                 maxval=float(self._config.lifter_height_max),
             )
+            lifter_h = jp.maximum(
+                lifter_top - _LIFTER_HALF_THICKNESS, _LIFTER_HEIGHT_MIN
+            )
+            # DEVIATION of the realized top surface from the nominal. The box
+            # anchor (_init_obj_pos[2]) already sits on the NOMINAL table, so this
+            # -- not the absolute height -- is what the lift target is shifted by.
+            # Recomputed from lifter_h so the clamp above is accounted for.
+            lifter_dz = (lifter_h + _LIFTER_HALF_THICKNESS) - self._lifter_top_nom
             tilt = jax.random.uniform(
                 rng_tilt,
                 (2,),
@@ -902,6 +987,7 @@ class UR3Pick(ur3_base.UR3Base):
             box_z = z_plane + box_half_z * n[2]
         else:
             lifter_h = jp.array(0.0, dtype=float)
+            lifter_dz = jp.array(0.0, dtype=float)
             q_tilt = jp.array([1.0, 0.0, 0.0, 0.0])
             box_z = box_half_z  # rest at half-height (== 0.02 unless cube_size DR)
 
@@ -915,12 +1001,14 @@ class UR3Pick(ur3_base.UR3Base):
         # X biased forward (+0.01‥+0.06) so the lift pulls the box toward the
         # robot's reachable front; Y pulled in (±0.03) so the lift stays near
         # the robot's sagittal plane. Z band RAISED to 0.18‥0.21 m (was
-        # 0.12‥0.15) for a clearly higher lift, on request. WARNING: the far
-        # corner (x≈0.51, world-z≈0.23‥0.25 with the lifter) now sits AT or
-        # slightly OVER the UR3's ~0.54 m 3D reach limit, so the hardest targets
-        # may be physically unreachable — watch success/box_target_dist; pull the
-        # MAX back toward 0.18 if success collapses. Raised further by the lifter
-        # height so the lift target stays above the (possibly raised) box.
+        # 0.12‥0.15) for a clearly higher lift, on request. WARNING: with the
+        # 95 mm TABLE the anchor is 0.115, so this band lands at world-z
+        # 0.295‥0.325 — target_r_max was cut 0.42 -> 0.35 to keep the worst 3D
+        # target at ~0.48 m, inside the UR3's ~0.54 m reach. Watch success/
+        # box_target_dist; pull the Z MAX back toward 0.18 if success collapses.
+        # Shifted by the table's per-episode DEVIATION from its nominal height
+        # (not the absolute height — the anchor already carries the nominal), so
+        # the lift target tracks the box up and down with the table.
         # Y-center shiftable via target_y_center_offset (0.0 = legacy) — set
         # to the OPPOSITE sign of box_y_center_offset to force real lateral
         # transport distance between spawn and target (see default_config).
@@ -941,7 +1029,10 @@ class UR3Pick(ur3_base.UR3Base):
                 + self._init_obj_pos
                 + jp.array([0.0, float(self._config.target_y_center_offset), 0.0])
             )
-            target_pos = target_pos.at[2].add(lifter_h)
+            # Shift by the table's DEVIATION from nominal, not its absolute
+            # height: _init_obj_pos[2] (the anchor added just above) already
+            # places the cube on the nominal table.
+            target_pos = target_pos.at[2].add(lifter_dz)
         else:  # "base_polar"
             # Base-centered polar sampling: put the lift target in an annulus
             # around the ROBOT BASE (radius r), at an azimuth phi that is offset
@@ -973,8 +1064,9 @@ class UR3Pick(ur3_base.UR3Base):
             )
             target_xy = base_xy + r * jp.array([jp.cos(phi), jp.sin(phi)])
             # HEIGHT NOTE: Z is kept identical to the legacy "box" path — the
-            # fixed 0.18‥0.21 band above the keyframe box height, raised by the
-            # lifter height. Only the XY changes here. For a true reach SPHERE,
+            # fixed 0.18‥0.21 band above the keyframe box height (which now sits
+            # on the nominal table), shifted by the table's per-episode deviation
+            # from that nominal. Only the XY changes here. For a true reach SPHERE,
             # replace this fixed Z-band with an elevation angle (target_z from r
             # and an elevation draw) at this spot.
             target_z = (
@@ -984,7 +1076,10 @@ class UR3Pick(ur3_base.UR3Base):
                 + self._init_obj_pos[2]
             )
             target_pos = jp.array([target_xy[0], target_xy[1], target_z])
-            target_pos = target_pos.at[2].add(lifter_h)
+            # Shift by the table's DEVIATION from nominal, not its absolute
+            # height: _init_obj_pos[2] (the anchor added just above) already
+            # places the cube on the nominal table.
+            target_pos = target_pos.at[2].add(lifter_dz)
 
         # -----------------------------
         # Randomize robot joint positions
@@ -1280,12 +1375,13 @@ class UR3Pick(ur3_base.UR3Base):
             (never resampled), the rollout is still fully deterministic given
             the same `rng` argument -- this is what run_gap_protocol_sim.py's
             determinism check verifies.
-          - The lifter mocap body (if this scene's `lifter_height_max` > 0):
-            there is no physical lifter fixture on the real robot (see
-            evaluation/gap_target.py's "No lifter component" note), so it is
-            pinned at the nominal box XY with height 0 (flush with the floor,
-            out of the way) rather than sampled -- consistent with that same
-            already-accepted real<->sim convention, not a new assumption.
+          - The lifter mocap body: it models the REAL lab table (top surface
+            95 mm above the base origin), so it is pinned at the nominal
+            `lifter_height_nom`, level, at the nominal box XY -- the per-episode
+            height/tilt DRAW is bypassed like every other reset() sampling, but
+            the table itself is not, because it physically exists. (Before
+            2026-07-28 it was pinned at z=0 under a "no lifter on the real
+            robot" convention; see evaluation/gap_target.py, updated to match.)
         """
         arm_qpos = jp.asarray(arm_qpos, dtype=float)
         box_pos = jp.asarray(box_pos, dtype=float)
@@ -1321,11 +1417,11 @@ class UR3Pick(ur3_base.UR3Base):
             mocap_pos=data.mocap_pos.at[self._mocap_target, :].set(target_pos),
         )
         if self._lifter_enabled:
-            # No physical lifter on the real robot -- pin flush at the floor,
-            # nominal XY, out of the way. See the docstring's "NOT bypassed"
-            # section (last bullet).
+            # The table is real -- pin it LEVEL at the nominal height and nominal
+            # XY (the per-episode height/tilt draw is what gets bypassed here, not
+            # the table). See the docstring's "NOT bypassed" section (last bullet).
             lifter_pos = jp.array(
-                [self._init_obj_pos[0], self._init_obj_pos[1], 0.0]
+                [self._init_obj_pos[0], self._init_obj_pos[1], self._lifter_z_nom]
             )
             data = data.replace(
                 mocap_pos=data.mocap_pos.at[self._lifter_mocap, :].set(lifter_pos),

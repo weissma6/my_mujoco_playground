@@ -124,6 +124,7 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "init_keyframe",
         "init_qpos_noise",
         "init_start_random",
+        "lifter_height_nom",
         "lifter_height_max",
         "lifter_tilt_max",
         "box_z_rot_range",
@@ -941,6 +942,8 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             )
         if "init_start_random" in cfg:
             env_overrides["init_start_random"] = str(cfg["init_start_random"])
+        if "lifter_height_nom" in cfg:
+            env_overrides["lifter_height_nom"] = float(cfg["lifter_height_nom"])
         if "lifter_height_max" in cfg:
             env_overrides["lifter_height_max"] = float(cfg["lifter_height_max"])
         if "lifter_tilt_max" in cfg:

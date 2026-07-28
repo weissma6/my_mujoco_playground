@@ -7,6 +7,15 @@
     <contact name="left_finger_pad_floor_found" geom1="left_finger_collision" geom2="floor" reduce="mindist" num="1" data="found"/>
     <contact name="right_finger_pad_floor_found" geom1="right_finger_collision" geom2="floor" reduce="mindist" num="1" data="found"/>
     <contact name="hand_capsule_floor_found" geom1="attachment_site_collision" geom2="floor" reduce="mindist" num="1" data="found"/>
+
+    <!-- Same three, against the TABLE ("lifter") top. With the table at 95 mm the
+         gripper never reaches the floor plane any more, so the floor sensors above
+         would go dead and nothing would discourage driving the hand into the table.
+         ur3_pick.py ORs these into the SAME no_floor_collision penalty. -->
+    <contact name="left_finger_pad_lifter_found" geom1="left_finger_collision" geom2="lifter" reduce="mindist" num="1" data="found"/>
+    <contact name="right_finger_pad_lifter_found" geom1="right_finger_collision" geom2="lifter" reduce="mindist" num="1" data="found"/>
+    <contact name="hand_capsule_lifter_found" geom1="attachment_site_collision" geom2="lifter" reduce="mindist" num="1" data="found"/>
+
     <contact name="box_hand_found" geom1="box" geom2="attachment_site_collision" reduce="mindist" num="1" data="found"/>
 
     <!-- Box contact (for grasp detection) -->

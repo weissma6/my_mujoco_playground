@@ -15,7 +15,7 @@ ur3_pick.py's reset() (the "base_polar" branch):
     r      ~ uniform(target_r_min, target_r_max)          # PER-EPISODE DRAW
     phi    = box_bearing + side * dphi
     target_xy = base_xy + r * [cos(phi), sin(phi)]
-    target_z  ~ uniform(*target_z_jitter) + box_z_anchor + lifter_h  # PER-EP.
+    target_z  ~ uniform(*target_z_jitter) + box_z_anchor + lifter_dz  # PER-EP.
 
 Three of four target components (dphi, side, r) and half of the fourth
 (target_z's jitter term) are INDEPENDENT per-episode random draws, not
@@ -70,22 +70,38 @@ box's OWN measured pose (which genuinely does vary slightly between
 "place it roughly on the marker" repeats) contributes real noise, which is
 the intended behaviour.
 
-No lifter component -- forced to 0, matching the existing deployment
+The lifter term is 0, but the ANCHOR moved (changed 2026-07-28)
 --------------------------------------------------------------------------
-lifter_height_max defaults > 0, so ur3_pick.py's reset() ALSO adds a random
-per-episode lifter_h to target_z (and tilts the box). There is no physical
-lifter fixture on the real setup; ur3_realrobot_pickloop.py already documents
-this exact convention ("No lifter on the real robot, so no lifter-height Z
-add."). This module carries that forward rather than introducing a new
-assumption: target_z = target_z_draw + box_z_anchor, lifter term always 0.
-This is a pre-existing, already-accepted real<->sim gap on this one axis, not
-something newly introduced here.
+ur3_pick.py's reset() shifts target_z by the table's per-episode height
+DEVIATION from its nominal (and tilts the box). Until 2026-07-28 the "lifter"
+was a small 3-20 mm riser with no physical counterpart, the box anchor was the
+cube on the FLOOR (0.02), and this module forced the lifter term to 0 ("no
+lifter on the real robot"), accepting the resulting one-axis real<->sim gap.
+
+The lifter body now models the actual lab TABLE -- 1.2 x 0.8 m, top surface
+95 mm above the UR3e base origin -- which does exist on the real setup. The
+table's nominal height is carried by the ANCHOR instead of a separate term:
+the task_home keyframe box Z is now 0.115, the cube resting ON the nominal
+table. So the formula here is unchanged in shape,
+
+    target_z = target_z_draw + box_z_anchor      # anchor 0.115, was 0.02
+
+and the lifter term stays 0 -- not because there is no table, but because the
+only thing left in it is the per-episode DEVIATION, which is exactly the kind
+of randomness this module's whole job is to freeze at 0. UR3Pick's
+reset_to_state() pins the table level at the same nominal on the sim side, so
+both domains agree by construction. scene_constants() asserts the anchor
+really is table-top + box-half-height, so a scene edit cannot desync it.
+
+Consequence: protocol runs recorded BEFORE this change store targets 95 mm
+lower than target_for_episode now returns, and run_gap_protocol_sim.py's
+stored-vs-recomputed check will warn on them. That warning is correct.
 
 Verified (see this module's __main__ smoke test): compute_target_pos's numpy
 port of the base_polar formula reproduced against a jax.numpy port of the
 SAME formula (independent re-derivation from ur3_pick.py's reset() lines,
 not copy-pasted) agrees to float32 precision across 200 random draws.
-base_xy=(0,0) and the task_home box anchor (0.4, 0, 0.02) are READ from the
+base_xy=(0,0) and the task_home box anchor (0.4, 0, 0.115) are READ from the
 scene XML via plain `mujoco` (mirroring evaluation/ur3_reward_replay.SimFK's
 convention), never hardcoded, so a scene change cannot silently desync this
 module from the env.
@@ -238,6 +254,13 @@ def scene_constants(xml_path: Optional[str] = None) -> Tuple[np.ndarray, float]:
     Mirrors evaluation/ur3_reward_replay.SimFK's model-loading convention
     (mujoco.MjModel.from_xml_path, not mjx). Cached per xml_path so repeated
     calls (once per real episode) don't reload/reparse the XML each time.
+
+    box_z_anchor is the task_home keyframe box Z, which since 2026-07-28 is the
+    cube RESTING ON THE NOMINAL TABLE (0.115 = 0.095 table top + 0.02 box half-
+    height), not on the floor. That is checked here against the table geometry
+    read from the same model -- ur3_pick.py's _post_init asserts the identical
+    invariant on the training side, so a scene edit that breaks it fails loud in
+    both domains instead of silently shifting the real-robot lift target.
     """
     xml_path = xml_path or DEFAULT_XML
     if xml_path not in _SCENE_CACHE:
@@ -246,6 +269,19 @@ def scene_constants(xml_path: Optional[str] = None) -> Tuple[np.ndarray, float]:
         box_jntadr = model.body("box").jntadr[0]
         box_qposadr = int(model.jnt_qposadr[box_jntadr])
         box_z_anchor = float(model.key("task_home").qpos[box_qposadr + 2])
+        table_top = float(
+            model.body("lifter").pos[2] + model.geom("lifter").size[2]
+        )
+        box_half_z = float(model.geom("box").size[2])
+        want = table_top + box_half_z
+        if abs(box_z_anchor - want) > 1e-9:
+            raise ValueError(
+                f"{xml_path}: task_home box Z ({box_z_anchor:.6f}) is not the "
+                f"cube resting on the nominal table ({want:.6f} = table top "
+                f"{table_top:.6f} + box half-height {box_half_z:.6f}). The lift "
+                f"target is anchored to this value, so real and sim would "
+                f"disagree by the difference."
+            )
         _SCENE_CACHE[xml_path] = (base_xy, box_z_anchor)
     return _SCENE_CACHE[xml_path]
 
@@ -258,13 +294,15 @@ def compute_target_pos(
 ) -> np.ndarray:
     """Port of ur3_pick.py reset()'s base_polar branch (lines ~901-943).
 
-    Lifter term is always 0 -- see the module docstring ("No lifter component").
+    No separate lifter term: box_z_anchor IS the cube on the nominal table, and
+    the per-episode table deviation is frozen to 0 here -- see the module
+    docstring ("Lifter component = the real table's nominal height").
     """
     box_xy = np.asarray(box_xy, dtype=float)
     box_bearing = np.arctan2(box_xy[1] - base_xy[1], box_xy[0] - base_xy[0])
     phi = box_bearing + components.side * components.dphi
     target_xy = base_xy + components.r * np.array([np.cos(phi), np.sin(phi)])
-    target_z = components.target_z_draw + box_z_anchor  # + 0 (no lifter, see docstring)
+    target_z = components.target_z_draw + box_z_anchor
     return np.array([target_xy[0], target_xy[1], target_z], dtype=float)
 
 

@@ -1,0 +1,60 @@
+{
+  "env_name": "UR3Pick",
+  "obs_dim": 33,
+  "action_dim": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "wandb_run_id": "Grasp_light_as03_vel_dr_14M_s1_20260727_201658_2201",
+  "wandb_entity": "weissma6-zhaw-school-of-engineering",
+  "wandb_project": "UR3_pick_ppo",
+  "action_scale": 0.03,
+  "ctrl_dt": 0.02,
+  "episode_length": 400,
+  "env_overrides": {
+    "init_keyframe": "task_home",
+    "init_qpos_noise": [
+      0.05,
+      0.05,
+      0.05,
+      0.05,
+      0.05,
+      6.28319,
+      0.0
+    ],
+    "init_start_random": "light",
+    "lifter_height_max": 0.0,
+    "lifter_tilt_max": 0.0,
+    "box_z_rot_range": 6.28319,
+    "action_scale": 0.03,
+    "gripper_action_scale": 0.01,
+    "obs_include_velocity": true,
+    "reward_config.scales.action_rate": -0.01,
+    "reward_config.scales.box_target": 8.0,
+    "reward_config.scales.gripper_align": 8.0,
+    "reward_config.scales.hold_target": 3.0,
+    "success_tol": 0.005,
+    "sticky_latches": true,
+    "target_mode": "box",
+    "episode_length": 400,
+    "domain_rand.enable": true,
+    "domain_rand.cube_mass.enable": true,
+    "domain_rand.cube_mass.min": 0.85,
+    "domain_rand.cube_mass.max": 1.15
+  },
+  "git_commit": "7a59a4f0"
+}
