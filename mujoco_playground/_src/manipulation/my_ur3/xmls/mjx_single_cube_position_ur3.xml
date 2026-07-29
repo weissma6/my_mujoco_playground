@@ -42,7 +42,7 @@
            y: 0.00 +- 0.50 -> [-0.50, 0.50]
            top: 0.0925 + 0.0025 = 0.095
          The geom was previously pos="0.25 0 0" size="0.60 0.40 0.0025",
-         i.e. x in [0.05, 1.25], y in [-0.40, 0.40] -- wrong on BOTH axes
+         i.e. x in [0.05, 1.25], y in [-0.40, 0.40], wrong on BOTH axes
          (too deep in X, too narrow in Y, and reaching behind the robot base).
          Do NOT change the BODY z: ur3_pick.py's _post_init asserts it equals
          lifter_height_nom - the 0.0025 half-thickness, and gap_target.py
