@@ -89,14 +89,18 @@ _HEADER = f"""\
 """
 
 
-def build_lines(seeds):
+def build_lines(seeds, version=None):
     lines = [_HEADER]
+    version_tag = [version] if version else []
+    version_suffix = f"_{version}" if version else ""
     for config_id, overrides, tags in _CONFIGS:
         for seed in seeds:
             entry = {
                 "env_name": "UR3Pick",
                 "seed": int(seed),
-                "run_id": f"{config_id}_vel_s{seed}",
+                # config_id unchanged by `version`, same reasoning as
+                # gen_dr_ladder.py's build_lines -- only run_id/tags carry it.
+                "run_id": f"{config_id}_vel{version_suffix}_s{seed}",
                 "wandb_project": WANDB_PROJECT,
                 "video_every_evals": 6,
                 "render_every": 1,
@@ -111,6 +115,7 @@ def build_lines(seeds):
                     f"as{ACTION_SCALE}",
                     f"gas{GRIPPER_ACTION_SCALE}",
                     f"s{seed}",
+                    *version_tag,
                 ],
             }
             lines.append(json.dumps(entry))
@@ -129,6 +134,11 @@ def main():
     ap.add_argument(
         "--force", action="store_true", help="overwrite an existing file"
     )
+    ap.add_argument(
+        "--version", default=None,
+        help="tag appended to run_id/wandb_tags (e.g. 'v2'), mirroring "
+             "gen_dr_ladder.py's --version. config_id is left unchanged.",
+    )
     args = ap.parse_args()
 
     if os.path.exists(args.out) and not args.force:
@@ -137,7 +147,7 @@ def main():
             f"(the file should be regenerated from this script, not hand-edited)"
         )
 
-    lines = build_lines(args.seeds)
+    lines = build_lines(args.seeds, version=args.version)
     with open(args.out, "w") as f:
         f.write("\n".join(lines) + "\n")
 

@@ -429,17 +429,28 @@ def default_config() -> config_dict.ConfigDict:
         # tuple (e.g. (0.195, 0.195)) makes the goal height deterministic.
         #
         # D24 (2026-07-29): LOWER bound 0.18 -> 0.05 so the D22 eval drop point
-        # sits INSIDE the trained distribution rather than 13 cm below it. This
-        # band is the LIFT ABOVE THE CUBE'S RESTING HEIGHT, so:
+        # sits INSIDE the trained distribution. This band is the LIFT ABOVE THE
+        # CUBE'S RESTING HEIGHT, so:
         #   drop height 70 mm above the table top
         #     -> cube centre world z = 0.095 + 0.070 = 0.165
         #     -> draw                = 0.165 - 0.115  = 0.05
         #     -> air gap under the 40 mm cube = 0.165 - 0.02 - 0.095 = 0.050 m
         # (70 mm centre height / 50 mm air gap are the same spec stated twice.)
-        # Upper bound stays 0.21. WARNING: this changes the task for EVERY ladder
-        # rung, not just the top one (160 mm Z-band vs the old 30 mm) -- returns
-        # are NOT comparable to W&B data trained under the old band.
-        target_z_jitter=(0.05, 0.21),
+        #
+        # 2026-07-29, follow-up (Matthias): the D24 band (0.05, 0.21) put the
+        # eval height at its extreme LOW edge -- training spent most of its
+        # mass on lifts up to 21 cm that eval never actually tests. RENARROWED
+        # to (0.02, 0.08), CENTERED exactly on the eval draw (0.05 +- 0.03),
+        # so eval now sees a typical training sample instead of an edge case,
+        # while still keeping real height variation for the "position" DR
+        # cluster to train against. Side effect (welcome): this also lowers
+        # the D25 target_z_capped rate (was 15.7% at the old 0.21 ceiling,
+        # against the _TARGET_WORLD_Z_CAP=0.345 reach limit) since the new max
+        # (0.08) sits far below the cap regardless of table height.
+        # WARNING: this changes the task for EVERY ladder rung, not just the
+        # top one -- returns are NOT comparable to W&B data trained under
+        # either the original (0.18, 0.21) or the D24 (0.05, 0.21) band.
+        target_z_jitter=(0.02, 0.08),
         # Per-episode gripper start position. True (legacy) = sample uniform
         # [0, 0.025] m (anywhere open<->closed) at reset. False = always start
         # FULLY OPEN (0.0) -- for a deterministic DR-ladder L0 baseline.
