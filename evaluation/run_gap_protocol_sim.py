@@ -134,14 +134,19 @@ from policy_downloader import default_policy_dir, download_policy  # noqa: E402
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
 
-# D17: exact geometry (confirmed 2026-07-22, see the plan's D17). "3cm" is the
-# sim's existing nominal box (Cube A, 3x3x4 cm) -- passing it through
-# reset_to_state's cube_half_extents override is a NO-OP vs. not passing an
-# override at all, since it equals the model's baked nominal size. "4cm" is
-# Cube B (4x4x4 cm), the deliberate OOD probe -- +33% cross-section, outside
-# even the training-time _dr_max_box_half_xy=0.018 graspability clamp. Both
-# physical cubes are 4cm tall and share a mocap-rig centre (D17), so z stays
-# 0.02 for both -- only x,y differ.
+# D17 geometry (confirmed 2026-07-22), RETIRED as an OOD probe by D19
+# (2026-07-29): cube_size is no longer a single scale factor with a hard
+# graspability clamp the 4cm cube sat outside of -- domain_rand.cube_size_xy/
+# cube_size_z now draw INDEPENDENT absolute half-extents directly spanning
+# 2x2x3 cm to 4x4x4 cm (_dr_max_box_half_xy raised 0.018->0.020, see
+# ur3_pick.py), so "4cm" below is now IN-distribution DR, not an OOD probe.
+# It reappears as D22/D23's Block E real-robot check (same-distribution
+# robustness, not extrapolation). "3cm" is the sim's nominal box (Cube A) --
+# a no-op override vs. not passing one at all. Both physical cubes are 4cm
+# tall and share a mocap-rig centre (D17), so z stays 0.02 for both -- only
+# x,y differ. This dict already stores independent xy/z half-extents (it
+# never was a single scalar), so no structural change was needed here for
+# D19 beyond this note.
 CUBE_HALF_EXTENTS = {
     "3cm": (0.015, 0.015, 0.02),
     "4cm": (0.020, 0.020, 0.020),
@@ -285,6 +290,17 @@ def rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos, box_quat,
     pattern as ur3_reward_replay.sim_rollout_reward), plus box_target_dist/
     success/reward_total. Never checks `done` -- see the module docstring's
     "Fixed horizon" note.
+
+    D22 (2026-07-29) note -- NO landed-pose logging here, by design: MJX
+    doesn't need a physical drop (there is no gripper/gravity release event
+    to script), so this rollout just runs the fixed H steps and stops -- it
+    never opens the gripper or logs a "landed box xy" the way the real runner
+    now does after its H-step loop (robots/UR3e/run_gap_protocol.py). This is
+    an expected, DELIBERATE real<->sim asymmetry: `place_error` (see
+    evaluation/gap_metrics.place_error, kept separate from the reward/gap
+    scoring in that same module) can only be measured from real mocap after
+    the real drop; there is no sim-side equivalent to compute here, and this
+    function does not attempt to fake one.
 
     `cube_half_extents` (D17): optional (3,) box geom half-extents override,
     forwarded verbatim to `env.reset_to_state` -- None (the default, and
