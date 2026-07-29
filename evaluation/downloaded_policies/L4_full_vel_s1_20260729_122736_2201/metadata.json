@@ -1,0 +1,47 @@
+{
+  "env_name": "UR3Pick",
+  "obs_dim": 33,
+  "action_dim": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "wandb_run_id": "L4_full_vel_s1_20260729_122736_2201",
+  "wandb_entity": "weissma6-zhaw-school-of-engineering",
+  "wandb_project": "UR3_pick_ppo",
+  "action_scale": 0.04,
+  "ctrl_dt": 0.02,
+  "episode_length": 400,
+  "env_overrides": {
+    "action_scale": 0.04,
+    "gripper_action_scale": 0.01,
+    "obs_include_velocity": true,
+    "episode_length": 400,
+    "domain_rand.enable": true,
+    "domain_rand.cube_mass.enable": true,
+    "domain_rand.cube_friction.enable": true,
+    "domain_rand.cube_size_xy.enable": true,
+    "domain_rand.cube_size_z.enable": true,
+    "domain_rand.arm_stiffness.enable": true,
+    "domain_rand.arm_damping.enable": true,
+    "domain_rand.action_delay.enable": true,
+    "domain_rand.gravity.enable": true,
+    "domain_rand.cube_force.enable": true,
+    "domain_rand.joint_torque.enable": true,
+    "domain_rand.obs_noise.enable": true
+  },
+  "git_commit": "3e967b04"
+}

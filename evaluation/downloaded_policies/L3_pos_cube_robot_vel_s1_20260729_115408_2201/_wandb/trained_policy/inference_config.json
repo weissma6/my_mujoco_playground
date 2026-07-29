@@ -1,0 +1,72 @@
+{
+  "env_name": "UR3Pick",
+  "episode_length": 400,
+  "observation_size": 33,
+  "action_size": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "seed": 1,
+  "env_overrides": {
+    "action_scale": 0.04,
+    "gripper_action_scale": 0.01,
+    "obs_include_velocity": true,
+    "episode_length": 400,
+    "domain_rand.enable": true,
+    "domain_rand.cube_mass.enable": true,
+    "domain_rand.cube_friction.enable": true,
+    "domain_rand.cube_size_xy.enable": true,
+    "domain_rand.cube_size_z.enable": true,
+    "domain_rand.arm_stiffness.enable": true,
+    "domain_rand.arm_damping.enable": true,
+    "domain_rand.action_delay.enable": true
+  },
+  "domain_randomization": {},
+  "git_commit": "3e967b04",
+  "training_timestamp": "2026-07-29 12:24:03.971879",
+  "full_cfg": {
+    "env_name": "UR3Pick",
+    "seed": 1,
+    "run_id": "L3_pos_cube_robot_vel_s1",
+    "wandb_project": "UR3_pick_ppo",
+    "video_every_evals": 6,
+    "render_every": 1,
+    "episode_length": 400,
+    "action_scale": 0.04,
+    "gripper_action_scale": 0.01,
+    "obs_include_velocity": true,
+    "domain_rand.enable": true,
+    "domain_rand.cube_mass.enable": true,
+    "domain_rand.cube_friction.enable": true,
+    "domain_rand.cube_size_xy.enable": true,
+    "domain_rand.cube_size_z.enable": true,
+    "domain_rand.arm_stiffness.enable": true,
+    "domain_rand.arm_damping.enable": true,
+    "domain_rand.action_delay.enable": true,
+    "wandb_tags": [
+      "DR_ladder",
+      "L3",
+      "position",
+      "cube",
+      "robot",
+      "velocity",
+      "as0.04",
+      "gas0.01",
+      "s1"
+    ]
+  }
+}

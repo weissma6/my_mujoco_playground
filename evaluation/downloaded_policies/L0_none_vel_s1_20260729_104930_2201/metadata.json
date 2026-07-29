@@ -1,0 +1,62 @@
+{
+  "env_name": "UR3Pick",
+  "obs_dim": 33,
+  "action_dim": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "wandb_run_id": "L0_none_vel_s1_20260729_104930_2201",
+  "wandb_entity": "weissma6-zhaw-school-of-engineering",
+  "wandb_project": "UR3_pick_ppo",
+  "action_scale": 0.04,
+  "ctrl_dt": 0.02,
+  "episode_length": 400,
+  "env_overrides": {
+    "init_qpos_noise": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "init_start_random": "none",
+    "lifter_height_abs_min": 0.095,
+    "lifter_height_abs_max": 0.095,
+    "lifter_tilt_max": 0.0,
+    "box_z_rot_range": 0.0,
+    "action_scale": 0.04,
+    "gripper_action_scale": 0.01,
+    "obs_include_velocity": true,
+    "target_r_min": 0.3,
+    "target_r_max": 0.3,
+    "target_azim_min": 0.7854,
+    "target_azim_max": 0.7854,
+    "box_xy_jitter": [
+      0.0,
+      0.0
+    ],
+    "target_z_jitter": [
+      0.05,
+      0.05
+    ],
+    "finger_random_init": false,
+    "episode_length": 400
+  },
+  "git_commit": "3e967b04"
+}

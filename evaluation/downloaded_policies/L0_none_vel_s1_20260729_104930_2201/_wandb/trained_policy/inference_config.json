@@ -1,0 +1,108 @@
+{
+  "env_name": "UR3Pick",
+  "episode_length": 400,
+  "observation_size": 33,
+  "action_size": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "seed": 1,
+  "env_overrides": {
+    "init_qpos_noise": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "init_start_random": "none",
+    "lifter_height_abs_min": 0.095,
+    "lifter_height_abs_max": 0.095,
+    "lifter_tilt_max": 0.0,
+    "box_z_rot_range": 0.0,
+    "action_scale": 0.04,
+    "gripper_action_scale": 0.01,
+    "obs_include_velocity": true,
+    "target_r_min": 0.3,
+    "target_r_max": 0.3,
+    "target_azim_min": 0.7854,
+    "target_azim_max": 0.7854,
+    "box_xy_jitter": [
+      0.0,
+      0.0
+    ],
+    "target_z_jitter": [
+      0.05,
+      0.05
+    ],
+    "finger_random_init": false,
+    "episode_length": 400
+  },
+  "domain_randomization": {},
+  "git_commit": "3e967b04",
+  "training_timestamp": "2026-07-29 11:18:35.815936",
+  "full_cfg": {
+    "env_name": "UR3Pick",
+    "seed": 1,
+    "run_id": "L0_none_vel_s1",
+    "wandb_project": "UR3_pick_ppo",
+    "video_every_evals": 6,
+    "render_every": 1,
+    "episode_length": 400,
+    "action_scale": 0.04,
+    "gripper_action_scale": 0.01,
+    "obs_include_velocity": true,
+    "box_xy_jitter": [
+      0.0,
+      0.0
+    ],
+    "target_z_jitter": [
+      0.05,
+      0.05
+    ],
+    "finger_random_init": false,
+    "box_z_rot_range": 0.0,
+    "lifter_height_abs_min": 0.095,
+    "lifter_height_abs_max": 0.095,
+    "lifter_tilt_max": 0.0,
+    "init_qpos_noise": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "init_start_random": "none",
+    "target_r_min": 0.3,
+    "target_r_max": 0.3,
+    "target_azim_min": 0.7854,
+    "target_azim_max": 0.7854,
+    "wandb_tags": [
+      "DR_ladder",
+      "L0",
+      "none",
+      "velocity",
+      "as0.04",
+      "gas0.01",
+      "s1"
+    ]
+  }
+}
