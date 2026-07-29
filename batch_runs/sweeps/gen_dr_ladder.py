@@ -110,23 +110,41 @@ EPISODE_LENGTH = 400
 # or update that import alongside any change here.
 _DETERMINISTIC_POSITION = {
     "box_xy_jitter": [0.0, 0.0],
-    "target_z_jitter": [0.195, 0.195],       # midpoint of baked [0.18, 0.21]
+    # D24 (2026-07-29): L0's single fixed target IS the D22 eval drop point, so
+    # L0 can actually perform the eval task. Drop point = base-frame
+    # (0.212, 0.212, 0.165): r = sqrt(0.212^2 + 0.212^2) = 0.2998 ~= 0.30 at
+    # azim 45 deg, world z 0.165.
+    #   target_z = draw + _init_obj_pos[2](0.115) + (table_top - 0.095)
+    # With the table flat at nominal (deviation 0), draw = 0.165 - 0.115 = 0.05.
+    # NOT the 0.145 used on the novelocitymodel branch -- there the cube rests
+    # on the bare FLOOR so the anchor is 0.02, not 0.115. Porting that number
+    # here would put the drop 95 mm too high.
+    "target_z_jitter": [0.05, 0.05],
     "finger_random_init": False,
     "box_z_rot_range": 0.0,
-    "lifter_height_max": 0.0,
+    # D18/D24: `lifter_height_max` NO LONGER EXISTS (it was a +- band about the
+    # nominal; the table top is now an ABSOLUTE draw). A zero-width absolute
+    # range pinned at the nominal == "flat table at the real 95 mm height",
+    # which is what a deterministic L0 wants. Passing the old key now fails
+    # loud in ur3_pick.py rather than silently meaning something else.
+    "lifter_height_abs_min": 0.095,
+    "lifter_height_abs_max": 0.095,
     "lifter_tilt_max": 0.0,
     "init_qpos_noise": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "init_start_random": "none",
-    "target_r_min": 0.335,                   # midpoint of baked [0.25, 0.42]
-    "target_r_max": 0.335,
-    "target_azim_min": 0.7854,                # midpoint of baked [0.5236, 1.0472]
+    "target_r_min": 0.30,                     # == D22 eval drop radius
+    "target_r_max": 0.30,
+    "target_azim_min": 0.7854,                # 45 deg == D22 eval drop azimuth
     "target_azim_max": 0.7854,
 }
 
 _CUBE = {
     "domain_rand.cube_mass.enable": True,
     "domain_rand.cube_friction.enable": True,
-    "domain_rand.cube_size.enable": True,
+    # D19 (2026-07-29): the single cube_size scale factor was split into two
+    # independent absolute half-extent draws (2x2x3 cm .. 4x4x4 cm).
+    "domain_rand.cube_size_xy.enable": True,
+    "domain_rand.cube_size_z.enable": True,
 }
 _ROBOT = {
     "domain_rand.arm_stiffness.enable": True,
@@ -136,6 +154,9 @@ _ROBOT = {
 _ENV = {
     "domain_rand.gravity.enable": True,
     "domain_rand.cube_force.enable": True,
+    # D20 (2026-07-29): new arm joint-torque burst axis, same cluster and same
+    # burst schedule as the respecced cube_force.
+    "domain_rand.joint_torque.enable": True,
 }
 _OBS = {
     "domain_rand.obs_noise.enable": True,
@@ -143,7 +164,12 @@ _OBS = {
 
 
 def _off(d):
-    """Same keys as `d`, all forced False -- for explicit LOO exclusion."""
+    """Same keys as `d`, all forced False.
+
+    D21 (2026-07-29): no longer used by this module -- its only consumers were
+    the dropped LOO configs. Kept because gen_dr_ladder_velocity.py imports
+    from here and may still want it; delete once that is confirmed unused.
+    """
     return {k: False for k in d}
 
 
@@ -169,67 +195,21 @@ _add(
     {"domain_rand.enable": True, **_CUBE, **_ROBOT},
     ["DR_ladder", "L3", "position", "cube", "robot"],
 )
+# L4_full (D21, 2026-07-29): the TOP rung now carries env AND obs together,
+# absorbing what used to be the separate L5_full_obs. The whole leave-one-out
+# block (LOO_no_pos/cube/robot/env) is DROPPED: 5 configs is too few to
+# support a leave-one-out attribution study on top of the ladder itself, and
+# cutting it is where the 30-run -> 15-run saving comes from.
 _add(
     "L4_full",
-    {"domain_rand.enable": True, **_CUBE, **_ROBOT, **_ENV},
-    ["DR_ladder", "L4", "position", "cube", "robot", "env"],
-)
-_add(
-    "L5_full_obs",
     {"domain_rand.enable": True, **_CUBE, **_ROBOT, **_ENV, **_OBS},
-    ["DR_ladder", "L5", "position", "cube", "robot", "env", "obs"],
-)
-
-# --- Leave-one-out from L5_full_obs (attribution) -------------------------
-# LOO_no_obs is NOT emitted: it is byte-identical to L4_full (see docstring).
-_add(
-    "LOO_no_pos",
-    {
-        **_DETERMINISTIC_POSITION,
-        "domain_rand.enable": True,
-        **_CUBE,
-        **_ROBOT,
-        **_ENV,
-        **_OBS,
-    },
-    ["DR_LOO", "no_pos", "cube", "robot", "env", "obs"],
-)
-_add(
-    "LOO_no_cube",
-    {
-        "domain_rand.enable": True,
-        **_off(_CUBE),
-        **_ROBOT,
-        **_ENV,
-        **_OBS,
-    },
-    ["DR_LOO", "position", "no_cube", "robot", "env", "obs"],
-)
-_add(
-    "LOO_no_robot",
-    {
-        "domain_rand.enable": True,
-        **_CUBE,
-        **_off(_ROBOT),
-        **_ENV,
-        **_OBS,
-    },
-    ["DR_LOO", "position", "cube", "no_robot", "env", "obs"],
-)
-_add(
-    "LOO_no_env",
-    {
-        "domain_rand.enable": True,
-        **_CUBE,
-        **_ROBOT,
-        **_off(_ENV),
-        **_OBS,
-    },
-    ["DR_LOO", "position", "cube", "robot", "no_env", "obs"],
+    ["DR_ladder", "L4", "position", "cube", "robot", "env", "obs"],
 )
 
 _HEADER = f"""\
-# DR-ladder + LOO sweep -- "Plan - Sim-to-Real Gap Protocol" (VT2-SimToReal-Robotics).
+# DR-ladder sweep -- "Plan - Sim-to-Real Gap Protocol" (VT2-SimToReal-Robotics),
+# D21/D24 (2026-07-29): 5 configs, LOO block dropped, geometry re-derived for
+# the real 95 mm table on the addvelocity branch.
 # Generated by batch_runs/sweeps/gen_dr_ladder.py -- DO NOT hand-edit; regenerate
 # instead so the config table stays the single source of truth (see that script's
 # docstring for the full cluster -> key mapping and the domain_rand.enable caveat).
@@ -301,9 +281,7 @@ def main():
           f"seeds) to {args.out}")
     assert {c for c, _, _ in _CONFIGS} == {
         "L0_none", "L1_pos", "L2_pos_cube", "L3_pos_cube_robot", "L4_full",
-        "L5_full_obs", "LOO_no_pos", "LOO_no_cube", "LOO_no_robot",
-        "LOO_no_env",
-    }, "config set drifted from the plan's 10 configs -- update this assertion"
+    }, "config set drifted from the D21 5-config ladder -- update this assertion"
 
 
 if __name__ == "__main__":

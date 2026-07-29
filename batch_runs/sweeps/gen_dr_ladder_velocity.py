@@ -144,11 +144,12 @@ def main():
     n_runs = len(_CONFIGS) * len(args.seeds)
     print(f"Wrote {n_runs} runs ({len(_CONFIGS)} configs x {len(args.seeds)} "
           f"seeds) to {args.out}")
+    # D21 (2026-07-29): this module imports _CONFIGS from gen_dr_ladder.py, so
+    # cutting that ladder to 5 configs cuts this velocity ladder with it. The
+    # assertion is kept (it is a real drift guard) and updated to the new set.
     assert {c for c, _, _ in _CONFIGS} == {
         "L0_none", "L1_pos", "L2_pos_cube", "L3_pos_cube_robot", "L4_full",
-        "L5_full_obs", "LOO_no_pos", "LOO_no_cube", "LOO_no_robot",
-        "LOO_no_env",
-    }, "config set drifted from gen_dr_ladder.py's 10 configs -- investigate"
+    }, "config set drifted from gen_dr_ladder.py's D21 5-config ladder -- investigate"
 
 
 if __name__ == "__main__":
