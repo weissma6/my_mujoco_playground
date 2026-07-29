@@ -1,50 +1,54 @@
-"""Generate the DR-ladder + LOO sweep JSONL for the sim-to-real gap study.
+"""Generate the DR-ladder sweep JSONL for the sim-to-real gap study.
 
-See the vault plan "Plan - Sim-to-Real Gap Protocol" (VT2-SimToReal-Robotics)
-for the full research design. This script emits exactly the 10 configs x 3
-seeds = 30 lines specified there:
+See the vault plan "Plan - Sim-to-Real Gap Protocol" (VT2-SimToReal-Robotics),
+decision D21 (2026-07-29), for the full research design. D21 SUPERSEDES the
+prior 10-config/30-run ladder and its leave-one-out attribution block. This
+script now emits exactly 5 configs x 3 seeds = 15 lines:
 
   Ladder (monotone dose-response):
     L0_none              -- everything off: deterministic position, no physics DR
     L1_pos                + position DR (== the current baked default behaviour)
     L2_pos_cube            + cube physics (mass/friction/size)
     L3_pos_cube_robot      + robot physics (arm stiffness/damping) + action delay
-    L4_full                + environment (gravity + cube perturbation force)
-    L5_full_obs             + observation noise (arm q/finger/box pos/orientation)
+    L4_full                + environment (gravity + burst cube force + burst
+                             joint torque) + observation noise -- this ABSORBS
+                             what used to be the separate L5_full_obs rung.
 
-  Leave-one-out from L5_full_obs (the ladder is nested and cannot attribute
-  which cluster carries the transfer effect on its own):
-    LOO_no_pos, LOO_no_cube, LOO_no_robot, LOO_no_env
-    (LOO_no_obs is NOT emitted -- it is identical to L4_full)
+  The LOO block (LOO_no_pos / no_cube / no_robot / no_env) is DROPPED entirely
+  (D21): 5 configs is too few to support a leave-one-out attribution study on
+  top of the ladder itself.
 
-Cluster -> env_overrides / domain_rand.* key mapping (Commit 2, already
-implemented in ur3_pick.py):
+Cluster -> env_overrides / domain_rand.* key mapping (already implemented in
+ur3_pick.py):
   position : box_xy_jitter, target_z_jitter, finger_random_init,
-             box_z_rot_range, lifter_height_max, lifter_tilt_max,
+             box_z_rot_range, lifter_height_abs_min/max, lifter_tilt_max,
              init_qpos_noise, init_start_random, target_r_min/max,
              target_azim_min/max
              -- these are NOT under domain_rand; L1's "on" state is simply
              the baked default_config() values (no keys need to be set at
-             all). L0/LOO_no_pos collapse them to a single deterministic
-             point using the SAME literal values that used to be hardcoded.
-  cube     : domain_rand.cube_mass / cube_friction / cube_size
+             all). L0 collapses them to a single deterministic point.
+             (D18/D24: lifter_height_max was REPLACED by the absolute
+             lifter_height_abs_min/lifter_height_abs_max pair.)
+  cube     : domain_rand.cube_mass / cube_friction / cube_size_xy / cube_size_z
+             (D19: cube size decoupled into independent xy/z half-extent draws,
+             replacing the single cube_size scale factor)
   robot    : domain_rand.arm_stiffness / arm_damping / action_delay
-  env      : domain_rand.gravity / cube_force
+  env      : domain_rand.gravity / cube_force / joint_torque
+             (D20: cube_force respecced from continuous to bursts;
+             joint_torque is a NEW axis on the same burst schedule)
   obs      : domain_rand.obs_noise
 
-domain_rand.enable is the STATIC master switch for ONLY the original 6
-physics axes (cube_mass/cube_friction/cube_size/gravity/arm_stiffness/
-arm_damping) -- see UR3Pick._randomize_physics. action_delay, cube_force,
-and obs_noise are gated independently of it (see ur3_pick.py step()/
-_get_obs). So every line touching ANY of the 6 original axes must ALSO set
-domain_rand.enable: true, even when some of those 6 are left individually
-disabled (e.g. LOO_no_cube still needs domain_rand.enable=true for gravity/
-arm_stiffness to fire, with cube_mass/friction/size explicitly false).
+domain_rand.enable is the STATIC master switch for ONLY the physics axes
+applied in UR3Pick._randomize_physics (cube_mass / cube_friction /
+cube_size_xy / cube_size_z / gravity / arm_stiffness / arm_damping).
+action_delay, cube_force, joint_torque and obs_noise are gated INDEPENDENTLY
+of it (see ur3_pick.py step()/_get_obs). So every line touching ANY of the
+_randomize_physics axes must ALSO set domain_rand.enable: true.
 
 Every range/value used below is a BAKED DEFAULT already present in
 ur3_pick.default_config() -- this script only sets .enable flags (plus the
-deterministic-position literals for L0/LOO_no_pos). No range is
-re-invented here; see default_config() for the single source of truth.
+deterministic-position literals for L0). No range is re-invented here; see
+default_config() for the single source of truth.
 
 episode_length=400 IS set explicitly on every line, and MUST stay that way.
 This is the one winner knob that was never baked into default_config():
@@ -85,6 +89,7 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 
 WANDB_PROJECT = "UR3_pick_ppo"
@@ -138,6 +143,132 @@ _DETERMINISTIC_POSITION = {
     "target_azim_max": 0.7854,
 }
 
+# ---------------------------------------------------------------------------
+# D18/D24 reach-envelope validation, run at GENERATION time so a bad geometry
+# is caught before the sweep is emitted, not after burning HPC hours.
+#
+# These four constants MUST mirror the scene XML / ur3_pick.default_config().
+# They are literals rather than an `import ur3_pick` on purpose: this generator
+# has to run in a bare Python with no jax/mjx installed (and gap_target.py
+# imports THIS module, so pulling MJX in here would drag it into every
+# gap-protocol process too). The check below is what keeps them honest -- if
+# the env moves and these do not, the emitted envelope stops matching what is
+# actually trained, so re-derive both together.
+_BOX_CENTER_X = 0.32          # scene XML <body name="box"> / task_home keyframe
+_BOX_XY_JITTER = (0.17, 0.24)  # ur3_pick.default_config().box_xy_jitter
+_BOX_XY_R_MIN = 0.18          # ur3_pick._BOX_XY_R_MIN (base-column clearance)
+_UR3_WORKING_RADIUS_M = 0.49  # ur3_pick._UR3_WORKING_RADIUS_M
+# Measured lab table (D24), the surface every spawn has to land on.
+_TABLE_X_RANGE = (0.10, 0.70)
+_TABLE_Y_RANGE = (-0.50, 0.50)
+# D22 eval drop square, and the geometry L0's fixed target must reproduce.
+_DROP_SQUARE_CENTER = (0.212, 0.212)
+_BOX_Z_ANCHOR = 0.115         # task_home keyframe box Z (cube on the 95 mm table)
+_TABLE_TOP_NOM = 0.095        # ur3_pick.default_config().lifter_height_nom
+
+
+def _validate_reach_envelope():
+    """D18/D24: check the emitted geometry is reachable AND on the table.
+
+    Unlike the novelocitymodel version of this check, the box-spawn RECTANGLE
+    is deliberately allowed to stick out past the reach envelope: ur3_pick.py's
+    reset() projects every draw onto the annulus r in [_BOX_XY_R_MIN,
+    _UR3_WORKING_RADIUS_M] (the D24 radial clip). So the thing worth asserting
+    is not "is every rectangle corner reachable" -- it is not, by design -- but
+    "does the CLIPPED envelope stay on the table, and is the clip actually
+    doing something". Hard-fails (not warnings): every one of these is
+    arithmetic this script can settle on its own, with no robot needed.
+    """
+    cx, (jx, jy) = _BOX_CENTER_X, _BOX_XY_JITTER
+    corners = [
+        (cx - jx, jy), (cx - jx, -jy), (cx + jx, jy), (cx + jx, -jy),
+    ]
+
+    def _clip(x, y):
+        """Mirror of reset()'s radial clip (base at the world origin)."""
+        r = (x * x + y * y) ** 0.5
+        if r <= 0.0:
+            return x, y, r
+        s = min(max(r, _BOX_XY_R_MIN), _UR3_WORKING_RADIUS_M) / r
+        return x * s, y * s, r
+
+    clipped_any = False
+    for x, y in corners:
+        cxp, cyp, r_raw = _clip(x, y)
+        r_new = (cxp * cxp + cyp * cyp) ** 0.5
+        if abs(r_new - r_raw) > 1e-12:
+            clipped_any = True
+        if not (_BOX_XY_R_MIN - 1e-9 <= r_new <= _UR3_WORKING_RADIUS_M + 1e-9):
+            raise SystemExit(
+                f"D24 reach check FAILED: spawn corner ({x:.3f}, {y:.3f}) "
+                f"clips to r={r_new:.4f} m, outside the reachable annulus "
+                f"[{_BOX_XY_R_MIN}, {_UR3_WORKING_RADIUS_M}]."
+            )
+        if not (_TABLE_X_RANGE[0] - 1e-9 <= cxp <= _TABLE_X_RANGE[1] + 1e-9):
+            raise SystemExit(
+                f"D24 table check FAILED: spawn corner ({x:.3f}, {y:.3f}) "
+                f"clips to x={cxp:.4f} m, off the table {_TABLE_X_RANGE}."
+            )
+        if not (_TABLE_Y_RANGE[0] - 1e-9 <= cyp <= _TABLE_Y_RANGE[1] + 1e-9):
+            raise SystemExit(
+                f"D24 table check FAILED: spawn corner ({x:.3f}, {y:.3f}) "
+                f"clips to y={cyp:.4f} m, off the table {_TABLE_Y_RANGE}."
+            )
+        print(
+            f"  spawn corner ({x:+.3f}, {y:+.3f})  r={r_raw:.4f} -> "
+            f"({cxp:+.4f}, {cyp:+.4f}) r={r_new:.4f}  OK"
+        )
+    if not clipped_any:
+        raise SystemExit(
+            "D24 reach check FAILED: the radial clip never fires on any spawn "
+            "corner, so box_xy_jitter/_BOX_CENTER_X here no longer match the "
+            "widened envelope the clip exists for. Re-derive both together."
+        )
+
+    # L0's fixed target must BE the D22 eval drop point. Same formula
+    # ur3_pick.reset()/gap_target.compute_target_pos use, with the table flat at
+    # nominal (L0 pins lifter_height_abs_min == abs_max == nominal, deviation 0):
+    #   target_z = target_z_draw + box_z_anchor + (table_top - table_top_nom)
+    r0 = _DETERMINISTIC_POSITION["target_r_min"]
+    azim0 = _DETERMINISTIC_POSITION["target_azim_min"]
+    dev = (
+        _DETERMINISTIC_POSITION["lifter_height_abs_min"] - _TABLE_TOP_NOM
+    )
+    tz = _DETERMINISTIC_POSITION["target_z_jitter"][0] + _BOX_Z_ANCHOR + dev
+    # Box nominal bearing from the base is 0 (nominal box is on +x, y=0) and L0
+    # zeroes box_xy_jitter, so phi == azim0 and side is frozen to +1 in
+    # evaluation/gap_target.py.
+    tx = r0 * math.cos(azim0)
+    ty = r0 * math.sin(azim0)
+    want_r = (
+        _DROP_SQUARE_CENTER[0] ** 2 + _DROP_SQUARE_CENTER[1] ** 2
+    ) ** 0.5
+    if abs(tx - _DROP_SQUARE_CENTER[0]) > 5e-4 or abs(ty - _DROP_SQUARE_CENTER[1]) > 5e-4:
+        raise SystemExit(
+            f"D22 target check FAILED: L0's fixed target XY resolves to "
+            f"({tx:.4f}, {ty:.4f}) but the taped drop square is centred at "
+            f"{_DROP_SQUARE_CENTER} (r={want_r:.4f}). Fix target_r_min/max or "
+            f"target_azim_min/max in _DETERMINISTIC_POSITION."
+        )
+    want_z = _TABLE_TOP_NOM + 0.070  # D24: 70 mm drop height above the table top
+    if abs(tz - want_z) > 1e-9:
+        raise SystemExit(
+            f"D22 target check FAILED: L0's fixed target world z resolves to "
+            f"{tz:.4f} m but the D24 drop point is {want_z:.4f} m "
+            f"(table top {_TABLE_TOP_NOM} + 70 mm). target_z_jitter must be "
+            f"{want_z - _BOX_Z_ANCHOR - dev:.4f}, i.e. the lift above the "
+            f"cube's RESTING height, not above the floor."
+        )
+    print(
+        f"  L0 fixed target -> ({tx:.4f}, {ty:.4f}, {tz:.4f})  "
+        f"== D22 drop square {(*_DROP_SQUARE_CENTER, want_z)}  OK"
+    )
+    # Air gap the drop actually produces, for the record.
+    gap = tz - 0.02 - _TABLE_TOP_NOM
+    print(f"  drop: cube centre {tz - _TABLE_TOP_NOM:.3f} m above the table "
+          f"top, air gap under the 40 mm cube {gap:.3f} m")
+
+
 _CUBE = {
     "domain_rand.cube_mass.enable": True,
     "domain_rand.cube_friction.enable": True,
@@ -173,7 +304,7 @@ def _off(d):
     return {k: False for k in d}
 
 
-# Ordered so the JSONL reads top-to-bottom as the ladder, then the LOO block.
+# Ordered so the JSONL reads top-to-bottom as the ladder (L0 -> L4).
 # Each entry: (config_id, overrides_dict, wandb_tags).
 _CONFIGS = []
 
@@ -216,8 +347,8 @@ _HEADER = f"""\
 #
 # DRY: base config lives in manipulation_params.py (PPO) + ur3_pick.py
 # default_config() (env). Every line below carries ONLY per-run metadata plus the
-# DR-cluster .enable flags (or the deterministic-position literals for L0/
-# LOO_no_pos); every omitted key inherits the current baked defaults. Training
+# DR-cluster .enable flags (or the deterministic-position literals for L0);
+# every omitted key inherits the current baked defaults. Training
 # strategy is Pass 1 (shared HPs, no per-level tuning) -- num_envs/batch_size/
 # num_minibatches/LR are intentionally NOT touched anywhere here.
 #
@@ -271,6 +402,11 @@ def main():
             f"{args.out} already exists; pass --force to overwrite "
             f"(the file should be regenerated from this script, not hand-edited)"
         )
+
+    # D18/D24: validate the geometry BEFORE writing anything, so a bad envelope
+    # can never reach HPC. Hard-fails; see _validate_reach_envelope's docstring.
+    print("D18/D24 reach + table + drop-target validation:")
+    _validate_reach_envelope()
 
     lines = build_lines(args.seeds)
     with open(args.out, "w") as f:

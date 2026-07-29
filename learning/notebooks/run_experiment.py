@@ -125,7 +125,13 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "init_qpos_noise",
         "init_start_random",
         "lifter_height_nom",
+        # Kept reserved so the loud migration error below (not a confusing
+        # "Unknown override keys" from the PPO validator) is what a stale JSONL
+        # carrying this removed key actually hits.
         "lifter_height_max",
+        # D18/D24: absolute table-top range, replaces lifter_height_max.
+        "lifter_height_abs_min",
+        "lifter_height_abs_max",
         "lifter_tilt_max",
         "box_z_rot_range",
         "box_y_center_offset",
@@ -944,8 +950,37 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_overrides["init_start_random"] = str(cfg["init_start_random"])
         if "lifter_height_nom" in cfg:
             env_overrides["lifter_height_nom"] = float(cfg["lifter_height_nom"])
+        # D18/D24 (2026-07-29): the table top is now drawn from an ABSOLUTE
+        # range instead of a +- band about lifter_height_nom, so the old
+        # `lifter_height_max` key no longer exists in ur3_pick.default_config().
+        # Fail LOUD on it rather than dropping it silently: its meaning has now
+        # changed twice (absolute max of uniform(0.003, v) -> symmetric +- band
+        # -> gone), and a stale JSONL that still carries it would otherwise
+        # train against a table-height distribution it never asked for. Every
+        # pre-2026-07-29 sweep that set it (UR3Pick_grasp_retry,
+        # UR3Pick_sweep_stickyoff, the old DR-ladder JSONLs) must be updated to
+        # the new keys before it can be re-run.
         if "lifter_height_max" in cfg:
-            env_overrides["lifter_height_max"] = float(cfg["lifter_height_max"])
+            raise ValueError(
+                "cfg['lifter_height_max'] is no longer a valid key (D18/D24, "
+                "2026-07-29). The table top is now sampled as an ABSOLUTE height "
+                "uniform(lifter_height_abs_min, lifter_height_abs_max) rather "
+                "than lifter_height_nom +- lifter_height_max. Translate it: a "
+                "flat table at the nominal height is "
+                "lifter_height_abs_min = lifter_height_abs_max = "
+                "lifter_height_nom (0.095); the old +-v band is "
+                "abs_min = nom - v, abs_max = nom + v. See "
+                "ur3_pick.default_config() and batch_runs/sweeps/gen_dr_ladder.py's "
+                "_DETERMINISTIC_POSITION."
+            )
+        if "lifter_height_abs_min" in cfg:
+            env_overrides["lifter_height_abs_min"] = float(
+                cfg["lifter_height_abs_min"]
+            )
+        if "lifter_height_abs_max" in cfg:
+            env_overrides["lifter_height_abs_max"] = float(
+                cfg["lifter_height_abs_max"]
+            )
         if "lifter_tilt_max" in cfg:
             env_overrides["lifter_tilt_max"] = float(cfg["lifter_tilt_max"])
         if "box_z_rot_range" in cfg:

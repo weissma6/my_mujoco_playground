@@ -7,8 +7,8 @@
 #
 # DRY: base config lives in manipulation_params.py (PPO) + ur3_pick.py
 # default_config() (env). Every line below carries ONLY per-run metadata plus the
-# DR-cluster .enable flags (or the deterministic-position literals for L0/
-# LOO_no_pos); every omitted key inherits the current baked defaults. Training
+# DR-cluster .enable flags (or the deterministic-position literals for L0);
+# every omitted key inherits the current baked defaults. Training
 # strategy is Pass 1 (shared HPs, no per-level tuning) -- num_envs/batch_size/
 # num_minibatches/LR are intentionally NOT touched anywhere here.
 #
