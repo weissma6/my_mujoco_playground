@@ -100,12 +100,26 @@ WANDB_PROJECT = "UR3_pick_ppo"
 EPISODE_LENGTH = 400
 
 # D18/D21/D22 (2026-07-29): C0_none / L0_none's single fixed target is now set
-# to EXACTLY the D22 eval drop target -- r=0.30 m, azim=45 deg (0.7854 rad),
-# z = table_top + 0.07 -- rather than the midpoint of the baked jitter ranges.
+# to EXACTLY the D22 eval drop target -- world (0.212, 0.212, 0.165), i.e.
+# r=0.30 m, azim=45 deg (0.7854 rad) from the base, z = table_top(0.095 m
+# nominal) + 0.07 m -- rather than the midpoint of the baked jitter ranges.
 # Reason (D18): otherwise L0 cannot physically perform the eval task at all,
-# since the eval protocol (D22) always drops at that one fixed point. With
-# lifter_height_max=0.0 here (table_top == floor == 0), a fixed
-# target_z_jitter=[0.07, 0.07] already gives z = table_top + 0.07 exactly.
+# since the eval protocol (D22) always drops at that one fixed point.
+#
+# JUDGMENT CALL on target_z_jitter's exact number (documenting the arithmetic
+# so it is checkable, not just asserted): ur3_pick.py's reset() and
+# evaluation/gap_target.py both compute target_z as
+#   target_z = target_z_draw + box_z_anchor (+ lifter_h, forced 0 for L0/eval)
+# where box_z_anchor is read from the "task_home" keyframe (0.02 m, the box's
+# rest height on the bare floor -- this branch has no separate "table" body/
+# config field, unlike the parallel addvelocity-branch "95mm lab table"
+# refactor the plan's D22 numbers describe). To reproduce D22's literal
+# world-z=0.165 m through THIS branch's actual formula with lifter_h=0 (L0
+# disables the lifter, "table_top" collapses to the floor-anchor + 0.07 read
+# as table(0.095)+0.07=0.165 in absolute world terms), target_z_draw must be
+# 0.165 - 0.02 = 0.145, NOT 0.07 -- 0.07 alone would land at world-z=0.09 m,
+# 75 mm short of the intended drop point. Verify against gap_target.py's
+# __main__ smoke test / compute_target_pos if this ever needs re-deriving.
 #
 # NOTE: evaluation/gap_target.py imports this dict directly (its
 # "L0_deterministic" target profile) rather than re-typing target_r_min/max/
@@ -114,7 +128,7 @@ EPISODE_LENGTH = 400
 # must ALSO be frozen (D18) so L0 never flips to the other azimuth side.
 _DETERMINISTIC_POSITION = {
     "box_xy_jitter": [0.0, 0.0],
-    "target_z_jitter": [0.07, 0.07],          # table_top(=0) + 0.07 == eval drop z
+    "target_z_jitter": [0.145, 0.145],  # + box_z_anchor(0.02) == 0.165 == D22 drop z
     "finger_random_init": False,
     "box_z_rot_range": 0.0,
     "lifter_height_max": 0.0,
