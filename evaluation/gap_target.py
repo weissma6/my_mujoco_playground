@@ -143,17 +143,15 @@ DEFAULT_XML = os.path.join(
 # config other than no_pos) inherits the SAME baked defaults. See the module
 # docstring for why this is exhaustive over every config the plan ever sends
 # to the real robot.
+# D21 (2026-07-29): the ladder is now 5 configs -- L5_full_obs was absorbed
+# into L4_full and the whole LOO block was dropped. See
+# batch_runs/sweeps/gen_dr_ladder.py.
 CONFIG_TO_PROFILE = {
     "L0_none": "L0_deterministic",
     "L1_pos": "default",
     "L2_pos_cube": "default",
     "L3_pos_cube_robot": "default",
     "L4_full": "default",
-    "L5_full_obs": "default",
-    "LOO_no_pos": "L0_deterministic",
-    "LOO_no_cube": "default",
-    "LOO_no_robot": "default",
-    "LOO_no_env": "default",
 }
 
 
@@ -234,7 +232,18 @@ def sample_target_components(
     seed = int.from_bytes(hashlib.sha256(seed_str.encode("utf-8")).digest()[:8], "big")
     rng = np.random.default_rng(seed)
     dphi = float(rng.uniform(profile.target_azim_min, profile.target_azim_max))
-    side = float(np.sign(rng.uniform(-1.0, 1.0)))
+    # D18/D24 (2026-07-29): freeze `side` for the L0_deterministic profile.
+    # L0's fixed target must equal the D22 eval drop point EXACTLY
+    # (r=0.30, azim=45 deg, world z 0.165). With a randomly drawn side, L0
+    # would still flip between two mirror-image targets each episode -- which
+    # was tolerable when L0 was merely "deterministic position", but is not
+    # once L0 has one specific physical drop square to reproduce. Every other
+    # profile ("default") keeps drawing side randomly, unchanged: that
+    # randomness is a genuine property of the trained distribution.
+    if profile_name == "L0_deterministic":
+        side = 1.0
+    else:
+        side = float(np.sign(rng.uniform(-1.0, 1.0)))
     r = float(rng.uniform(profile.target_r_min, profile.target_r_max))
     target_z_draw = float(
         rng.uniform(profile.target_z_jitter[0], profile.target_z_jitter[1])

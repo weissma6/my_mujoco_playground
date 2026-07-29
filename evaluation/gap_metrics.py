@@ -489,6 +489,53 @@ def gate_against_noise_floor(value, ci, floor):
 
 
 # ===========================================================================
+# D22 (2026-07-29) -- drop-in-square eval metric.
+#
+# DELIBERATELY SEPARATE from R_real / the gap-scoring machinery above.
+# place_error scores WHERE THE BOX LANDED after the D22 drop: the policy
+# carries the cube to the eval target (D24 lowered target_z_jitter's floor to
+# 0.05 precisely so that target sits inside the trained distribution), the
+# eval script opens the gripper, and the cube falls ~50 mm into a taped
+# square. It has nothing to do with scaled_return_H and must NEVER be blended
+# into retention / noise_floor / sim_selection_regret -- report it on its own.
+#
+# There is no sim-side equivalent: MJX has no physical release event to
+# script, so place_error is real-mocap-only (see run_gap_protocol_sim.py).
+# ===========================================================================
+
+# D22 drop square: 15x15 cm taped on the table, centred at base-frame
+# (0.212, 0.212) -- r = sqrt(0.212^2 + 0.212^2) = 0.2998 ~= 0.30 at azim
+# 45 deg, i.e. exactly the L0 fixed target's polar coordinates. Half-width
+# 0.075 m. Well inside the real table (x in [0.10, 0.70], y in [-0.50, 0.50]).
+DROP_SQUARE_CENTER = (0.212, 0.212)
+DROP_SQUARE_HALF_WIDTH = 0.075
+
+
+def place_error(landed_xy, square_center=DROP_SQUARE_CENTER,
+                half_width=DROP_SQUARE_HALF_WIDTH):
+    """D22: how far the dropped box landed from the taped square's centre.
+
+    Args:
+      landed_xy: (x, y) base-frame metres of the landed box centre, read from
+        mocap AFTER the drop settles -- NOT the commanded lift target.
+      square_center: (x, y) metres, taped-square centre.
+      half_width: metres, half the square's side length.
+
+    Returns:
+      (distance, in_square): euclidean distance (m) to square_center, and
+      whether the landing falls inside the square. The membership test is
+      AXIS-ALIGNED (|dx| and |dy| against half_width), matching how the square
+      is physically taped -- deliberately not a radial test.
+    """
+    lx, ly = float(landed_xy[0]), float(landed_xy[1])
+    cx, cy = float(square_center[0]), float(square_center[1])
+    dx, dy = lx - cx, ly - cy
+    distance = float((dx * dx + dy * dy) ** 0.5)
+    in_square = abs(dx) <= half_width and abs(dy) <= half_width
+    return distance, bool(in_square)
+
+
+# ===========================================================================
 # Synthetic long-format data (shared with the plots' --demo and the selftest)
 # ===========================================================================
 
@@ -822,6 +869,22 @@ def _selftest():
     assert gate_against_noise_floor(10.0, (6.0, 14.0), floor=5.0) == "reportable"
     assert gate_against_noise_floor(3.0, (-1.0, 7.0), floor=5.0) == "within_noise_floor"
     assert gate_against_noise_floor(-10.0, (-14.0, -6.0), 5.0) == "reportable"
+    print("OK")
+
+    # ---- D22 place_error ----
+    print("place_error ...", end=" ")
+    d0, in0 = place_error(DROP_SQUARE_CENTER)
+    assert d0 == 0.0 and in0, (d0, in0)
+    d1, in1 = place_error((0.212 + 0.075, 0.212))       # exactly on the edge
+    assert abs(d1 - 0.075) < 1e-9 and in1, (d1, in1)
+    d2, in2 = place_error((0.212 + 0.10, 0.212))        # outside in x
+    assert abs(d2 - 0.10) < 1e-9 and not in2, (d2, in2)
+    d3, in3 = place_error((0.212 + 0.03, 0.212 - 0.04))  # 3-4-5, inside
+    assert abs(d3 - 0.05) < 1e-9 and in3, (d3, in3)
+    # Corner case the axis-aligned test must get RIGHT and a radial test would
+    # get wrong: dx=dy=0.07 is inside the square but 0.099 m from the centre.
+    d4, in4 = place_error((0.212 + 0.07, 0.212 + 0.07))
+    assert in4 and d4 > 0.075, (d4, in4)
     print("OK")
 
     print("\nSELFTEST OK (no MJX, no robot, no correlation, no normalisation).")
