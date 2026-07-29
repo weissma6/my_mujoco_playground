@@ -1,0 +1,40 @@
+{
+  "protocol_id": "gap_v1",
+  "poses_sha256": "c7ad7014f7344e1527a0f032778d39a04fe430eeea7e30a8462ea55a73a75b99",
+  "config_id": "L1_pos",
+  "episode_id": 5,
+  "repeat": 1,
+  "cube_size": "3cm",
+  "condition_id": "C1",
+  "lifter_top_height_m": null,
+  "lifter_tilt_rp_rad": [
+    0.09430990091238277,
+    0.02372132872400602
+  ],
+  "cal_applied": true,
+  "target_discrepancy_mm": 30.185,
+  "box_pos_raw": [
+    0.7957807183265686,
+    0.08800920099020004,
+    0.9014596939086914
+  ],
+  "box_quat_raw_wxyz": [
+    0.9984616041183472,
+    0.05226784572005272,
+    0.007837994955480099,
+    0.01676551252603531
+  ],
+  "policy_run_id": "L1_pos_vel_s1_20260729_112044_2201",
+  "checkpoint": "best_params.msgpack",
+  "checkpoint_hash_sha256": "5895a93e8e8036136bd7e31fbb92cd93dcda2e4e30bb82d841db25d5eeffbd5d",
+  "source": "real_measured_init",
+  "measured_init_path": "/workspace/robots/UR3e/real_robot_results/gap_protocol/L1_pos/gap_v1/C1_ep5_rep1_3cm/measured_init.json",
+  "expected_steps": 400,
+  "actual_steps": 400,
+  "achieved_hz": NaN,
+  "overrun_count": 0,
+  "stop_reason": "horizon_complete",
+  "episode_return": 3839.642571270466,
+  "final_box_target_dist": 0.2517909109592438,
+  "success": false
+}
