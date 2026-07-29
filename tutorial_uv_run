@@ -53,6 +53,12 @@ python batch_runs/scripts/run_one_ur3.py \
 sbatch --array=6-6 batch_runs/cluster/ur3_jsonl_array.submit   # Pick_un20_env2048
 sbatch --array=9-9 batch_runs/cluster/ur3_jsonl_array.submit   # Pick_short
 
+# Newly the sanfrancisco is moved into another GPU cluster type this I can't usen anymore
+sbatch --exclude=losangeles batch_runs/slurm/run_array_ur3_pick_realdeploy_velocity.sbatch
+sbatch --exclude=losangeles batch_runs/slurm/run_array_ur3_pick_grasp_retry.sbatch
+sacct -j 39692--format=JobID,NodeList,State,ExitCode   # check node health (losangeles caveat)
+
+
 # Full sweep (both configs, max 2 at a time):
 sbatch batch_runs/cluster/ur3_jsonl_array.submit               # array 1-4%2
 
@@ -68,7 +74,7 @@ sacct -u weissma6 \
 
 # Logs (job-name is UR3Pick_sweep_uv -> logs/UR3Pick_sweep_uv_<jobid>_<arrayidx>.{out,err})
 find . -maxdepth 3 -type f -name "*UR3Pick_sweep_uv*" -print
-tail -f logs/UR3Pick_sweep_uv_31226_3.err
+tail -f logs/UR3Pick_realdeploy_velocity_40002_1.err
 
 # Watch resource usage (CPU / GPU)
 sstat -j <job_id>_1.batch --format=AveCPU,AveRSS,MaxRSS,MaxVMSize,AveDiskRead,AveDiskWrite
