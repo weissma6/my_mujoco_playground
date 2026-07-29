@@ -184,6 +184,7 @@ from policy_downloader import default_policy_dir, download_policy  # noqa: E402
 
 from evaluation.protocols import load_protocol  # noqa: E402
 from evaluation import gap_target  # noqa: E402
+from evaluation.gap_metrics import place_error  # noqa: E402 -- D22 drop metric
 from mujoco_playground._src.manipulation.my_ur3 import ur3_pick  # noqa: E402
 from batch_runs.sweeps.gen_dr_ladder import _CONFIGS as _LADDER_CONFIGS  # noqa: E402
 
@@ -549,6 +550,43 @@ def run_episode_repeat(
     )
     df_final.to_csv(os.path.join(out_dir, "ur3_pick_states.csv"), index=False)
 
+    # D22 (2026-07-29): THE DROP. The policy has just carried the cube through
+    # the fixed H steps to the eval target -- D24 lowered target_z_jitter's
+    # floor to 0.05 (cube centre 70 mm over the table) specifically so that
+    # target sits INSIDE the trained distribution, which is what makes a
+    # policy-driven place possible at all. This script now simply opens the
+    # gripper: the cube falls the remaining ~50 mm of air into the taped
+    # square. ZERO scripted arm motion -- the policy did all the carrying.
+    #
+    # NOTE this is NOT between_run_reset()'s gripper open. That one is D16's
+    # brake/protective-stop safety window and fires on every schedule entry
+    # regardless of outcome; by the time it runs, this drop has already
+    # happened and been scored (and on an abort the cube may still be held,
+    # which is exactly why that call must stay).
+    #
+    # Only attempted on a run that completed all H steps: an aborted episode
+    # may not even have the cube grasped, so "where did it land" is
+    # meaningless -- those stay None rather than being fabricated.
+    landed_box_xy = None
+    place_error_m = None
+    place_in_square = None
+    if stop_reason == "complete":
+        print("  D22: opening gripper -- dropping into the taped square ...")
+        gripper.open_gripper()
+        time.sleep(args.drop_settle_s)  # let the ~50 mm fall + bounce settle
+        landed_xyz, _landed_quat = mocap.get_rigid_body_pose()
+        landed_box_xy = (float(landed_xyz[0]), float(landed_xyz[1]))
+        place_error_m, place_in_square = place_error(landed_box_xy)
+        print(
+            f"  D22 place_error: {place_error_m * 1000:.1f} mm "
+            f"(in_square={place_in_square}), landed_xy={landed_box_xy}"
+        )
+    else:
+        print(
+            f"  D22: no drop attempted -- stop_reason={stop_reason!r} "
+            "(run did not complete all H steps)."
+        )
+
     meta = {
         "protocol_id": protocol.protocol_id,
         "poses_sha256": protocol.poses_sha256,
@@ -567,6 +605,13 @@ def run_episode_repeat(
         # downstream (gap_metrics.py, run_gap_protocol_sim.py) reads.
         "stop_step": stop_step,
         "stop_reason": stop_reason,
+        # D22 -- scripted-drop outcome. All three are None when the run did not
+        # complete (see the D22 block above). Deliberately kept out of the
+        # reward-gap columns: gap_metrics.py never reads these.
+        "landed_box_xy": landed_box_xy,
+        "place_error_m": place_error_m,
+        "place_in_square": place_in_square,
+        "drop_settle_s": args.drop_settle_s,
         "expected_steps": horizon,
         "actual_steps_raw": len(df),
         "actual_steps_used": len(df_final),
@@ -959,6 +1004,11 @@ def _build_argparser():
     ap.add_argument("--brake_wait_s", type=float, default=DEFAULT_BRAKE_WAIT_S,
                     help="D16: window between episodes to clear a protective "
                          "stop / release the arm brakes.")
+    ap.add_argument("--drop_settle_s", type=float, default=1.5,
+                    help="D22: pause after the gripper-open drop, before the "
+                         "post-drop mocap read -- lets the ~50 mm fall and any "
+                         "bounce settle, so place_error is not scored against "
+                         "a cube still in mid-air.")
     return ap
 
 
