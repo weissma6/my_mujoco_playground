@@ -25,6 +25,14 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
+# Exclude the `losangeles` NODE (not a partition): on job 38501 (2026-07-24,
+# this same velocity ladder) array task 38501_4 died with exit 126:0 there --
+# podman "setting up CDI devices: unresolvable CDI devices nvidia.com/gpu=0".
+# CDI health is per-node (see the vault note "HPC - SLURM & Podman"): tasks
+# 1/2/3/5 ran fine with the identical script and image on other nodes, so this
+# is a stale/missing /etc/cdi/nvidia.yaml on that host, not a bug here. Drop
+# this line once an admin regenerates its CDI spec.
+#SBATCH --exclude=losangeles
 #SBATCH --array=1-15%4
 
 set -euo pipefail
