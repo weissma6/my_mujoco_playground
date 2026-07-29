@@ -1587,6 +1587,8 @@ class UR3Pick(ur3_base.UR3Base):
         box_quat: jax.Array,
         target_pos: jax.Array,
         cube_half_extents: Optional[jax.Array] = None,
+        lifter_top_height: Optional[jax.Array] = None,
+        lifter_tilt_rp: Optional[jax.Array] = None,
     ) -> State:
         """EVAL-ONLY reset to an EXACT given state -- bypasses reset()'s random
         sampling entirely. Used by evaluation/run_gap_protocol_sim.py (the
@@ -1638,6 +1640,39 @@ class UR3Pick(ur3_base.UR3Base):
             is threaded through -- it lives in `info`, so it is per-episode
             (this call), not a mutation of `self._mjx_model` (which would
             leak across envs/episodes under vmap).
+          lifter_top_height: OPTIONAL scalar world m, the ABSOLUTE table-top
+            height to pin the "lifter" mocap body at (same quantity as
+            reset()'s `lifter_top` draw -- NOT a deviation from nominal).
+            D23/D25 gap-protocol-sim addition (2026-07-29) -- ADDITIVE,
+            defaults to None, which is the pre-existing behaviour: the table
+            pinned LEVEL at `lifter_height_nom` (see the "NOT bypassed"
+            section below, unchanged when this is omitted). Needed to mirror
+            D23 Block D ("+125mm lifter block, top ~150mm") in sim -- without
+            it, `reset_to_state` puts the measured box at its real height
+            while the table geometry underneath stays flat-at-95mm, an
+            inconsistent scene (box floating above / clipped through the
+            plate). Clamped the same way reset()'s own draw is
+            (`_LIFTER_HEIGHT_MIN` floor) -- a call passing an implausible
+            value gets the same floor training would have applied, not a
+            silent negative-height plate.
+          lifter_tilt_rp: OPTIONAL (2,) [roll, pitch] radians, the table tilt
+            about its own fixed XY (same convention as reset()'s `tilt`
+            draw). D23/D25 addition, ADDITIVE, defaults to None (level, the
+            pre-existing behaviour). Needed to mirror D23 Block C ("~5 deg
+            wedge"). Unlike `lifter_top_height`, NOT clamped to
+            `lifter_tilt_max` -- that config value bounds a *training* draw,
+            and an eval-time measured wedge angle is a fact about the real
+            board, not a distribution to enforce. Composed into the lifter
+            mocap quat with the identical roll-then-pitch quaternion multiply
+            reset() uses (`_quat_mul(q_pitch, q_roll)`), so a value equal to
+            a training draw reproduces the identical `lifter_quat` bit for
+            bit.
+          NOTE: passing one of `lifter_top_height`/`lifter_tilt_rp` without
+          the other is allowed -- each defaults independently (height stays
+          nominal if only tilt is given, and vice versa). Both require
+          `self._lifter_enabled` (always True in this env, see __init__);
+          passing either while the lifter is disabled raises rather than
+          silently doing nothing.
 
         What is and is NOT bypassed
         ----------------------------------------------------------------------
@@ -1674,14 +1709,23 @@ class UR3Pick(ur3_base.UR3Base):
             the same `rng` argument -- this is what run_gap_protocol_sim.py's
             determinism check verifies.
           - The lifter mocap body: it models the REAL lab table (0.6 x 1.0 m,
-            top surface 95 mm above the base origin), so it is pinned at the
-            nominal `lifter_height_nom`, level, at its FIXED XML XY -- the
-            per-episode height/tilt DRAW is bypassed like every other reset()
-            sampling, but the table itself is not, because it physically
-            exists. (Before 2026-07-28 it was pinned at z=0 under a "no lifter
-            on the real robot" convention; see evaluation/gap_target.py,
-            updated to match. D24, 2026-07-29: the XY pin moved from the box
-            anchor to the table's own XML pos -- the two no longer coincide.)
+            top surface 95 mm above the base origin), so BY DEFAULT (both
+            `lifter_top_height` and `lifter_tilt_rp` omitted) it is pinned at
+            the nominal `lifter_height_nom`, level, at its FIXED XML XY --
+            the per-episode height/tilt DRAW is bypassed like every other
+            reset() sampling, but the table itself is not, because it
+            physically exists. (Before 2026-07-28 it was pinned at z=0 under
+            a "no lifter on the real robot" convention; see
+            evaluation/gap_target.py, updated to match. D24, 2026-07-29: the
+            XY pin moved from the box anchor to the table's own XML pos --
+            the two no longer coincide.) D23/D25 (2026-07-29): when the
+            caller passes `lifter_top_height` and/or `lifter_tilt_rp` (to
+            mirror a real D23 Block C/D run, where the table itself was
+            physically reconfigured, not just the box's position on it),
+            THIS bypass is what gets overridden -- the table is pinned at
+            the GIVEN height/tilt instead of nominal/level. Its XY stays
+            fixed at `self._lifter_xy` either way (the table does not move
+            laterally in any D23 condition).
         """
         arm_qpos = jp.asarray(arm_qpos, dtype=float)
         box_pos = jp.asarray(box_pos, dtype=float)
@@ -1717,19 +1761,55 @@ class UR3Pick(ur3_base.UR3Base):
             mocap_pos=data.mocap_pos.at[self._mocap_target, :].set(target_pos),
         )
         if self._lifter_enabled:
-            # The table is real -- pin it LEVEL at the nominal height and at its
-            # own FIXED XML XY (the per-episode height/tilt draw is what gets
-            # bypassed here, not the table). D24: was self._init_obj_pos[:2],
-            # the box anchor, which no longer coincides with the table.
-            # See the docstring's "NOT bypassed" section (last bullet).
+            # The table is real -- by default pin it LEVEL at the nominal
+            # height and at its own FIXED XML XY (the per-episode height/tilt
+            # DRAW is what gets bypassed here, not the table). D24: XY was
+            # self._init_obj_pos[:2], the box anchor, which no longer
+            # coincides with the table.
+            # D23/D25 (2026-07-29): lifter_top_height / lifter_tilt_rp let a
+            # caller override the height and/or tilt to match a REAL D23
+            # Block C/D run, where the table itself was physically
+            # reconfigured -- not a "bypass" of a random draw (there is none
+            # here to bypass), but reproducing a fact about the run being
+            # mirrored. XY is never overridden -- the table does not move
+            # laterally in any D23 condition. See the docstring's "NOT
+            # bypassed" section (last bullet) and the Args entries above.
+            if lifter_top_height is None:
+                lifter_z = self._lifter_z_nom
+            else:
+                lifter_z = jp.maximum(
+                    jp.asarray(lifter_top_height, dtype=float)
+                    - _LIFTER_HALF_THICKNESS,
+                    _LIFTER_HEIGHT_MIN,
+                )
             lifter_pos = jp.array(
-                [self._lifter_xy[0], self._lifter_xy[1], self._lifter_z_nom]
+                [self._lifter_xy[0], self._lifter_xy[1], lifter_z]
             )
+            if lifter_tilt_rp is None:
+                lifter_quat = jp.array([1.0, 0.0, 0.0, 0.0])
+            else:
+                tilt_rp = jp.asarray(lifter_tilt_rp, dtype=float)
+                roll, pitch = tilt_rp[0], tilt_rp[1]
+                q_roll = jp.array(
+                    [jp.cos(roll / 2.0), jp.sin(roll / 2.0), 0.0, 0.0]
+                )
+                q_pitch = jp.array(
+                    [jp.cos(pitch / 2.0), 0.0, jp.sin(pitch / 2.0), 0.0]
+                )
+                lifter_quat = _quat_mul(q_pitch, q_roll)
             data = data.replace(
                 mocap_pos=data.mocap_pos.at[self._lifter_mocap, :].set(lifter_pos),
                 mocap_quat=data.mocap_quat.at[self._lifter_mocap, :].set(
-                    jp.array([1.0, 0.0, 0.0, 0.0])
+                    lifter_quat
                 ),
+            )
+        elif lifter_top_height is not None or lifter_tilt_rp is not None:
+            raise ValueError(
+                "reset_to_state: lifter_top_height/lifter_tilt_rp given but "
+                "self._lifter_enabled is False -- there is no lifter mocap "
+                "body to set. (This env always enables the lifter as of "
+                "D24; seeing this means an env config this eval-only method "
+                "was not written against.)"
             )
 
         metrics = {

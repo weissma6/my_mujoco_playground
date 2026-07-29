@@ -164,6 +164,100 @@ MODEL_PATH = os.path.join(
 DEFAULT_PROTOCOL = os.path.join(REPO_ROOT, "evaluation", "protocols", "gap_protocol_v1.json")
 DEFAULT_REAL_ROOT = os.path.join(REPO_ROOT, "robots", "UR3e", "real_robot_results", "gap_protocol")
 DEFAULT_SIM_ROOT = os.path.join(REPO_ROOT, "robots", "UR3e", "sim_results", "gap_protocol")
+DEFAULT_BASE_CALIBRATION = os.path.join(
+    REPO_ROOT, "robots", "UR3e", "calibration", "base_frame_calibration.json"
+)
+
+
+# ===========================================================================
+# D25 (2026-07-29): mocap-world -> robot-base frame calibration.
+#
+# FOUND this session: robots/UR3e/run_gap_protocol.py's ONE-SHOT
+# measured_init.json logging reads mocap.get_rigid_body_pose() and writes
+# box_pos/box_quat_wxyz DIRECTLY, with no calibration applied -- unlike the
+# LIVE control loop (ur3_realrobot_dependencies.py's run_policy_loop, lines
+# ~1333/1353), which calls self.mocap_pos_to_base / self.mocap_quat_to_base
+# on every streamed box observation the deployed policy actually sees. So
+# the real robot's behaviour during collection is trustworthy (the policy
+# always saw calibrated positions) -- only the LOGGED measured_init.json is
+# in the wrong frame, which is exactly what feeds reset_to_state() here.
+#
+# Confirmed against physical fact (Matthias, 2026-07-29): robot base sits
+# 77cm above the floor, and the mocap XYZ calibration was done AT the floor
+# -- consistent with the empirical Z offset measured across 75 flat-table
+# samples (mean 0.7827m, std 5.2mm) before this fix, and with
+# translation_m[2]=0.7787 in base_frame_calibration.json.
+#
+# The transform below is a DELIBERATE, comment-linked duplicate of
+# ur3_realrobot_dependencies.py's UR3RealRobotPick.load_base_calibration /
+# .mocap_pos_to_base / .mocap_quat_to_base -- not a re-derivation. Reusing
+# that class directly is not viable here: it imports rtde_receive/
+# rtde_control (real-hardware libraries not installed where this MJX script
+# runs, on HPC or in --dry_run locally). If either implementation changes,
+# update both and verify they still agree (see selftest usage above these
+# functions -- there is no formal selftest here yet since this module has no
+# --selftest flag; verified manually against the same JSON this session).
+# ===========================================================================
+
+
+def load_base_calibration(json_path: str = None):
+    """Load base_frame_calibration.json. Returns a dict of the precomputed
+    pieces `mocap_pos_to_base`/`mocap_quat_to_base` need, or None if the file
+    is absent (mocap used raw -- matches
+    UR3RealRobotPick.load_base_calibration's own fallback).
+    """
+    json_path = json_path or DEFAULT_BASE_CALIBRATION
+    if not os.path.exists(json_path):
+        print(f"  WARNING: no base-frame calibration at {json_path} -- "
+              f"box_pos/box_quat will be used RAW (mocap-world frame, NOT "
+              f"the robot-base/sim frame). See this module's calibration "
+              f"note above load_base_calibration.")
+        return None
+    with open(json_path) as f:
+        cal = json.load(f)
+    p0 = np.array(cal["translation_m"], dtype=float)
+    r0t = np.array(cal["rotation_matrix"], dtype=float).T  # world -> raw base
+    qw, qx, qy, qz = (float(v) for v in cal["rotation_quat_wxyz"])
+    q_r0_conj = np.array([qw, -qx, -qy, -qz])
+    q_d = np.array([0.0, 0.0, 0.0, 1.0])  # 180 deg about Z: raw base -> sim base
+    q_w2s = _quat_mult(q_d, q_r0_conj)
+    return {"p0": p0, "r0t": r0t, "q_w2s": q_w2s, "path": json_path}
+
+
+def _quat_mult(a, b) -> np.ndarray:
+    """Hamilton product of two (w, x, y, z) quaternions -- identical to
+    UR3RealRobotPick._quat_mult."""
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return np.array([
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ], dtype=float)
+
+
+# Raw UR base -> MuJoCo/sim base: the sim base is 180 deg about Z from the
+# real UR base (identical rationale/constant to UR3RealRobotPick._XY_NEG).
+_XY_NEG = np.array([-1.0, -1.0, 1.0])
+
+
+def mocap_pos_to_base(p_world, cal):
+    """Map a mocap-world position into the sim/policy base frame. `cal` is
+    `load_base_calibration()`'s return value; None passes `p_world` through
+    unchanged (matches UR3RealRobotPick's identity fallback)."""
+    if cal is None or p_world is None:
+        return p_world
+    p_raw = cal["r0t"] @ (np.asarray(p_world, dtype=float) - cal["p0"])
+    return p_raw * _XY_NEG
+
+
+def mocap_quat_to_base(quat_world, cal):
+    """Map a mocap-world (w, x, y, z) quaternion into the sim/policy base
+    frame. `cal=None` passes `quat_world` through unchanged."""
+    if cal is None or quat_world is None:
+        return quat_world
+    return _quat_mult(cal["q_w2s"], np.asarray(quat_world, dtype=float))
 
 
 # ===========================================================================
@@ -288,7 +382,8 @@ def build_env(meta: dict, horizon: int):
 
 
 def rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos, box_quat,
-                 target_pos, horizon: int, cube_half_extents=None) -> pd.DataFrame:
+                 target_pos, horizon: int, cube_half_extents=None,
+                 lifter_top_height=None, lifter_tilt_rp=None) -> pd.DataFrame:
     """H deterministic step() calls from an EXACT reset_to_state() init.
 
     Collects state.metrics[term] * SCALES[term] for every reward term (same
@@ -313,6 +408,14 @@ def rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos, box_quat,
     every --protocol_only call) reproduces the pre-D17 nominal-box rollout
     byte-for-byte; see ur3_pick.UR3Pick.reset_to_state's docstring for why
     this is unclamped and additive.
+
+    `lifter_top_height`/`lifter_tilt_rp` (D23/D25, 2026-07-29): optional
+    table-geometry override, forwarded verbatim to `env.reset_to_state` --
+    both None (the default) reproduces the pre-D25 nominal-flat-table
+    rollout byte-for-byte. See ur3_pick.UR3Pick.reset_to_state's docstring
+    for the exact semantics; see `process_real_run` below for where these
+    come from (currently: nowhere in existing real-run logs -- see that
+    function's own note).
     """
     import jax
 
@@ -320,7 +423,8 @@ def rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos, box_quat,
     jit_reset_to_state = jax.jit(env.reset_to_state)
 
     state = jit_reset_to_state(
-        rng, arm_qpos, finger, box_pos, box_quat, target_pos, cube_half_extents
+        rng, arm_qpos, finger, box_pos, box_quat, target_pos, cube_half_extents,
+        lifter_top_height, lifter_tilt_rp,
     )
     rows = []
     for t in range(horizon):
@@ -340,14 +444,17 @@ def rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos, box_quat,
 
 
 def _check_determinism(env, inference_fn, rng, arm_qpos, finger, box_pos,
-                        box_quat, target_pos, horizon: int, cube_half_extents=None):
+                        box_quat, target_pos, horizon: int, cube_half_extents=None,
+                        lifter_top_height=None, lifter_tilt_rp=None):
     """Same init run twice -> must produce IDENTICAL summed return. Fires
     once per `main()` invocation, on the first processed folder.
     """
     df1 = rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos,
-                       box_quat, target_pos, horizon, cube_half_extents)
+                       box_quat, target_pos, horizon, cube_half_extents,
+                       lifter_top_height, lifter_tilt_rp)
     df2 = rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos,
-                       box_quat, target_pos, horizon, cube_half_extents)
+                       box_quat, target_pos, horizon, cube_half_extents,
+                       lifter_top_height, lifter_tilt_rp)
     r1, r2 = float(df1["reward_total"].sum()), float(df2["reward_total"].sum())
     if not np.isclose(r1, r2, rtol=0.0, atol=1e-9):
         raise AssertionError(
@@ -367,33 +474,46 @@ def _check_determinism(env, inference_fn, rng, arm_qpos, finger, box_pos,
 
 def _find_real_run_dirs(real_root: str, config_id: str, protocol_id: str,
                          episodes=None):
-    pattern = os.path.join(real_root, config_id, protocol_id, "ep*_rep*")
+    """D23 (2026-07-29): folder names now optionally carry a leading
+    `{condition_id}_` prefix (robots/UR3e/run_gap_protocol.py's `run_dir`,
+    e.g. `A1_ep0_rep1_3cm`) ahead of the pre-D23 `ep{ID}_rep{K}[_{cube}]`
+    shape. The old glob (`ep*_rep*`) silently matched ZERO D23 folders --
+    found 2026-07-29 when the D23 board's first 135-run campaign produced no
+    hits at all. `*_rep*` catches both shapes (condition-prefixed or not);
+    `_parse_ep_rep` below does the real validation via regex, so a stray
+    unrelated directory under this path still raises loudly there rather
+    than being silently swallowed by a looser glob.
+    """
+    pattern = os.path.join(real_root, config_id, protocol_id, "*_rep*")
     dirs = sorted(glob.glob(pattern))
     if episodes is not None:
-        wanted = {f"ep{e}_" for e in episodes}
-        dirs = [d for d in dirs if any(os.path.basename(d).startswith(w) for w in wanted)]
+        wanted = set(episodes)
+        dirs = [d for d in dirs if _parse_ep_rep(d)[0] in wanted]
     return dirs
 
 
-_EP_REP_RE = re.compile(r"^ep(\d+)_rep(\d+)(?:_(.+))?$")
+_EP_REP_RE = re.compile(r"^(?:(?P<condition>[A-E]\d+)_)?ep(?P<episode>\d+)_rep(?P<repeat>\d+)(?:_(?P<cube>.+))?$")
 
 
 def _parse_ep_rep(dirname: str):
-    """Parse both the pre-D17 "ep{ID}_rep{K}" and the D17
-    "ep{ID}_rep{K}_{cube_size}" real-run folder names (robots/UR3e/
-    run_gap_protocol.py's `run_dir`). Returns (episode_id, repeat, cube_size)
-    -- cube_size is None for a pre-D17 folder (no suffix).
+    """Parse the pre-D17 "ep{ID}_rep{K}", the D17 "ep{ID}_rep{K}_{cube_size}",
+    and the D23 "{condition_id}_ep{ID}_rep{K}_{cube_size}" real-run folder
+    names (robots/UR3e/run_gap_protocol.py's `run_dir`). Returns
+    (episode_id, repeat, cube_size, condition_id) -- cube_size is None for a
+    pre-D17 folder (no suffix), condition_id is None for anything before D23
+    (legacy campaign / --config_id single-config runs, which never carried
+    a condition tag).
     """
     base = os.path.basename(dirname)
     m = _EP_REP_RE.match(base)
     if not m:
         raise ValueError(
-            f"real run folder name {base!r} doesn't match ep<ID>_rep<K> or "
-            f"ep<ID>_rep<K>_<cube_size> -- unexpected directory under "
-            f"{os.path.dirname(dirname)}."
+            f"real run folder name {base!r} doesn't match "
+            f"[<condition_id>_]ep<ID>_rep<K>[_<cube_size>] -- unexpected "
+            f"directory under {os.path.dirname(dirname)}."
         )
-    episode_id, repeat, cube_size = m.groups()
-    return int(episode_id), int(repeat), cube_size
+    return (int(m.group("episode")), int(m.group("repeat")),
+            m.group("cube"), m.group("condition"))
 
 
 def _real_run_stop_reason(run_dir: str):
@@ -411,12 +531,74 @@ def _real_run_stop_reason(run_dir: str):
     return meta.get("stop_reason")
 
 
+# D23 (2026-07-29): conditions whose physical setup changes the TABLE itself
+# (not just where the box sits on it). `reset_to_state()` gained a
+# lifter_top_height/lifter_tilt_rp override (D25, 2026-07-29 -- see
+# ur3_pick.py) to mirror this, but robots/UR3e/run_gap_protocol.py never
+# logged the physical tilt angle or lifter height as its own field --
+# D23_BOARD only carries descriptive strings ("~5 deg wedge", "top ~150mm").
+# RECOVERED instead (2026-07-29) from data already in every run's
+# measured_init.json, using the fact that D23_BOARD commands yaw_deg=0 for
+# BOTH C1 and D1, and each varies exactly one axis of table geometry:
+#   - D1 (lifter height; tilt is flat by spec): the box rests flush and
+#     level, so its measured centre height alone gives the table top --
+#     lifter_top_height = box_pos[2] - cube_half_extents[2].
+#   - C1 (tilt wedge; height is nominal by spec): the box rests flush on the
+#     tilted plate with no commanded yaw, so its measured orientation IS the
+#     plate tilt (box_quat = quat_mul(q_pitch, q_roll) exactly, no yaw
+#     factor to strip) -- inverted in closed form by `_decompose_tilt_quat`.
+# Neither is derived for the other condition (deriving height from a TILTED
+# box's z would conflate height with the tilt-induced lever-arm shift, and
+# vice versa) -- each condition supplies only the one quantity D23_BOARD
+# says it actually varies. Every OTHER condition (A/B/E) does not touch
+# table geometry and both stay None (nominal flat table), unchanged from
+# before this addition.
+_TABLE_GEOMETRY_MISMATCH_CONDITIONS = {"C1", "D1"}
+
+
+def _decompose_tilt_quat(box_quat):
+    """Invert ur3_pick.py reset()'s tilt composition
+    `q_tilt = _quat_mul(q_pitch, q_roll)` (roll about x, then pitch about y)
+    to recover (roll, pitch) from a MEASURED box quaternion. Valid ONLY when
+    the box's commanded yaw is exactly 0 (true for D23_BOARD's C1), so
+    `box_quat` IS `q_tilt` with no separate yaw factor to strip.
+
+    Closed form: q_tilt = (cp*cr, cp*sr, sp*cr, -sp*sr) where
+    c*/s* = cos/sin of the half-angle, so roll = 2*atan2(x, w) and
+    pitch = 2*atan2(y, w) (robust for D23's small tilt angles, where
+    cos(angle/2) > 0 throughout).
+
+    Returns ((roll, pitch), residual_rad). `residual_rad` is the geodesic
+    angle between the measured quat and the roll/pitch-only recomposition of
+    it -- ~0 for a pure roll+pitch tilt with no yaw, growing if the real
+    placement had a non-negligible yaw component this decomposition cannot
+    separate from tilt. The caller decides what residual is worth a warning.
+    """
+    q = np.asarray(box_quat, dtype=float)
+    q = q / np.linalg.norm(q)
+    w, x, y, _z = q
+    roll = 2.0 * np.arctan2(x, w)
+    pitch = 2.0 * np.arctan2(y, w)
+    cr, sr = np.cos(roll / 2.0), np.sin(roll / 2.0)
+    cp, sp = np.cos(pitch / 2.0), np.sin(pitch / 2.0)
+    q_recomposed = np.array([cp * cr, cp * sr, sp * cr, -sp * sr])
+    dot = np.clip(abs(np.dot(q, q_recomposed)), -1.0, 1.0)
+    residual_rad = 2.0 * np.arccos(dot)
+    return np.array([roll, pitch]), float(residual_rad)
+
+
 def process_real_run(run_dir, env, inference_fn, meta, protocol, config_id,
                       policy_run_id, checkpoint_hash, horizon, rng,
-                      run_determinism_check=False):
+                      run_determinism_check=False, condition_id=None, cal=None):
     """Returns None (SKIPPED -- caller must not write output) if the real run
     folder's ur3_pick_meta.json says stop_reason == "abort" (D16): an aborted
     real episode has no full-length pair to mirror against, per D16/D17.
+
+    `cal`: `load_base_calibration()`'s return value (or None -- box_pos/
+    box_quat used raw, the pre-D25 behaviour). See the module's calibration
+    note above `load_base_calibration` for why this exists: every
+    measured_init.json on disk stores RAW mocap-world box_pos/box_quat, not
+    the robot-base/sim frame `reset_to_state` needs.
     """
     stop_reason = _real_run_stop_reason(run_dir)
     if stop_reason == "abort":
@@ -431,8 +613,19 @@ def process_real_run(run_dir, env, inference_fn, meta, protocol, config_id,
     episode_id, repeat = m["episode_id"], m["repeat"]
     arm_qpos = np.asarray(m["measured_arm_qpos"], dtype=float)
     finger = float(m["commanded_finger"])
-    box_pos = np.asarray(m["box_pos"], dtype=float)
-    box_quat = np.asarray(m["box_quat_wxyz"], dtype=float)
+    # D25 (2026-07-29): measured_init.json stores RAW mocap-world box_pos/
+    # box_quat -- see the module's calibration note. Calibrate here, once,
+    # before anything downstream (target diagnostic, cube geometry is frame-
+    # independent so unaffected, C1/D1 lifter derivation, reset_to_state).
+    box_pos_raw = np.asarray(m["box_pos"], dtype=float)
+    box_quat_raw = np.asarray(m["box_quat_wxyz"], dtype=float)
+    box_pos = mocap_pos_to_base(box_pos_raw, cal)
+    box_quat = mocap_quat_to_base(box_quat_raw, cal)
+    if cal is None:
+        print(f"  WARNING: {run_dir}: no base-frame calibration loaded -- "
+              f"box_pos/box_quat used RAW (mocap-world), NOT the robot-base "
+              f"frame reset_to_state expects. This mirror will place the box "
+              f"in the wrong location.")
 
     # D17: cube_size drives the box geom override -- see CUBE_HALF_EXTENTS.
     # Missing key (pre-D17 measured_init.json) defaults to "3cm" (the sim
@@ -452,25 +645,73 @@ def process_real_run(run_dir, env, inference_fn, meta, protocol, config_id,
         )
     cube_half_extents = np.asarray(CUBE_HALF_EXTENTS[cube_size], dtype=float)
 
-    target_pos, _components = gap_target.target_for_episode(
+    # D25 (2026-07-29): recover the table geometry override for C1/D1 from
+    # the measured box pose -- see the module note above
+    # _TABLE_GEOMETRY_MISMATCH_CONDITIONS and `_decompose_tilt_quat`. Every
+    # other condition stays None/None (nominal flat table, unchanged).
+    lifter_top_height = None
+    lifter_tilt_rp = None
+    if condition_id == "D1":
+        lifter_top_height = float(box_pos[2] - cube_half_extents[2])
+        print(f"  {run_dir} (condition D1): derived lifter_top_height="
+              f"{lifter_top_height:.4f} m from measured box_pos[2]="
+              f"{box_pos[2]:.4f} - cube_half_z={cube_half_extents[2]:.4f}.")
+    elif condition_id == "C1":
+        lifter_tilt_rp, residual_rad = _decompose_tilt_quat(box_quat)
+        print(f"  {run_dir} (condition C1): derived lifter_tilt_rp="
+              f"[{lifter_tilt_rp[0]:.4f}, {lifter_tilt_rp[1]:.4f}] rad "
+              f"({np.degrees(lifter_tilt_rp)} deg) from measured box_quat, "
+              f"decomposition residual={np.degrees(residual_rad):.3f} deg.")
+        if residual_rad > 0.02:  # ~1.1 deg -- generous but non-trivial
+            print(f"  WARNING: {run_dir} tilt-decomposition residual "
+                  f"{np.degrees(residual_rad):.2f} deg is non-negligible -- "
+                  f"the measured box orientation may include a real yaw "
+                  f"component this roll/pitch-only decomposition can't "
+                  f"separate from tilt. Using the decomposed roll/pitch "
+                  f"anyway (best available reconstruction).")
+
+    # D25 (2026-07-29): USE THE STORED target, do not recompute-and-override.
+    # Before this session, recomputing from box_xy and trusting the
+    # recomputed value was correct -- it only existed to catch gap_target.py/
+    # gen_dr_ladder drift, under the assumption box_xy was already correct.
+    # That assumption is now known false: run_gap_protocol.py computed the
+    # STORED target from RAW (uncalibrated) box_xy, and that stored value is
+    # what the real robot was ACTUALLY judged against during the episode.
+    # Recomputing from the newly-calibrated box_xy here would silently score
+    # the sim rollout against a DIFFERENT goal than the real one used --
+    # breaking the matched-init comparison Commit 7 exists for. Matthias's
+    # call (2026-07-29): keep the stored target as ground truth; the
+    # recompute below is now a DIAGNOSTIC ONLY (uses the calibrated box_xy,
+    # so a large discrepancy here is a real signal that run_gap_protocol.py's
+    # target computation was meaningfully affected by the frame bug -- see
+    # the module's calibration note -- not evidence of gap_target.py drift).
+    target_pos = np.asarray(m["target_pos"], dtype=float)
+    diagnostic_target, _components = gap_target.target_for_episode(
         protocol.protocol_id, episode_id, config_id,
         box_xy=box_pos[:2], xml_path=MODEL_PATH,
     )
-    stored_target = np.asarray(m["target_pos"], dtype=float)
-    if not np.allclose(target_pos, stored_target, atol=1e-6):
+    target_discrepancy_m = float(np.linalg.norm(diagnostic_target - target_pos))
+    if target_discrepancy_m > 1e-6:
         print(
-            f"  WARNING: recomputed target {target_pos} != measured_init.json's "
-            f"stored target {stored_target} for {run_dir} -- gap_target.py or "
-            f"gen_dr_ladder._DETERMINISTIC_POSITION may have drifted since this "
-            f"real run. Using the RECOMPUTED value (single source of truth)."
+            f"  {'WARNING' if target_discrepancy_m > 0.005 else 'note'}: "
+            f"{run_dir}: target computed from CALIBRATED box_xy "
+            f"({diagnostic_target}) differs from the STORED target "
+            f"({target_pos}) by {target_discrepancy_m*1000:.1f} mm. Using "
+            f"the STORED value (what the real robot was actually judged "
+            f"against) -- this discrepancy is diagnostic evidence of how "
+            f"much run_gap_protocol.py's target computation was affected by "
+            f"the pre-calibration-fix box_xy bug, not a sign gap_target.py "
+            f"has drifted."
         )
 
     if run_determinism_check:
         _check_determinism(env, inference_fn, rng, arm_qpos, finger, box_pos,
-                            box_quat, target_pos, horizon, cube_half_extents)
+                            box_quat, target_pos, horizon, cube_half_extents,
+                            lifter_top_height, lifter_tilt_rp)
 
     df = rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos,
-                      box_quat, target_pos, horizon, cube_half_extents)
+                      box_quat, target_pos, horizon, cube_half_extents,
+                      lifter_top_height, lifter_tilt_rp)
     return episode_id, repeat, df, {
         "protocol_id": protocol.protocol_id,
         "poses_sha256": protocol.poses_sha256,
@@ -478,6 +719,25 @@ def process_real_run(run_dir, env, inference_fn, meta, protocol, config_id,
         "episode_id": episode_id,
         "repeat": repeat,
         "cube_size": cube_size,  # D17 -- NEW
+        "condition_id": condition_id,  # D23 -- NEW, None for pre-D23 real runs
+        # D25 -- NEW. None/None for every run collected so far (see the
+        # module note above _TABLE_GEOMETRY_MISMATCH_CONDITIONS) -- recorded
+        # so a later reader can tell a nominal-table mirror from a matched one
+        # without re-deriving it from condition_id.
+        "lifter_top_height_m": lifter_top_height,
+        "lifter_tilt_rp_rad": (
+            None if lifter_tilt_rp is None else lifter_tilt_rp.tolist()
+        ),
+        # D25 -- NEW. Whether the box_pos/box_quat fed to reset_to_state were
+        # calibrated (mocap-world -> robot-base frame) before use, and by how
+        # much the stored target diverges from what calibrated box_xy would
+        # give -- see the module's calibration note and the target-handling
+        # comment above. cal_applied=False means this mirror used RAW mocap
+        # box_pos/box_quat (wrong frame) -- flag any such result as unusable.
+        "cal_applied": cal is not None,
+        "target_discrepancy_mm": round(target_discrepancy_m * 1000, 3),
+        "box_pos_raw": box_pos_raw.tolist(),
+        "box_quat_raw_wxyz": box_quat_raw.tolist(),
         "policy_run_id": policy_run_id,
         "checkpoint": "best_params.msgpack",
         "checkpoint_hash_sha256": checkpoint_hash,
@@ -568,16 +828,20 @@ def process_protocol_episode(episode, env, inference_fn, protocol, config_id,
 # ===========================================================================
 
 
-def run_dir_out(out_root, config_id, protocol_id, episode_id, repeat, cube_size=None):
-    """D17: mirrors the real runner's folder key exactly (`cube_size` suffix
-    when given) so a 3cm and a 4cm sim mirror of the same (config, episode,
-    repeat) can never collide -- same rationale as robots/UR3e/
-    run_gap_protocol.py's `run_dir`. `cube_size=None` (the --protocol_only
-    path, and any pre-D17 caller) keeps the old "ep{ID}_rep{K}" layout.
+def run_dir_out(out_root, config_id, protocol_id, episode_id, repeat, cube_size=None,
+                 condition_id=None):
+    """D17/D23: mirrors the real runner's folder key exactly (`cube_size`
+    suffix when given, `condition_id` prefix when given) so a 3cm/4cm or
+    A1/B1 sim mirror of the same (config, episode, repeat) can never collide
+    -- same rationale as robots/UR3e/run_gap_protocol.py's `run_dir`.
+    `cube_size=None`/`condition_id=None` (the --protocol_only path, and any
+    pre-D17/D23 caller) keeps the old "ep{ID}_rep{K}" layout.
     """
     base = f"ep{episode_id}_rep{repeat}"
     if cube_size is not None:
         base = f"{base}_{cube_size}"
+    if condition_id is not None:
+        base = f"{condition_id}_{base}"
     return os.path.join(out_root, config_id, protocol_id, base)
 
 
@@ -604,11 +868,24 @@ def main():
     ap.add_argument("--dry_run", action="store_true",
                      help="list what would run (folders + output paths) and exit -- "
                           "no jax/mjx import, safe to run on this machine")
+    ap.add_argument("--base_calibration", default=DEFAULT_BASE_CALIBRATION,
+                     help="D25: mocap-world -> robot-base transform applied to every "
+                          "real run's box_pos/box_quat before use (see the module's "
+                          "calibration note). Pass an empty string to force RAW mocap "
+                          "(pre-D25 behaviour) -- not recommended, see that note.")
     args = ap.parse_args()
 
     protocol = load_protocol(args.protocol, dry_run=True)
     print(f"Protocol {protocol.protocol_id}: {len(protocol)} episodes, "
           f"horizon={protocol.horizon}, hash={protocol.poses_sha256[:16]}...")
+
+    cal = load_base_calibration(args.base_calibration) if args.base_calibration else None
+    if cal is not None:
+        print(f"[cal] loaded base-frame calibration from {cal['path']}")
+    elif not args.protocol_only:
+        print("[cal] running WITHOUT base-frame calibration -- every real-run "
+              "mirror below will use RAW mocap-world box_pos/box_quat. See the "
+              "module's calibration note above load_base_calibration.")
 
     if args.protocol_only:
         episodes = [e for e in protocol.episodes
@@ -619,7 +896,7 @@ def main():
                                    ep.episode_id, 0)
             if os.path.exists(out_dir) and not args.force:
                 continue
-            pending.append((ep, out_dir))
+            pending.append((ep, out_dir, None))  # no condition_id in this mode
         print(f"{len(pending)}/{len(episodes)} protocol episodes pending "
               f"(--protocol_only, nominal box).")
     else:
@@ -627,18 +904,18 @@ def main():
                                         protocol.protocol_id, args.episodes)
         pending = []
         for rd in run_dirs:
-            episode_id, repeat, cube_size = _parse_ep_rep(rd)
+            episode_id, repeat, cube_size, condition_id = _parse_ep_rep(rd)
             out_dir = run_dir_out(args.out_root, args.config_id, protocol.protocol_id,
-                                   episode_id, repeat, cube_size)
+                                   episode_id, repeat, cube_size, condition_id)
             if os.path.exists(out_dir) and not args.force:
                 continue
-            pending.append((rd, out_dir))
+            pending.append((rd, out_dir, condition_id))
         print(f"{len(pending)}/{len(run_dirs)} real run folders pending "
               f"under {args.real_root}/{args.config_id}/{protocol.protocol_id}/.")
 
     if args.dry_run:
         n_abort = 0
-        for item, out_dir in pending:
+        for item, out_dir, condition_id in pending:
             src = item if isinstance(item, str) else f"protocol ep{item.episode_id}"
             tag = ""
             if isinstance(item, str):
@@ -647,6 +924,17 @@ def main():
                 if sr == "abort":
                     tag = "  [will be SKIPPED: real run aborted (D16)]"
                     n_abort += 1
+                elif condition_id in _TABLE_GEOMETRY_MISMATCH_CONDITIONS:
+                    # D25: the override is DERIVED at process time from the
+                    # measured box pose (see _decompose_tilt_quat / the
+                    # module note), not read from a stored field -- so this
+                    # is unconditional for C1/D1, unlike the abort check
+                    # above which genuinely depends on file contents.
+                    tag = (
+                        f"  [condition {condition_id}: table geometry will be "
+                        f"DERIVED from the measured box pose -- lifter height "
+                        f"for D1, tilt for C1, see _decompose_tilt_quat]"
+                    )
             print(f"  {src}  ->  {out_dir}{tag}")
         if n_abort:
             print(f"({n_abort}/{len(pending)} pending folders are aborted real "
@@ -671,7 +959,7 @@ def main():
 
     completed = 0
     skipped_aborted = 0
-    for i, (item, out_dir) in enumerate(pending):
+    for i, (item, out_dir, condition_id) in enumerate(pending):
         rng = jax.random.fold_in(base_rng, i)  # distinct-but-deterministic per folder
         run_determinism_check = (i == 0)
         if args.protocol_only:
@@ -687,6 +975,7 @@ def main():
                 item, env, inference_fn, meta, protocol, args.config_id,
                 args.policy_run_id, checkpoint_hash, protocol.horizon, rng,
                 run_determinism_check=run_determinism_check,
+                condition_id=condition_id, cal=cal,
             )
         if result is None:
             skipped_aborted += 1
@@ -696,7 +985,8 @@ def main():
         df.to_csv(os.path.join(out_dir, "sim_states.csv"), index=False)
         with open(os.path.join(out_dir, "sim_meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta_out, f, indent=2, default=str)
-        print(f"  ep{episode_id}_rep{repeat}: return={meta_out['episode_return']:.2f} "
+        cond_tag = f"{condition_id}_" if condition_id else ""
+        print(f"  {cond_tag}ep{episode_id}_rep{repeat}: return={meta_out['episode_return']:.2f} "
               f"success={meta_out['success']}  cube_size={meta_out.get('cube_size')} "
               f"->  {out_dir}")
         completed += 1

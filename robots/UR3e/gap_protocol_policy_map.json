@@ -1,7 +1,14 @@
 {
-  "_comment": "D10 median-seed selection for the gap protocol. Deviation from D10's letter (which prefers sim return on the 10 protocol poses): these median seeds were picked by max W&B eval/episode_reward across the 3 seeds, chosen 2026-07-22 to avoid any sim-before-real run per Matthias's 'real first' prerequisite. Only for choosing 1-of-3 seeds; the matched-init sim mirror still runs after the real campaign. Scores (max eval return): L0_none {s0:8323,s1:7633,s2:9079}->s0; L1_pos {s0:7140,s1:7040,s2:6900}->s1; L2_pos_cube {s0:7394,s1:6942,s2:7043}->s2; L3_pos_cube_robot {s0:4543,s1:4276,s2:4655}->s0. All 4 verified to have trained_policy/best_params.msgpack + inference_config.json.",
-  "L0_none": "L0_none_s0_20260717_121358_6311",
-  "L1_pos": "L1_pos_s1_20260717_124401_2201",
-  "L2_pos_cube": "L2_pos_cube_s2_20260717_131601_926",
-  "L3_pos_cube_robot": "L3_pos_cube_robot_s0_20260717_131805_6311"
+  "_comment": "D10 median-seed selection for the gap protocol. SUPERSEDES the 2026-07-17 entries below (novelocitymodel branch, stale table geometry, 26-D obs) -- those are no longer compatible with the live addvelocity branch (33-D obs, real 95mm table). This selection is for the D18-D25 5-config velocity ladder (L0_none..L4_full, addvelocity branch), launched 2026-07-29 and confirmed all-finished via direct W&B query the same day. Same deviation from D10's letter as before (median by max W&B eval/episode_reward per seed, not by Commit 7 sim-protocol return) -- chosen again to avoid any sim-before-real run per D16's 'real first' ordering; the matched-init sim mirror (Commit 7) still runs after the real campaign. Scores (max eval/episode_reward across 40 checkpoints): L0_none {s0:11681.4,s1:12979.7,s2:13465.6}->s1; L1_pos {s0:9277.7,s1:9593.0,s2:10200.0}->s1; L2_pos_cube {s0:9368.7,s1:9471.4,s2:9771.1}->s1; L3_pos_cube_robot {s0:7766.9,s1:8014.3,s2:8210.2}->s1; L4_full {s0:7289.1,s1:7327.6,s2:7583.7}->s1. Unlike the 2026-07-17 ladder, ALL 5 configs learned this time (D20's softened burst-force C4 fixed the L4/L5 training collapse) -- eval/episode_success maxed at 0.99/1.00/0.71/0.55/0.43/0.31 for L0..L4 respectively, all > 0. NOT YET VERIFIED: trained_policy/best_params.msgpack + inference_config.json presence on HPC for these 5 run_ids -- no HPC filesystem access from this session (hard rule: no local training/HPC access). Matthias must confirm checkpoint files exist before Commit 6 (real runner) is pointed at this map.",
+  "L0_none": "L0_none_vel_s1_20260729_104930_2201",
+  "L1_pos": "L1_pos_vel_s1_20260729_112044_2201",
+  "L2_pos_cube": "L2_pos_cube_vel_s1_20260729_112246_2201",
+  "L3_pos_cube_robot": "L3_pos_cube_robot_vel_s1_20260729_115408_2201",
+  "L4_full": "L4_full_vel_s1_20260729_122736_2201",
+  "_superseded_2026-07-17_novelocitymodel": {
+    "L0_none": "L0_none_s0_20260717_121358_6311",
+    "L1_pos": "L1_pos_s1_20260717_124401_2201",
+    "L2_pos_cube": "L2_pos_cube_s2_20260717_131601_926",
+    "L3_pos_cube_robot": "L3_pos_cube_robot_s0_20260717_131805_6311"
+  }
 }
