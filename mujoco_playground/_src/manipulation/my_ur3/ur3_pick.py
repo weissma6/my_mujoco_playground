@@ -16,14 +16,18 @@
 
 The mocap target is used as the lift goal (a point in the air above the box).
 The 4x4x4 cm box spawns with a random Z-axis yaw (range set by box_z_rot_range).
-The box spawns on the "lifter" body -- the lab TABLE (1.2 x 0.8 m, top surface
-nominally 95 mm above the base origin), whose height and level are randomized per
-episode (lifter_height_nom +- lifter_height_max, lifter_tilt_max) so the policy
-learns to grasp off a table it can't assume the exact pose of. The arm start pose
-can be drawn from a library of hand-collected real-robot poses (init_start_random).
+The box spawns on the "lifter" body -- the lab TABLE (measured 0.6 m in X x 1.0 m
+in Y, x in [0.10, 0.70] and y in [-0.50, 0.50], top surface nominally 95 mm above
+the base origin), whose height and level are randomized per episode (an ABSOLUTE
+top-surface draw U(lifter_height_abs_min, lifter_height_abs_max) plus
+lifter_tilt_max) so the policy learns to grasp off a table it can't assume the
+exact pose of. The table itself stays FIXED at its XML XY -- it is a fixture, not
+a riser that follows the cube. The arm start pose can be drawn from a library of
+hand-collected real-robot poses (init_start_random).
 Mirrors the commented-out reward scaffolding of ur10pick.py.
 """
 
+import warnings
 from typing import Any, Dict, Optional, Union
 
 import jax
@@ -37,19 +41,51 @@ from mujoco_playground._src.manipulation.my_ur3.init_poses import load_init_pose
 from mujoco_playground._src.mjx_env import State  # pylint: disable=g-importing-member
 
 # Lifter geometry. The "lifter" body is the lab TABLE the cube is picked from
-# (1.2 x 0.8 m plate, see xmls/mjx_single_cube_position_ur3.xml): a kinematic
+# (0.6 x 1.0 m plate, see xmls/mjx_single_cube_position_ur3.xml): a kinematic
 # mocap body whose top surface sets the box's starting height. reset() places it
-# at lifter_height_nom +- lifter_height_max each episode (plus a slight tilt), so
-# the policy learns to grasp off a table whose height/level it can't assume.
+# at an ABSOLUTE sampled top height (D18/D24: U(lifter_height_abs_min,
+# lifter_height_abs_max), no longer a +- band about the nominal) plus a slight
+# tilt, so the policy learns to grasp off a table whose height/level it can't
+# assume. Its XY is pinned at the XML body pos every episode -- the table is a
+# fixed fixture of the cell, NOT a riser that follows the cube.
 # _LIFTER_HEIGHT_MIN is a GUARD, not the nominal: it clamps the sampled height so
 # a wide jitter draw can never sink the plate bottom into the floor plane (z=0),
 # which the collision masks alone can't separate.
 _LIFTER_HALF_THICKNESS = 0.0025  # 5 mm plate -> half-extent
 _LIFTER_HEIGHT_MIN = 0.003
 _BOX_HALF_EXTENT = 0.02  # half the box HEIGHT (3x3x4 cm box, 4 cm tall) -> rest offset
+# D19: nominal box WIDTH (xy) half-extent -- the box is 3x3x4 cm, so xy=0.015,
+# z=_BOX_HALF_EXTENT=0.02. Identity value for the cube_size_xy DR axis (see
+# default_config().domain_rand.cube_size_xy).
+_BOX_HALF_EXTENT_XY = 0.015
 # Tolerance (m) for the table/box-anchor consistency guards in __init__. See the
 # comment at the lifter check for why this is 1 um and not 0.
 _ANCHOR_TOL = 1e-6
+
+# --- Reach envelope (D18 open risk, re-derived for the 95 mm table in D24) ---
+# The UR3e's usable WORKING radius with a cube in the jaws is ~0.49 m. That
+# number is not invented here: it is what this file's own target_r_max comment
+# already derives -- sqrt(target_r_max^2 + max_target_z^2) = sqrt(0.35^2 +
+# 0.345^2) ~= 0.49 -- i.e. the far corner of the target band that was validated
+# to still be reachable. _UR3_APPROX_MAX_REACH_M (0.54) is the DATASHEET reach
+# with nothing held; keep both, they answer different questions.
+_UR3_APPROX_MAX_REACH_M = 0.54
+_UR3_WORKING_RADIUS_M = 0.49
+# Base-column clearance: the box must never spawn closer than this to the base
+# origin, or the arm cannot get around it (and the column is in the way).
+_BOX_XY_R_MIN = 0.18
+# Hard cap on the ABSOLUTE world-Z of any sampled lift target.
+#   at target_r_max = 0.35, staying inside the 0.49 m working radius allows
+#   z <= sqrt(0.49^2 - 0.35^2) = sqrt(0.2401 - 0.1225) = sqrt(0.1176) ~= 0.343
+# rounded to the value that ALSO equals this branch's pre-D24 maximum target z
+# (target_z_jitter max 0.21 + box anchor 0.115 + the old +-0.02 table jitter
+# = 0.345), so the cap changes nothing for the previously validated range and
+# only clips the NEW high-table draws (D18 raised the table top to 0.220, which
+# stacked on a 0.21 lift draw would demand sqrt(0.35^2 + 0.45^2) ~= 0.57 m).
+# Physically sensible: you cannot lift as far above an already-high table.
+# NOTE: this is 0.345, NOT the 0.40 used on the (floor-based) novelocitymodel
+# branch -- 0.40 was too permissive once the box anchor carries the table.
+_TARGET_WORLD_Z_CAP = 0.345
 
 # D17 cube-size probe: the info-dict key reset_to_state() stashes an OPTIONAL
 # eval-only box geom half-extents override under, and step() reads back to
@@ -63,7 +99,9 @@ _DR17_EVAL_CUBE_HALF_EXTENTS_KEY = "eval_cube_half_extents"
 _DR_METRIC_KEYS = (
     "cube_mass",
     "cube_friction",
-    "cube_size",
+    # D19: cube size decoupled into two independent absolute half-extent draws.
+    "cube_size_xy",
+    "cube_size_z",
     "gravity_z",
     "arm_stiffness",
     "arm_damping",
@@ -289,7 +327,10 @@ def default_config() -> config_dict.ConfigDict:
         # Per-joint per-direction amplitude (rad) for reset randomization: 6 arm
         # + 1 finger. Applied symmetrically as uniform(-v, +v) on top of the init
         # keyframe. Default 0.05 reproduces the legacy uniform(-0.05, 0.05) arm noise.
-        init_qpos_noise=(0.05, 0.05, 0.05, 0.05, 0.05, 6.28319, 0.0),
+        # D18 (2026-07-29): widened 0.05 -> 0.10 rad per arm joint (the wrist
+        # stays at 6.28319 = full 2*pi travel, the finger at 0.0). See the vault
+        # Plan - Sim-to-Real Gap Protocol, D18.
+        init_qpos_noise=(0.10, 0.10, 0.10, 0.10, 0.10, 6.28319, 0.0),
         # Arm/finger start-pose source. "none" = literal keyframe start (then +
         # init_qpos_noise jitter); "light"/"mid"/"hard" = randomly pick one
         # hand-collected pose from init_poses/train/<level>.json each reset.
@@ -298,18 +339,29 @@ def default_config() -> config_dict.ConfigDict:
         # measured in the lab: 95 mm above the UR3e base origin. The table is a
         # permanent fixture -- there is no "off" any more (see lifter_height_max).
         lifter_height_nom=0.095,
-        # Per-episode table-height jitter (m), SYMMETRIC about lifter_height_nom:
-        # top ~ uniform(nom - v, nom + v), clamped so the plate stays off the
-        # floor plane. Default 0.02 => top in 0.075..0.115.
-        # !! SEMANTICS CHANGED (2026-07-28): this used to be the ABSOLUTE max of a
-        # uniform(0.003, v) draw, and 0.0 meant "no plate, cube on the floor".
-        # It is now a +- jitter and 0.0 means "flat table AT THE NOMINAL 95 mm".
-        # Every pre-existing sweep JSONL that passes lifter_height_max=0.0 (the
-        # DR-ladder L0/LOO lines, UR3Pick_grasp_retry) therefore still loads, but
-        # now trains against a 95 mm table instead of the bare floor -- those runs
-        # are NOT reproducible against this file. Deliberate: the bare-floor scene
-        # was the sim-to-real gap this change exists to close.
-        lifter_height_max=0.02,
+        # Per-episode table TOP-SURFACE height (m), drawn ABSOLUTELY:
+        #   top ~ uniform(lifter_height_abs_min, lifter_height_abs_max)
+        # then clamped so the plate bottom stays off the floor plane
+        # (_LIFTER_HEIGHT_MIN). The lift target is shifted by the DEVIATION of
+        # that draw from lifter_height_nom (deviation = top - 0.095), because the
+        # box anchor (_init_obj_pos[2] = 0.115) already carries the nominal.
+        #
+        # !! SEMANTICS CHANGED TWICE -- read this before reusing an old JSONL.
+        #   pre-2026-07-28: `lifter_height_max` was the ABSOLUTE max of a
+        #     uniform(0.003, v) draw; 0.0 meant "no plate, cube on the floor".
+        #   2026-07-28:     `lifter_height_max` became a SYMMETRIC +- band about
+        #     lifter_height_nom; 0.0 meant "flat table at the nominal 95 mm".
+        #   2026-07-29 (D18/D24, HERE): the band is replaced by an explicit
+        #     ABSOLUTE range and `lifter_height_max` is GONE. Default
+        #     U(0.0, 0.220) spans bare floor to a 220 mm table.
+        # The old key was deliberately REMOVED rather than silently reinterpreted
+        # a third time: any sweep JSONL still passing lifter_height_max now fails
+        # loud in learning/notebooks/run_experiment.py with a migration message,
+        # instead of quietly training under a range it never asked for.
+        # For a deterministic baseline (DR-ladder L0), set BOTH to 0.095 -- that
+        # is "flat table at the nominal height", deviation 0.
+        lifter_height_abs_min=0.0,
+        lifter_height_abs_max=0.220,
         # Per-episode SLIGHT plate tilt (rad). roll AND pitch are sampled
         # INDEPENDENTLY, each ~ uniform(-t, +t) about world X and world Y, then
         # composed — so both axes tilt at once and the worst-case surface-normal
@@ -317,8 +369,10 @@ def default_config() -> config_dict.ConfigDict:
         # the tilted plate, so it starts both at a variable height and slightly
         # tilted. This is what makes the out-of-plane (approach-axis) component of
         # the 2-of-3-axis grasp alignment matter. 0.0 => perfectly level table.
-        # Pivots about the body origin == the nominal box XY, so the tilt lever
-        # arm is the box's XY jitter (<=0.2 m), NOT the 0.6 m plate half-length.
+        # Pivots about the TABLE body origin (the fixed XML pos, x=0.40, y=0), so
+        # the tilt lever arm is |box_xy - table_xy| (<=~0.32 m), NOT the plate's
+        # full half-length. At 0.05 rad that is <=16 mm of height change across
+        # the spawn envelope.
         # Reasonable values (per axis; remember the ~1.41x combined worst case):
         #   0.00  => flat (baked default here)
         #   0.05  => mild,     ~2.9 deg  (~4.0 deg combined)  -- gentle start
@@ -326,7 +380,8 @@ def default_config() -> config_dict.ConfigDict:
         #   0.10  => strong,   ~5.7 deg  (~8.1 deg combined)  -- stickyoff "hard"
         # Keep < ~0.12 rad (~6.9 deg / ~9.7 deg combined) so the cube can't
         # slide/tip off the plate before the grasp.
-        lifter_tilt_max=0.08,  # moderate ~4.6 deg tilt (NOT flat; flat is 0.0)
+        # D18 (2026-07-29): 0.08 -> 0.05 rad ("light tilt", Matthias).
+        lifter_tilt_max=0.05,  # mild ~2.9 deg tilt (NOT flat; flat is 0.0)
         # Box spawn yaw about world Z (rad); yaw ~ uniform(-r, +r). pi/4 covers
         # all yaw thanks to the cube's 4-fold symmetry, so the policy must learn
         # to match the jaw axis to a face rather than getting a free alignment.
@@ -347,7 +402,21 @@ def default_config() -> config_dict.ConfigDict:
         # so a sweep can zero it for a deterministic baseline (the "position"
         # cluster of "Plan - Sim-to-Real Gap Protocol", DR-ladder L0) without
         # touching this file again. 0.0 => box always at the nominal XY.
-        box_xy_jitter=(0.15, 0.2),
+        #
+        # D24 (2026-07-29): widened (0.15, 0.20) -> (0.17, 0.24) about the new
+        # nominal centre x=0.32 (scene XML), i.e. the RECTANGLE sampled is
+        # x in [0.15, 0.49], y in [-0.24, 0.24]. That rectangle's far corners sit
+        # at r = sqrt(0.49^2 + 0.24^2) = 0.546 m, ~11% past the UR3e's ~0.49 m
+        # WORKING radius, and its near edge (0.15, 0) is inside the base column.
+        # Neither is fixed by shrinking the rectangle -- reset() instead projects
+        # every draw onto the reachable annulus
+        #   r in [_BOX_XY_R_MIN, _UR3_WORKING_RADIUS_M] = [0.18, 0.49].
+        # Net effect vs the old (0.15, 0.20) rectangle: strictly MORE reachable
+        # table covered, with ZERO unreachable draws. The clip piles a little
+        # probability mass onto the two annulus boundaries -- accepted and
+        # documented, see the radial-clip block in reset(). Every post-clip draw
+        # also lands on the real table (x in [0.10, 0.70], y in [-0.50, 0.50]).
+        box_xy_jitter=(0.17, 0.24),
         # Lift-target Z-band jitter (m): target_z ~ uniform(*target_z_jitter) +
         # _init_obj_pos[2] (+ the table's deviation from its nominal height).
         # NOTE the anchor _init_obj_pos[2] is now the cube resting ON the nominal
@@ -357,7 +426,19 @@ def default_config() -> config_dict.ConfigDict:
         # shared verbatim by BOTH target_mode paths ("box" and "base_polar");
         # exposed here for the same reason as box_xy_jitter. A zero-width
         # tuple (e.g. (0.195, 0.195)) makes the goal height deterministic.
-        target_z_jitter=(0.18, 0.21),
+        #
+        # D24 (2026-07-29): LOWER bound 0.18 -> 0.05 so the D22 eval drop point
+        # sits INSIDE the trained distribution rather than 13 cm below it. This
+        # band is the LIFT ABOVE THE CUBE'S RESTING HEIGHT, so:
+        #   drop height 70 mm above the table top
+        #     -> cube centre world z = 0.095 + 0.070 = 0.165
+        #     -> draw                = 0.165 - 0.115  = 0.05
+        #     -> air gap under the 40 mm cube = 0.165 - 0.02 - 0.095 = 0.050 m
+        # (70 mm centre height / 50 mm air gap are the same spec stated twice.)
+        # Upper bound stays 0.21. WARNING: this changes the task for EVERY ladder
+        # rung, not just the top one (160 mm Z-band vs the old 30 mm) -- returns
+        # are NOT comparable to W&B data trained under the old band.
+        target_z_jitter=(0.05, 0.21),
         # Per-episode gripper start position. True (legacy) = sample uniform
         # [0, 0.025] m (anywhere open<->closed) at reset. False = always start
         # FULLY OPEN (0.0) -- for a deterministic DR-ladder L0 baseline.
@@ -455,11 +536,20 @@ def default_config() -> config_dict.ConfigDict:
             cube_mass=config_dict.create(enable=False, min=0.7, max=1.3),
             # Cube sliding friction: x nominal geom_friction[box, 0]. [0.5,1.5]x.
             cube_friction=config_dict.create(enable=False, min=0.5, max=1.5),
-            # Cube size: x nominal geom_size[box] half-extents. Hard-clamped to a
-            # graspable width (fingers open ~5 cm; 3 cm cube -> ~1 cm/side) so DR
-            # can never produce an ungraspable box. [0.9,1.1]x. NOTE: the sampled
-            # Z half-extent also re-seats the box on the (lifter) plate in reset().
-            cube_size=config_dict.create(enable=False, min=0.9, max=1.1),
+            # D19 (2026-07-29): cube size DECOUPLED from a single scale factor
+            # into two INDEPENDENT absolute half-extent draws (metres):
+            #   cube_size_xy ~ U(0.010, 0.020) -> 2 cm .. 4 cm box WIDTH
+            #   cube_size_z  ~ U(0.015, 0.020) -> 3 cm .. 4 cm box HEIGHT
+            # i.e. the box spans 2x2x3 cm to 4x4x4 cm. cube_size_xy is hard-
+            # clamped in _randomize_physics to _dr_max_box_half_xy (graspability;
+            # the fingers open ~5 cm) -- that clamp was raised 0.018 -> 0.020 so
+            # the 4 cm draw is admitted instead of silently clipped. The sampled
+            # Z half-extent also RE-SEATS the box on the table in reset(), so a
+            # short cube starts lower and a tall one higher, both flush.
+            # Mass/friction DR above are UNCHANGED by this split (they still
+            # scale the nominal, they do not track the drawn size).
+            cube_size_xy=config_dict.create(enable=False, min=0.010, max=0.020),
+            cube_size_z=config_dict.create(enable=False, min=0.015, max=0.020),
             # Gravity: opt.gravity magnitude += U(-g_delta, g_delta) m/s^2, plus a
             # small random directional tilt (rad) off vertical. tilt=0 -> pure
             # magnitude noise. Nominal g = 9.81.
@@ -478,15 +568,34 @@ def default_config() -> config_dict.ConfigDict:
             restitution=config_dict.create(enable=False),
             # Arm joint-range jitter: jnt_range on the 6 arm joints.
             joint_limits=config_dict.create(enable=False),
-            # Per-STEP random perturbation force (xfrc_applied) on the box body.
-            # A fresh 3D force ~ uniform(-force_mag, force_mag) N per axis is
-            # drawn EVERY step (not held per-episode) from info["rng"] and
+            # Per-STEP random perturbation force (xfrc_applied) on the box body,
             # applied at the box's center of mass -- see step(). Magnitude is
             # UNCALIBRATED (no measured real perturbation to center on; see
-            # "Plan - Sim-to-Real Gap Protocol" C4/blind-randomization note) --
-            # 0.5 N is ~1.4x the box's own weight (~0.036 kg * 9.81 ~= 0.35 N),
-            # a deliberately noticeable nudge, purely exploratory.
-            cube_force=config_dict.create(enable=False, force_mag=0.5),
+            # "Plan - Sim-to-Real Gap Protocol" C4/blind-randomization note).
+            #
+            # D20 (2026-07-29) RESPEC: was 0.5 N RESAMPLED EVERY STEP -- ~1.4x
+            # the box's own weight (~0.036 kg * 9.81 ~= 0.35 N) as continuous
+            # white noise at 50 Hz, diagnosed as the likely cause of the old
+            # L4/L5 training collapse (D14). Now 0.15 N in BURSTS: each step has
+            # probability `force_prob` of TRIGGERING a burst if none is active;
+            # once triggered the SAME force vector is HELD for `burst_steps`
+            # steps, then drops back to zero. Re-triggering mid-burst is a no-op
+            # (hold the vector, don't restart the clock). State machine lives in
+            # `info` (jit/vmap-safe), mirroring the action_delay ring buffer.
+            # Expected duty cycle: a burst starts on ~2% of idle steps and lasts
+            # 10 steps (0.2 s at ctrl_dt=0.02).
+            cube_force=config_dict.create(
+                enable=False, force_mag=0.15, force_prob=0.02, burst_steps=10
+            ),
+            # D20 (2026-07-29) NEW axis: arm joint-torque perturbation. Same
+            # burst trigger/hold schedule as cube_force above (independent
+            # counter + held vector), applied as an additive qfrc_applied nudge
+            # on the 6 arm DOFs -- see step(). "Very moderate jitter on all
+            # joints" (Matthias): +-0.3 Nm/joint. Same "env" DR cluster as
+            # cube_force in the ladder (see batch_runs/sweeps/gen_dr_ladder.py).
+            joint_torque=config_dict.create(
+                enable=False, torque_mag=0.3, force_prob=0.02, burst_steps=10
+            ),
             # Action latency: delay the commanded action via an info ring
             # buffer. max_delay_steps=5 at ctrl_dt=0.02 => up to 100 ms of
             # latency, sampled ONCE per episode (held constant within it) --
@@ -622,11 +731,26 @@ class UR3Pick(ur3_base.UR3Base):
         # ur3_base._post_init) because the picknplace sibling loads a scene
         # without a lifter body. ALWAYS ON: the table is a physical fixture of the
         # lab cell, not an optional riser, so there is no config gate any more
-        # (lifter_height_max=0 now means "level table at the nominal height").
+        # (lifter_height_abs_min == lifter_height_abs_max == lifter_height_nom
+        # now means "level table at the nominal height").
         # The flag is kept so the reset()/reset_to_state() branches keep their
         # shape and a scene without the body stays one edit away.
         self._lifter_enabled = True
         self._lifter_mocap = self._mj_model.body("lifter").mocapid
+        # D24 (2026-07-29): the table's FIXED world XY, read from the scene XML.
+        # This is the pose reset() pins the mocap plate at every episode. It used
+        # to be pinned at self._init_obj_pos[:2] (the nominal BOX xy) instead --
+        # correct only back when the "lifter" was a small movable riser that had
+        # to sit under the cube, and only invisible because the box anchor and
+        # the plate happened to share x=0.40. The lifter is now a 0.6 x 1.0 m
+        # fixed table AND the box centre moved to x=0.32, so pinning it to the
+        # box anchor would drag the whole table 8 cm toward the base every reset
+        # and silently contradict both the measured table extent and the
+        # _post_init geometry guards below. The table does not move; only its
+        # height and tilt are randomized.
+        self._lifter_xy = jp.asarray(
+            self._mj_model.body("lifter").pos[:2], dtype=float
+        )
         # Nominal table TOP surface (m) and the matching mocap-body z (the body
         # origin sits half a plate-thickness below its top face).
         self._lifter_top_nom = float(self._config.lifter_height_nom)
@@ -675,6 +799,45 @@ class UR3Pick(ur3_base.UR3Base):
             self._mj_model.body("base").pos[:2], dtype=float
         )
 
+        # D18/D24 reach-envelope check. CONSTRUCTION time only -- it reads the
+        # STATIC config values, never traced arrays, so it never enters the jit
+        # graph. LOUD WARNING, not a hard error: we cannot verify the true reach
+        # envelope locally (no robot, no MJX/IK here), so the risk is made
+        # visible up front instead of being discovered after a wasted HPC run.
+        # reset()'s hard clip to _TARGET_WORLD_Z_CAP is the actual safeguard;
+        # this only tells you whether the CONFIG could ever ask for more.
+        # Do not silently ignore this if it fires.
+        if self._config.target_mode == "base_polar" and self._lifter_enabled:
+            worst_case_z = min(
+                float(self._config.lifter_height_abs_max)
+                + float(self._config.target_z_jitter[1])
+                + _BOX_HALF_EXTENT,
+                _TARGET_WORLD_Z_CAP,
+            )
+            worst_case_reach = (
+                float(self._config.target_r_max) ** 2 + worst_case_z**2
+            ) ** 0.5
+            # 5 mm slack: the BAKED default is marginally (1.4 mm) over by
+            # construction -- _TARGET_WORLD_Z_CAP is 0.345, i.e. 2 mm above the
+            # 0.34293 that sqrt(0.49^2 - 0.35^2) allows, because 0.345 is also
+            # the previously validated max target z (see the constant's comment).
+            # Warning on that every construction would be pure noise; anything
+            # genuinely over-reaching clears 5 mm easily.
+            if worst_case_reach > _UR3_WORKING_RADIUS_M + 5e-3:
+                warnings.warn(
+                    "D18/D24 REACH RISK: worst-case lift target (target_r_max="
+                    f"{float(self._config.target_r_max):.3f} m, world-z="
+                    f"{worst_case_z:.3f} m, already clipped at "
+                    f"_TARGET_WORLD_Z_CAP={_TARGET_WORLD_Z_CAP:.3f}) implies an "
+                    f"approx. 3D reach of {worst_case_reach:.3f} m, exceeding the "
+                    f"~{_UR3_WORKING_RADIUS_M:.2f} m UR3e WORKING radius "
+                    f"(datasheet reach {_UR3_APPROX_MAX_REACH_M:.2f} m with "
+                    "nothing held). Lower target_r_max or _TARGET_WORLD_Z_CAP "
+                    "before training on this config -- see D18/D24 in the vault "
+                    "Plan - Sim-to-Real Gap Protocol.",
+                    RuntimeWarning,
+                )
+
         # ------------------------------------------------------------------
         # Physics domain-randomization setup (see default_config().domain_rand).
         # ------------------------------------------------------------------
@@ -711,14 +874,19 @@ class UR3Pick(ur3_base.UR3Base):
         # cube_half_z so the size-off path re-seats the box unchanged.
         self._dr_nom_half_z = _BOX_HALF_EXTENT
         # Hard graspability clamp on the box WIDTH half-extent (xy) regardless of
-        # the configured cube_size range: fingers open ~5 cm, so keep the width
-        # half-extent <= 0.018 (3.6 cm). Height (z) is unclamped.
-        self._dr_max_box_half_xy = 0.018
+        # the configured cube_size_xy range: the fingers open ~5 cm, so keep the
+        # width half-extent <= 0.020 (4.0 cm box) -- ~5 mm clearance per side.
+        # D19 (2026-07-29): raised 0.018 -> 0.020. The 0.018 belonged to the old
+        # +-10% scalar scheme and would have silently clipped the top end of the
+        # new cube_size_xy range (max 0.020). Height (z) stays unclamped.
+        self._dr_max_box_half_xy = 0.020
         # Identity DR factors for the OFF path (same keys as _sample_physics_dr).
         self._dr_identity = {
             "mass_scale": jp.array(1.0, dtype=float),
             "fric_scale": jp.array(1.0, dtype=float),
-            "size_scale": jp.array(1.0, dtype=float),
+            # D19: independent xy/z half-extent draws (absolute metres), not one
+            # scale factor. Identity == the nominal box half-extents.
+            "half_xy": jp.array(_BOX_HALF_EXTENT_XY, dtype=float),
             "grav": self._dr_nom_gravity,
             "kp_scale": jp.array(1.0, dtype=float),
             "kv_scale": jp.array(1.0, dtype=float),
@@ -749,14 +917,29 @@ class UR3Pick(ur3_base.UR3Base):
                 minval=float(dr.cube_friction.min),
                 maxval=float(dr.cube_friction.max),
             )
-        if dr.cube_size.enable:
+        # D19 (2026-07-29): cube size DECOUPLED into two independent ABSOLUTE
+        # half-extent draws (metres) instead of one scalar multiplier -- xy
+        # (width) and z (height) are sampled, clamped and applied separately.
+        # Each has its own static gate, so enabling only one costs only one
+        # rng split and leaves the other at its nominal identity value.
+        if dr.cube_size_xy.enable:
             rng, k = jax.random.split(rng)
-            s = jax.random.uniform(
-                k, (), minval=float(dr.cube_size.min), maxval=float(dr.cube_size.max)
+            out["half_xy"] = jax.random.uniform(
+                k,
+                (),
+                minval=float(dr.cube_size_xy.min),
+                maxval=float(dr.cube_size_xy.max),
             )
-            out["size_scale"] = s
-            # Z half-extent used by reset() to re-seat the box on the plate/floor.
-            out["cube_half_z"] = self._dr_nom_half_z * s
+        if dr.cube_size_z.enable:
+            rng, k = jax.random.split(rng)
+            # Z half-extent is ALSO used by reset() to re-seat the box on the
+            # table, so a drawn cube always starts flush, never intersecting.
+            out["cube_half_z"] = jax.random.uniform(
+                k,
+                (),
+                minval=float(dr.cube_size_z.min),
+                maxval=float(dr.cube_size_z.max),
+            )
         if dr.gravity.enable:
             rng, k1, k2 = jax.random.split(rng, 3)
             gmag = jp.linalg.norm(self._dr_nom_gravity)

@@ -5,6 +5,11 @@
 
   <worldbody>
     <!-- Box to pick (UR3 has shorter reach than UR10: pulled in from 0.7 m to 0.3 m).
+         D24 (2026-07-29): nominal centre x 0.30 -> 0.32. The widened
+         box_xy_jitter (0.17, 0.24) is centred here, and 0.32 is the centre
+         that keeps the reachable annulus (r in [0.18, 0.49], see reset()'s
+         radial clip) best covered while every draw still lands on the real
+         table (x in [0.10, 0.70], y in [-0.50, 0.50]).
          3x3x4 cm box (4 cm = HEIGHT): half-extents 0.015 0.015 0.02. Rests upright
          on its 3x3 cm base, 4 cm tall; the gripper grasps the 3 cm cross-section
          (fingers open to 5 cm -> 1 cm clearance per side).
@@ -15,7 +20,7 @@
          per-episode DEVIATION from that nominal on top. Keep it equal to
          (lifter body z + lifter half-thickness + box half-height)  ur3_pick.py's
          _post_init asserts exactly that and fails loud otherwise. -->
-    <body name="box" pos="0.3 0 0.115">
+    <body name="box" pos="0.32 0 0.115">
       <freejoint/>
       <geom type="box" name="box" size="0.015 0.015 0.02" condim="4"
             friction="1 .03 .003" rgba="0 1 0 1"
@@ -28,29 +33,50 @@
     <body mocap="true" name="mocap_target">
       <geom type="sphere" size="0.04" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
     </body>
+    <!-- The lab TABLE (measured 2026-07-29, D24): 60 cm in X x 1 m in Y,
+         symmetric in Y, spanning x in [0.10, 0.70], y in [-0.50, 0.50], top
+         surface 95 mm above the UR3e base origin.
+         body pos (0.4, 0, 0.0925) + geom pos (0, 0, 0) + half-extents
+         (0.30, 0.50, 0.0025):
+           x: 0.40 +- 0.30 -> [0.10, 0.70]
+           y: 0.00 +- 0.50 -> [-0.50, 0.50]
+           top: 0.0925 + 0.0025 = 0.095
+         The geom was previously pos="0.25 0 0" size="0.60 0.40 0.0025",
+         i.e. x in [0.05, 1.25], y in [-0.40, 0.40] -- wrong on BOTH axes
+         (too deep in X, too narrow in Y, and reaching behind the robot base).
+         Do NOT change the BODY z: ur3_pick.py's _post_init asserts it equals
+         lifter_height_nom - the 0.0025 half-thickness, and gap_target.py
+         reads (body z + geom half-thickness) as the table top. reset() pins
+         this mocap body at its XML XY every episode (the table is a FIXED
+         fixture, it does not follow the box) and varies only height/tilt. -->
     <body mocap="true" name="lifter" pos="0.4 0 0.0925">
-      <geom type="box" name="lifter" pos="0.25 0 0" size="0.60 0.40 0.0025"
+      <geom type="box" name="lifter" pos="0 0 0" size="0.30 0.50 0.0025"
             contype="2" conaffinity="3" friction="1 .03 .003" rgba="0.8 0.6 1 1"/>
     </body>
   </worldbody>
 
 
+  <!-- D24 (2026-07-29): every keyframe's box freejoint XYZ is the SAME nominal
+       (0.32, 0, 0.115) as the <body name="box"> pos above. task_home carries
+       the anchor ur3_pick.py reads as _init_obj_pos and gap_target.py as
+       box_z_anchor, so it must not drift from the body. ARM joint angles are
+       deliberately UNCHANGED by the x-centre shift. -->
   <keyframe>
     <key name="task_home"
       qpos="0 -2.2 1.6 -1.6 -1.5 0 0.0125 0.0125
-            0.4 0 0.115
+            0.32 0 0.115
             1 0 0 0"
       ctrl="0 -2.2 1.6 -1.6 -1.5 0  0.0125"/>
 
     <key name="low_home"
       qpos="0 -1.7 1.6 -1.6 -1.6 -1.5  0 0
-            0.3 0 0.115
+            0.32 0 0.115
             1 0 0 0"
       ctrl="0 -1.7 1.6 -1.6 -1.6 -1.5  0"/>
 
     <key name="tucked"
       qpos="0 -2.45 2.04 -1.26 -1.57 0  0 0
-            0.3 0 0.115
+            0.32 0 0.115
             1 0 0 0"
       ctrl="0 -2.45 2.04 -1.26 -1.57 0  0"/>
   </keyframe>
