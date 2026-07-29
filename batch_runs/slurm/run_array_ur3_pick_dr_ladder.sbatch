@@ -17,6 +17,10 @@
 
 set -euo pipefail
 
+# Provenance banner -- FIRST thing written, so a log is never empty. Empty logs
+# were what made the 2026-07-29 flock deadlock undiagnosable for hours.
+echo "[$(date +%T)] host=$(hostname) job=${SLURM_JOB_ID:-?} task=${SLURM_ARRAY_TASK_ID:-?} gpu=${CUDA_VISIBLE_DEVICES:-unset}"
+
 REPO_DIR="$HOME/VT1_MBRL/my_mujoco_playground"
 IMAGE_TAR="$REPO_DIR/mujoco_env_EGL.tar"
 IMAGE_TAG="mujoco:env_EGL"
@@ -31,11 +35,30 @@ mkdir -p "$TMPDIR"
 # Ensure podman exists (no module needed on this cluster)
 command -v podman >/dev/null 2>&1 || { echo "ERROR: podman not found on PATH"; exit 2; }
 
-# Load image tar once per node (protect with a lock for arrays)
-mkdir -p "$HOME/.locks"
-LOCKFILE="$HOME/.locks/podman_load.lock"
+# Load image tar once per node (protect with a lock for arrays).
+#
+# 2026-07-29 -- THE LOCK MUST BE NODE-LOCAL, NOT ON $HOME.
+# It used to live at $HOME/.locks/podman_load.lock, i.e. on NFS. But the store
+# it protects (podman GraphRoot) is /scratch/container, which is PER-NODE. So a
+# global lock was serialising independent per-node loads, and -- worse -- flock
+# over NFS leaks: when a holder dies uncleanly the lock stays held server-side
+# with no live holder, and every later `flock -x` (no timeout) blocks FOREVER.
+# Observed 2026-07-29: 3 blocked `flock -x 200` processes at 0:00 CPU, no
+# podman load running, jobs "RUNNING" with completely empty .out/.err. The
+# stale $HOME/.locks/podman_load_819*.lock files date back to January.
+# Fix: put the lock next to the store it guards, and always use a timeout.
+LOCKDIR="${PODMAN_LOCK_DIR:-/scratch}"
+mkdir -p "$LOCKDIR" 2>/dev/null || LOCKDIR="/tmp"
+LOCKFILE="$LOCKDIR/.podman_load_${USER}.lock"
+echo "[$(date +%T)] image-load lock: $LOCKFILE"
 (
-  flock -x 200
+  # -w 900: fail loudly after 15 min instead of hanging the full 12 h walltime.
+  flock -w 900 200 || {
+    echo "ERROR: timed out (900s) waiting for $LOCKFILE." >&2
+    echo "  A previous holder probably died. Check: ps aux | grep flock" >&2
+    echo "  Then remove the lock file and resubmit." >&2
+    exit 1
+  }
   if [ -z "$(podman images -q "$IMAGE_TAG" 2>/dev/null || true)" ]; then
     podman load -i "$IMAGE_TAR"
   fi
@@ -51,6 +74,15 @@ if [ -f "$HOME/.secrets/wandb_key" ]; then
 fi
 
 cd "$REPO_DIR"
+
+# GPU preflight -- exit 75 (requeueable) so a bad node fails LOUDLY instead of
+# silently consuming an array slot. 6bb19b2's message claimed the ladder sbatch
+# got this; it did not -- only the pilot/grasp_retry/realdeploy scripts had it.
+echo "[$(date +%T)] GPU preflight ..."
+if ! podman run --rm "$IMAGE_TAG" nvidia-smi -L; then
+  echo "ERROR: no usable GPU in the container on $(hostname) -- exiting 75." >&2
+  exit 75
+fi
 
 # Run inside container
 podman run --rm \
