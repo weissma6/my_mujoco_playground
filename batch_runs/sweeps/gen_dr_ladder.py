@@ -1,21 +1,21 @@
-"""Generate the DR-ladder + LOO sweep JSONL for the sim-to-real gap study.
+"""Generate the DR-ladder sweep JSONL for the sim-to-real gap study.
 
-See the vault plan "Plan - Sim-to-Real Gap Protocol" (VT2-SimToReal-Robotics)
-for the full research design. This script emits exactly the 10 configs x 3
-seeds = 30 lines specified there:
+See the vault plan "Plan - Sim-to-Real Gap Protocol" (VT2-SimToReal-Robotics),
+section D21 (2026-07-29), for the full research design. D21 SUPERSEDES the
+prior 10-config/30-run ladder (with its LOO attribution block) -- this script
+now emits exactly the 5 configs x 3 seeds = 15 lines specified there:
 
   Ladder (monotone dose-response):
     L0_none              -- everything off: deterministic position, no physics DR
     L1_pos                + position DR (== the current baked default behaviour)
     L2_pos_cube            + cube physics (mass/friction/size)
     L3_pos_cube_robot      + robot physics (arm stiffness/damping) + action delay
-    L4_full                + environment (gravity + cube perturbation force)
-    L5_full_obs             + observation noise (arm q/finger/box pos/orientation)
+    L4_full                + environment (gravity + cube perturbation force,
+                              D20 respec) + observation noise -- absorbs what
+                              used to be the separate L5_full_obs rung.
 
-  Leave-one-out from L5_full_obs (the ladder is nested and cannot attribute
-  which cluster carries the transfer effect on its own):
-    LOO_no_pos, LOO_no_cube, LOO_no_robot, LOO_no_env
-    (LOO_no_obs is NOT emitted -- it is identical to L4_full)
+  The LOO block (LOO_no_pos/cube/robot/env) is DROPPED entirely (D21): 5
+  configs is too few to support a leave-one-out attribution study.
 
 Cluster -> env_overrides / domain_rand.* key mapping (Commit 2, already
 implemented in ur3_pick.py):
@@ -99,34 +99,91 @@ WANDB_PROJECT = "UR3_pick_ppo"
 # horizons consistent.
 EPISODE_LENGTH = 400
 
-# The three literal values that collapse "position" to a single deterministic
-# point -- SAME numbers that used to be hardcoded in ur3_pick.reset() before
-# Commit 2 exposed them as config fields. target_z/r/azim use the MIDPOINT of
-# their baked jitter range (zero-width interval -> deterministic draw).
+# D18/D21/D22 (2026-07-29): C0_none / L0_none's single fixed target is now set
+# to EXACTLY the D22 eval drop target -- r=0.30 m, azim=45 deg (0.7854 rad),
+# z = table_top + 0.07 -- rather than the midpoint of the baked jitter ranges.
+# Reason (D18): otherwise L0 cannot physically perform the eval task at all,
+# since the eval protocol (D22) always drops at that one fixed point. With
+# lifter_height_max=0.0 here (table_top == floor == 0), a fixed
+# target_z_jitter=[0.07, 0.07] already gives z = table_top + 0.07 exactly.
 #
 # NOTE: evaluation/gap_target.py imports this dict directly (its
 # "L0_deterministic" target profile) rather than re-typing target_r_min/max/
 # target_azim_min/max/target_z_jitter -- keep this name and its keys stable,
-# or update that import alongside any change here.
+# or update that import alongside any change here. gap_target.py's `side` draw
+# must ALSO be frozen (D18) so L0 never flips to the other azimuth side.
 _DETERMINISTIC_POSITION = {
     "box_xy_jitter": [0.0, 0.0],
-    "target_z_jitter": [0.195, 0.195],       # midpoint of baked [0.18, 0.21]
+    "target_z_jitter": [0.07, 0.07],          # table_top(=0) + 0.07 == eval drop z
     "finger_random_init": False,
     "box_z_rot_range": 0.0,
     "lifter_height_max": 0.0,
     "lifter_tilt_max": 0.0,
     "init_qpos_noise": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "init_start_random": "none",
-    "target_r_min": 0.335,                   # midpoint of baked [0.25, 0.42]
-    "target_r_max": 0.335,
-    "target_azim_min": 0.7854,                # midpoint of baked [0.5236, 1.0472]
+    "target_r_min": 0.30,                     # == D22 eval drop radius
+    "target_r_max": 0.30,
+    "target_azim_min": 0.7854,                # 45 deg == D22 eval drop azimuth
     "target_azim_max": 0.7854,
 }
+
+# D18 reach-envelope check: the four XY corners of the new position-DR box-
+# spawn envelope, about the new box centre x=0.34 (box_xy_jitter=(0.16, 0.22)
+# -> x in [0.18, 0.50], y in [-0.22, 0.22]). Validated at generation time so a
+# bad range is caught before the sweep is emitted, not after burning HPC time.
+# No dedicated reach-envelope utility exists elsewhere in the codebase (see
+# ur3_pick.py's _UR3_APPROX_MAX_REACH_M for the analogous D18 target-reach
+# check on the OTHER open risk -- the target side, not the box-spawn side);
+# this uses the same ~0.54 m documented UR3 3D-reach constant as its bound.
+_UR3_APPROX_MAX_REACH_M = 0.54
+_BOX_CENTER_X = 0.34
+_BOX_XY_JITTER = (0.16, 0.22)  # must match ur3_pick.default_config()
+
+
+def _validate_reach_envelope():
+    """D18: validate the four XY corners of the new box-spawn envelope.
+
+    Two severities, deliberately different:
+      - x < 0.10 m (near/inside the base column footprint): HARD FAIL. This
+        is a real collision concern, not a reach-margin judgment call.
+      - r > _UR3_APPROX_MAX_REACH_M: LOUD WARNING, not a hard fail. The
+        corners work out to ~0.546 m (see below), ~1% over the documented
+        ~0.54 m APPROXIMATE reach figure -- marginal against an approximate
+        bound, not a clear-cut overreach. Matching the D18 target-reach open
+        risk (ur3_pick.py's _UR3_APPROX_MAX_REACH_M check), this is flagged
+        loudly rather than silently allowed OR silently blocking Matthias's
+        D21 sweep generation on a judgment call this script can't resolve.
+    """
+    corners = [
+        (_BOX_CENTER_X - _BOX_XY_JITTER[0], _BOX_XY_JITTER[1]),
+        (_BOX_CENTER_X - _BOX_XY_JITTER[0], -_BOX_XY_JITTER[1]),
+        (_BOX_CENTER_X + _BOX_XY_JITTER[0], _BOX_XY_JITTER[1]),
+        (_BOX_CENTER_X + _BOX_XY_JITTER[0], -_BOX_XY_JITTER[1]),
+    ]
+    for x, y in corners:
+        r = (x**2 + y**2) ** 0.5
+        if x < 0.10:
+            raise SystemExit(
+                f"D18 reach-envelope check FAILED: box-spawn corner x={x:.3f} m "
+                "is uncomfortably close to (or inside) the base column footprint."
+            )
+        if r > _UR3_APPROX_MAX_REACH_M:
+            print(
+                f"D18 OPEN RISK (not blocking): box-spawn corner ({x:.3f}, "
+                f"{y:.3f}) is {r:.3f} m from the base origin, ~"
+                f"{100 * (r / _UR3_APPROX_MAX_REACH_M - 1):.1f}% over the "
+                f"documented ~{_UR3_APPROX_MAX_REACH_M:.2f} m UR3 reach. "
+                "UNRESOLVED -- see D18 in the vault Plan - Sim-to-Real Gap "
+                "Protocol; confirm on HPC/real robot before trusting this "
+                "corner's training data."
+            )
 
 _CUBE = {
     "domain_rand.cube_mass.enable": True,
     "domain_rand.cube_friction.enable": True,
-    "domain_rand.cube_size.enable": True,
+    # D19 (2026-07-29): cube_size split into two independent axes.
+    "domain_rand.cube_size_xy.enable": True,
+    "domain_rand.cube_size_z.enable": True,
 }
 _ROBOT = {
     "domain_rand.arm_stiffness.enable": True,
@@ -136,15 +193,13 @@ _ROBOT = {
 _ENV = {
     "domain_rand.gravity.enable": True,
     "domain_rand.cube_force.enable": True,
+    # D20 (2026-07-29): new arm joint-torque burst axis, same cluster as
+    # cube_force (both are "env" perturbations, same burst schedule).
+    "domain_rand.joint_torque.enable": True,
 }
 _OBS = {
     "domain_rand.obs_noise.enable": True,
 }
-
-
-def _off(d):
-    """Same keys as `d`, all forced False -- for explicit LOO exclusion."""
-    return {k: False for k in d}
 
 
 # Ordered so the JSONL reads top-to-bottom as the ladder, then the LOO block.
@@ -169,63 +224,12 @@ _add(
     {"domain_rand.enable": True, **_CUBE, **_ROBOT},
     ["DR_ladder", "L3", "position", "cube", "robot"],
 )
+# L4_full (D21): absorbs the old, separate L5_full_obs rung -- env + obs both
+# on together at the top of the ladder.
 _add(
     "L4_full",
-    {"domain_rand.enable": True, **_CUBE, **_ROBOT, **_ENV},
-    ["DR_ladder", "L4", "position", "cube", "robot", "env"],
-)
-_add(
-    "L5_full_obs",
     {"domain_rand.enable": True, **_CUBE, **_ROBOT, **_ENV, **_OBS},
-    ["DR_ladder", "L5", "position", "cube", "robot", "env", "obs"],
-)
-
-# --- Leave-one-out from L5_full_obs (attribution) -------------------------
-# LOO_no_obs is NOT emitted: it is byte-identical to L4_full (see docstring).
-_add(
-    "LOO_no_pos",
-    {
-        **_DETERMINISTIC_POSITION,
-        "domain_rand.enable": True,
-        **_CUBE,
-        **_ROBOT,
-        **_ENV,
-        **_OBS,
-    },
-    ["DR_LOO", "no_pos", "cube", "robot", "env", "obs"],
-)
-_add(
-    "LOO_no_cube",
-    {
-        "domain_rand.enable": True,
-        **_off(_CUBE),
-        **_ROBOT,
-        **_ENV,
-        **_OBS,
-    },
-    ["DR_LOO", "position", "no_cube", "robot", "env", "obs"],
-)
-_add(
-    "LOO_no_robot",
-    {
-        "domain_rand.enable": True,
-        **_CUBE,
-        **_off(_ROBOT),
-        **_ENV,
-        **_OBS,
-    },
-    ["DR_LOO", "position", "cube", "no_robot", "env", "obs"],
-)
-_add(
-    "LOO_no_env",
-    {
-        "domain_rand.enable": True,
-        **_CUBE,
-        **_ROBOT,
-        **_off(_ENV),
-        **_OBS,
-    },
-    ["DR_LOO", "position", "cube", "robot", "no_env", "obs"],
+    ["DR_ladder", "L4", "position", "cube", "robot", "env", "obs"],
 )
 
 _HEADER = f"""\
@@ -292,6 +296,8 @@ def main():
             f"(the file should be regenerated from this script, not hand-edited)"
         )
 
+    _validate_reach_envelope()
+
     lines = build_lines(args.seeds)
     with open(args.out, "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -301,9 +307,7 @@ def main():
           f"seeds) to {args.out}")
     assert {c for c, _, _ in _CONFIGS} == {
         "L0_none", "L1_pos", "L2_pos_cube", "L3_pos_cube_robot", "L4_full",
-        "L5_full_obs", "LOO_no_pos", "LOO_no_cube", "LOO_no_robot",
-        "LOO_no_env",
-    }, "config set drifted from the plan's 10 configs -- update this assertion"
+    }, "config set drifted from the D21 5-config ladder -- update this assertion"
 
 
 if __name__ == "__main__":
