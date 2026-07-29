@@ -2535,12 +2535,23 @@ class UR3Pick(ur3_base.UR3Base):
         # near-goal gradient) so the policy is rewarded for closing the LAST few
         # mm, not just getting within ~1 cm. The old single tanh*5 was nearly flat
         # inside 1 cm (reward ~0.95 at 10 mm), so the TCP settled off-center and a
-        # 4 cm cube (5 mm finger clearance per side) got one-fingered. Mirrors the
-        # box_target shaping.
+        # 4 cm cube (5 mm finger clearance per side) got one-fingered.
+        #
+        # 2026-07-29: promoted to a THREE-scale cascade, mirroring box_target's
+        # own fix below exactly (coarse tanh*1.5 pulls from long range, mid
+        # tanh*5 covers the old formula's working band, fine tanh*30 drives the
+        # last cm). The two-scale version above (tanh*5 + tanh*30) is the SAME
+        # shape that box_target used to have and was already diagnosed as going
+        # flat past ~0.4 m (W&B Spheretarget_mid_30M) -- at 0.5 m,
+        # 1-tanh(5*0.5) ~= 0.013, essentially zero gradient. box_target got the
+        # coarse-scale fix; gripper_box did not, and the same symptom (slow
+        # approach at long range) showed up here too. /3.0 keeps max=1 at d=0,
+        # so gripper_box=4.0's scale is unchanged.
         gripper_box_Reward = (
-            0.5 * (1 - jp.tanh(5 * gripper_box_dist))
-            + 0.5 * (1 - jp.tanh(30 * gripper_box_dist))
-        )
+            (1 - jp.tanh(1.5 * gripper_box_dist))
+            + (1 - jp.tanh(5.0 * gripper_box_dist))
+            + (1 - jp.tanh(30.0 * gripper_box_dist))
+        ) / 3.0
 
         # Stage 2 — grasp: close the fingers on the box once reached. No
         # near-target fade (unlike picknplace) — this task holds the box AT the
