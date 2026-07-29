@@ -364,20 +364,29 @@ _HEADER = f"""\
 """
 
 
-def build_lines(seeds):
+def build_lines(seeds, version=None):
     lines = [_HEADER]
+    version_tag = [version] if version else []
+    version_suffix = f"_{version}" if version else ""
     for config_id, overrides, tags in _CONFIGS:
         for seed in seeds:
             entry = {
                 "env_name": "UR3Pick",
                 "seed": int(seed),
-                "run_id": f"{config_id}_s{seed}",
+                # `config_id` is deliberately UNCHANGED by `version` -- it is
+                # keyed on exact string by gap_target.CONFIG_TO_PROFILE,
+                # run_gap_protocol.LADDER_REAL_CONFIGS, and select_median_seed;
+                # renaming it would ripple through the whole eval pipeline for
+                # no benefit. `run_id` (the actual W&B run name) and
+                # wandb_tags DO carry the version -- that is what is visibly
+                # distinguishable in the W&B UI, which is the actual ask.
+                "run_id": f"{config_id}{version_suffix}_s{seed}",
                 "wandb_project": WANDB_PROJECT,
                 "video_every_evals": 6,
                 "render_every": 1,
                 "episode_length": EPISODE_LENGTH,
                 **overrides,
-                "wandb_tags": [*tags, f"s{seed}"],
+                "wandb_tags": [*tags, f"s{seed}", *version_tag],
             }
             lines.append(json.dumps(entry))
     return lines
@@ -395,6 +404,14 @@ def main():
     ap.add_argument(
         "--force", action="store_true", help="overwrite an existing file"
     )
+    ap.add_argument(
+        "--version", default=None,
+        help="tag appended to run_id/wandb_tags (e.g. 'v2') so a retrain is "
+             "visibly distinguishable from a prior ladder in W&B, without "
+             "renaming config_id (which gap_target.py, run_gap_protocol.py, "
+             "and select_median_seed.py all key on by exact string). Omit "
+             "for an untagged run_id, unchanged from before this flag existed.",
+    )
     args = ap.parse_args()
 
     if os.path.exists(args.out) and not args.force:
@@ -408,7 +425,7 @@ def main():
     print("D18/D24 reach + table + drop-target validation:")
     _validate_reach_envelope()
 
-    lines = build_lines(args.seeds)
+    lines = build_lines(args.seeds, version=args.version)
     with open(args.out, "w") as f:
         f.write("\n".join(lines) + "\n")
 
