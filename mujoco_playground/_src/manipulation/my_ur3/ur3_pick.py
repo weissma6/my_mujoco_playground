@@ -337,7 +337,8 @@ def default_config() -> config_dict.ConfigDict:
         init_start_random="mid",
         # Nominal TOP-SURFACE height (m) of the table the cube is picked from,
         # measured in the lab: 95 mm above the UR3e base origin. The table is a
-        # permanent fixture -- there is no "off" any more (see lifter_height_max).
+        # permanent fixture -- there is no "off" any more (see the absolute
+        # lifter_height_abs_min/max range below).
         lifter_height_nom=0.095,
         # Per-episode table TOP-SURFACE height (m), drawn ABSOLUTELY:
         #   top ~ uniform(lifter_height_abs_min, lifter_height_abs_max)
@@ -997,11 +998,15 @@ class UR3Pick(ur3_base.UR3Base):
             updates["geom_friction"] = model.geom_friction.at[self._obj_geom].set(
                 new_fric
             )
-        if dr.cube_size.enable:
-            # Uniform half-extent scale; width (xy) hard-clamped graspable.
-            new_size = self._dr_nom_size * info["dr_size_scale"]
-            new_size = new_size.at[:2].set(
-                jp.minimum(new_size[:2], self._dr_max_box_half_xy)
+        if dr.cube_size_xy.enable or dr.cube_size_z.enable:
+            # D19: independent xy/z half-extents (ABSOLUTE metres, not a scale of
+            # the nominal). xy (width) hard-clamped graspable; z (height)
+            # unclamped. Both info keys are always present -- identity (nominal)
+            # when their own sub-axis is off, see self._dr_identity -- so
+            # enabling one axis alone leaves the other at the nominal size.
+            half_xy = jp.minimum(info["dr_half_xy"], self._dr_max_box_half_xy)
+            new_size = jp.array(
+                [half_xy, half_xy, info["dr_cube_half_z"]], dtype=float
             )
             updates["geom_size"] = model.geom_size.at[self._obj_geom].set(new_size)
         if dr.gravity.enable:
@@ -1050,7 +1055,7 @@ class UR3Pick(ur3_base.UR3Base):
         else:
             dr = self._dr_identity
         # Box Z half-extent for resting the cube (== _BOX_HALF_EXTENT unless the
-        # cube_size axis is on).
+        # cube_size_z axis is on).
         box_half_z = dr["cube_half_z"]
 
         # Action-delay DR: sample the per-episode delay length ONCE (held
@@ -1092,10 +1097,10 @@ class UR3Pick(ur3_base.UR3Base):
                 minval=-float(on.box_quat_bias), maxval=float(on.box_quat_bias),
             )
 
-        # initialize box XY — wide jitter, X-heavy, so the box spawns anywhere
-        # in X∈[0.30,0.60] (all graspable; 0.60 was the old nominal). Y-center
-        # shiftable via box_y_center_offset (0.0 = legacy, centered on the XML
-        # keyframe) so a sweep can push the spawn to one side of the target.
+        # initialize box XY — wide jitter about the XML keyframe box XY
+        # (nominal x=0.32 since D24). Y-center shiftable via box_y_center_offset
+        # (0.0 = legacy, centered on the XML keyframe) so a sweep can push the
+        # spawn to one side of the target.
         box_xy_jitter = jp.asarray(self._config.box_xy_jitter, dtype=float)
         box_xy = (
             jax.random.uniform(
@@ -1107,6 +1112,36 @@ class UR3Pick(ur3_base.UR3Base):
             + self._init_obj_pos[:2]  # Box XY from XML keyframe
             + jp.array([0.0, float(self._config.box_y_center_offset)])
         )
+
+        # D24 (2026-07-29) RADIAL CLIP -- project the rectangular draw above onto
+        # the arm's REACHABLE ANNULUS around the base, in the base's own XY frame:
+        #   r > _UR3_WORKING_RADIUS_M (0.49) -> scale xy by 0.49 / r
+        #   r < _BOX_XY_R_MIN         (0.18) -> scale xy by 0.18 / r
+        # Rationale: box_xy_jitter was widened to (0.17, 0.24) to cover more of
+        # the real 0.6 x 1.0 m table, but the RECTANGLE's far corners reach
+        # r = sqrt(0.49^2 + 0.24^2) = 0.546 m, ~11% past the UR3e's ~0.49 m
+        # working radius (that radius is derived in _UR3_WORKING_RADIUS_M's
+        # comment from this file's own target_r_max arithmetic, sqrt(0.35^2 +
+        # 0.345^2) ~= 0.49), while its near edge (0.15, 0) sits inside the base
+        # column. Clipping instead of shrinking keeps strictly MORE reachable
+        # coverage than the old (0.15, 0.20) rectangle while producing ZERO
+        # unreachable spawns.
+        # Accepted side effect: draws that would have landed outside the annulus
+        # pile up ON its boundary, so the marginal density is not uniform there.
+        # That is deliberate -- boundary poses are the hard ones and are worth
+        # over-sampling, and no draw is ever discarded (which would need a
+        # rejection loop, not JAX-friendly).
+        # Angle is preserved exactly (pure radial scale). Measured from the ROBOT
+        # BASE, not the world origin, so it stays correct if the base moves.
+        box_rel = box_xy - self._robot_base_xy
+        box_r = jp.linalg.norm(box_rel)
+        # jp.where on a traced scalar (no Python branching); the 1e-9 floor keeps
+        # the division finite at the probability-zero exactly-at-base draw.
+        box_r_safe = jp.maximum(box_r, 1e-9)
+        box_r_clipped = jp.clip(
+            box_r_safe, _BOX_XY_R_MIN, _UR3_WORKING_RADIUS_M
+        )
+        box_xy = self._robot_base_xy + box_rel * (box_r_clipped / box_r_safe)
 
         # Box yaw about world Z (±box_z_rot_range). The cube is symmetric so this
         # is the dominant spawn DOF; the slight plate tilt below adds the
@@ -1129,15 +1164,21 @@ class UR3Pick(ur3_base.UR3Base):
         # policy must reorient the gripper (not just yaw) to grasp it. Disabled ->
         # legacy flat on-floor spawn (yaw only).
         if self._lifter_enabled:
-            # Sample the TOP SURFACE (that is what lifter_height_nom/_max are
-            # measured as, and what the cube rests on), then convert to the mocap
-            # body z so every downstream expression keeps its existing meaning.
-            # Clamped so a wide jitter can't push the plate bottom below z=0.
-            lifter_top = self._lifter_top_nom + jax.random.uniform(
+            # D18/D24 (2026-07-29): sample the table TOP SURFACE as an ABSOLUTE
+            # height, U(lifter_height_abs_min, lifter_height_abs_max) -- NOT the
+            # old symmetric band about lifter_height_nom. Default U(0.0, 0.220)
+            # spans bare floor to a 220 mm table. lifter_height_nom stays what it
+            # always was: the NOMINAL the box anchor and the XML plate z encode
+            # (asserted in __init__), and the reference the target shift below is
+            # measured against -- it is no longer the centre of the draw.
+            # Converted to the mocap body z so every downstream expression keeps
+            # its meaning, and clamped so a low draw can't push the plate bottom
+            # below the floor plane z=0 (the collision masks can't separate them).
+            lifter_top = jax.random.uniform(
                 rng_lift,
                 (),
-                minval=-float(self._config.lifter_height_max),
-                maxval=float(self._config.lifter_height_max),
+                minval=float(self._config.lifter_height_abs_min),
+                maxval=float(self._config.lifter_height_abs_max),
             )
             lifter_h = jp.maximum(
                 lifter_top - _LIFTER_HALF_THICKNESS, _LIFTER_HEIGHT_MIN
@@ -1166,21 +1207,24 @@ class UR3Pick(ur3_base.UR3Base):
                     1 - 2 * (tx * tx + ty * ty),
                 ]
             )
-            # The plate is pinned at the nominal box XY (below); its top plane is
-            # raised by the half-thickness. Solve the plane height under the
-            # (jittered) box XY, then lift the box center a half-extent along the
-            # plate normal so the cube sits flush.
+            # The plate is pinned at its FIXED XML XY (self._lifter_xy, below) and
+            # tilts about that origin; its top plane is raised by the half-
+            # thickness. Solve the plane height under the (jittered) box XY, then
+            # lift the box center a half-extent along the plate normal so the cube
+            # sits flush. D24: the lever arm is now |box_xy - TABLE xy|, not
+            # |box_xy - box anchor| -- the tilt pivot is the table, which no
+            # longer sits at the box anchor (table x=0.40, box anchor x=0.32).
             p_top_z = lifter_h + _LIFTER_HALF_THICKNESS
             z_plane = p_top_z - (
-                n[0] * (box_xy[0] - self._init_obj_pos[0])
-                + n[1] * (box_xy[1] - self._init_obj_pos[1])
+                n[0] * (box_xy[0] - self._lifter_xy[0])
+                + n[1] * (box_xy[1] - self._lifter_xy[1])
             ) / n[2]
             box_z = z_plane + box_half_z * n[2]
         else:
             lifter_h = jp.array(0.0, dtype=float)
             lifter_dz = jp.array(0.0, dtype=float)
             q_tilt = jp.array([1.0, 0.0, 0.0, 0.0])
-            box_z = box_half_z  # rest at half-height (== 0.02 unless cube_size DR)
+            box_z = box_half_z  # rest at half-height (0.02 unless cube_size_z DR)
 
         box_pos = jp.array([box_xy[0], box_xy[1], box_z])
         # Box orientation: plate tilt composed with the yaw spin about the plate
@@ -1272,6 +1316,22 @@ class UR3Pick(ur3_base.UR3Base):
             # places the cube on the nominal table.
             target_pos = target_pos.at[2].add(lifter_dz)
 
+        # D18/D24 reach safeguard: hard-clip the ABSOLUTE world-Z of the sampled
+        # target so no episode -- regardless of how the (now absolute, up to
+        # 0.220 m) table draw and the target_z draw combine -- can command a
+        # target above _TARGET_WORLD_Z_CAP (0.345 m). Applied to BOTH
+        # target_mode branches uniformly. Worst case without it:
+        #   target_z = draw(0.21) + anchor(0.115) + lifter_dz(0.220 - 0.095)
+        #            = 0.45 m, which at target_r_max=0.35 demands
+        #   sqrt(0.35^2 + 0.45^2) ~= 0.57 m, well past the ~0.49 m working radius.
+        # Physically sensible: you cannot lift as far above an already-high table.
+        # The realized cap RATE is logged as the `target_z_capped` metric below --
+        # watch it, a high rate means the config is asking for the impossible.
+        target_z_capped = (target_pos[2] > _TARGET_WORLD_Z_CAP).astype(jp.float32)
+        target_pos = target_pos.at[2].set(
+            jp.minimum(target_pos[2], _TARGET_WORLD_Z_CAP)
+        )
+
         # -----------------------------
         # Randomize robot joint positions
         # -----------------------------
@@ -1350,17 +1410,24 @@ class UR3Pick(ur3_base.UR3Base):
             njmax=self._config.njmax,
         )
 
-        # set target mocap (lift-goal marker); pin the lifter plate at the
-        # nominal box XY when enabled so the 40 cm plate covers the jittered
-        # box yet keeps its near edge 10 cm off the base (else parked at XML).
+        # set target mocap (lift-goal marker); pin the lifter plate at its FIXED
+        # XML XY (the real table's measured position) so only its height/tilt
+        # vary per episode.
         data = data.replace(
             mocap_pos=data.mocap_pos.at[self._mocap_target, :].set(target_pos),
         )
         if self._lifter_enabled:
-            # XY pinned to the nominal box pos (not the jittered box_xy) so the
-            # plate never reaches the base; only the height varies per episode.
+            # D24 (2026-07-29): XY pinned to the TABLE's own XML pos
+            # (self._lifter_xy = 0.40, 0), NOT to the box anchor. It used to be
+            # self._init_obj_pos[:2], a leftover from when the lifter was a small
+            # movable riser that had to be placed under the cube -- harmless only
+            # while the two happened to coincide at x=0.40. The lifter is now a
+            # fixed 0.6 x 1.0 m table AND the box anchor moved to x=0.32, so the
+            # old pin would shove the whole table 8 cm toward the base every
+            # reset, contradicting both the measured extent (x in [0.10, 0.70])
+            # and gap_target.py's table-anchor read. The table does not move.
             lifter_pos = jp.array(
-                [self._init_obj_pos[0], self._init_obj_pos[1], lifter_h]
+                [self._lifter_xy[0], self._lifter_xy[1], lifter_h]
             )
             data = data.replace(
                 mocap_pos=data.mocap_pos.at[self._lifter_mocap, :].set(lifter_pos),
@@ -1387,6 +1454,12 @@ class UR3Pick(ur3_base.UR3Base):
             "lifted": jp.array(0.0, dtype=float),
             "align_jaw": jp.array(0.0, dtype=float),
             "align_app": jp.array(0.0, dtype=float),
+            # D18/D24 reach-safeguard diagnostic (see _TARGET_WORLD_Z_CAP):
+            # terminal-gated capping RATE, mirroring box_target_dist_final's
+            # pattern so the W&B episode-sum equals the single 0/1 per episode.
+            # Always 0 out of reset_to_state (its target_pos is caller-supplied
+            # and bypasses reset()'s sampling and cap entirely).
+            "target_z_capped": jp.array(0.0, dtype=float),
             **{k: jp.array(0.0, dtype=float)
                for k in self._config.reward_config.scales.keys()},
         }
@@ -1409,6 +1482,9 @@ class UR3Pick(ur3_base.UR3Base):
             # Per-episode box resting height (top of the lifter plate, or the
             # keyframe floor Z). The "lifted" latch measures lift against this.
             "box_rest_z": box_z,
+            # D18/D24: whether THIS episode's raw target-Z draw was clipped by
+            # _TARGET_WORLD_Z_CAP (1.0) or not (0.0). See the cap block above.
+            "target_z_capped": target_z_capped,
             # Previous action, for the action_rate smoothness penalty. Zeroed
             # at reset (no prior action yet); also appended to the obs (below)
             # so the action_rate-dependent reward stays a function of the
@@ -1435,7 +1511,9 @@ class UR3Pick(ur3_base.UR3Base):
                 {
                     "dr_mass_scale": dr["mass_scale"],
                     "dr_fric_scale": dr["fric_scale"],
-                    "dr_size_scale": dr["size_scale"],
+                    # D19: independent xy/z half-extents replace the old scalar.
+                    "dr_half_xy": dr["half_xy"],
+                    "dr_cube_half_z": dr["cube_half_z"],
                     "dr_grav": dr["grav"],
                     "dr_kp_scale": dr["kp_scale"],
                     "dr_kv_scale": dr["kv_scale"],
@@ -1458,6 +1536,30 @@ class UR3Pick(ur3_base.UR3Base):
                 }
             )
             metrics.update({"dr/action_delay_steps": jp.array(0.0, dtype=float)})
+
+        # D20 (2026-07-29): burst-perturbation state for cube_force /
+        # joint_torque -- a per-episode counter + the currently-held vector,
+        # mirroring the action_delay ring buffer's "STATIC gate -> keys exist
+        # only when the axis is enabled" pattern. counter=0 means "no burst
+        # active"; the trigger/hold logic itself lives in step(). This is the
+        # natural start state, not a special eval bypass: an episode simply
+        # begins with no burst in flight.
+        cf_init = self._config.domain_rand.cube_force
+        if cf_init.enable:
+            info.update(
+                {
+                    "cf_burst_counter": jp.array(0, dtype=jp.int32),
+                    "cf_burst_force": jp.zeros(3, dtype=float),
+                }
+            )
+        jt_init = self._config.domain_rand.joint_torque
+        if jt_init.enable:
+            info.update(
+                {
+                    "jt_burst_counter": jp.array(0, dtype=jp.int32),
+                    "jt_burst_torque": jp.zeros(6, dtype=float),
+                }
+            )
 
         # Obs-noise per-episode bias terms + the fold_in seed for the per-step
         # jitter (see _get_obs). STATIC gate -> keys exist only when enabled.
@@ -1526,7 +1628,8 @@ class UR3Pick(ur3_base.UR3Base):
             When given, it is applied UNCLAMPED and bypasses BOTH (a) this
             method's own physics-DR-identity path (which never touched
             geom_size to begin with) and (b) step()'s `_randomize_physics`
-            `_dr_max_box_half_xy = 0.018` graspability clamp -- that clamp
+            `_dr_max_box_half_xy = 0.020` graspability clamp (D19 raised it
+            from 0.018) -- that clamp
             exists to keep *training* domain-randomization draws graspable;
             the 4cm eval cube is a deliberate one-off OOD override applied
             only at eval time by evaluation/run_gap_protocol_sim.py, not a DR
@@ -1550,11 +1653,15 @@ class UR3Pick(ur3_base.UR3Base):
         ARGUMENT here instead, sourced from the measured init.
 
         NOT bypassed (a documented, deliberate choice, not an oversight):
-          - The per-STEP cube_force disturbance (domain_rand.cube_force), if
-            this policy's config has it enabled, still fires every step() call
-            during the rollout -- it is not a "reset" quantity to bypass; it is
-            part of the deployed policy's OWN dynamics model and forcing it off
-            would evaluate a policy that never trained under it.
+          - The per-STEP cube_force / joint_torque BURST disturbances (D20,
+            domain_rand.cube_force / domain_rand.joint_torque), if this
+            policy's config has them enabled, still fire every step() call
+            during the rollout -- they are not "reset" quantities to bypass;
+            they are part of the deployed policy's OWN dynamics model and
+            forcing them off would evaluate a policy that never trained under
+            them. Their burst state (info["cf_burst_*"] / info["jt_burst_*"])
+            starts at "no burst active" below -- not a special bypass, just
+            the natural start state, identical to reset()'s.
           - The per-STEP obs-noise JITTER (domain_rand.obs_noise, the
             q_jitter/finger_jitter/box_pos_jitter/box_quat_jitter amplitudes),
             if enabled, still applies every step via `_get_obs`'s
@@ -1566,13 +1673,15 @@ class UR3Pick(ur3_base.UR3Base):
             (never resampled), the rollout is still fully deterministic given
             the same `rng` argument -- this is what run_gap_protocol_sim.py's
             determinism check verifies.
-          - The lifter mocap body: it models the REAL lab table (top surface
-            95 mm above the base origin), so it is pinned at the nominal
-            `lifter_height_nom`, level, at the nominal box XY -- the per-episode
-            height/tilt DRAW is bypassed like every other reset() sampling, but
-            the table itself is not, because it physically exists. (Before
-            2026-07-28 it was pinned at z=0 under a "no lifter on the real
-            robot" convention; see evaluation/gap_target.py, updated to match.)
+          - The lifter mocap body: it models the REAL lab table (0.6 x 1.0 m,
+            top surface 95 mm above the base origin), so it is pinned at the
+            nominal `lifter_height_nom`, level, at its FIXED XML XY -- the
+            per-episode height/tilt DRAW is bypassed like every other reset()
+            sampling, but the table itself is not, because it physically
+            exists. (Before 2026-07-28 it was pinned at z=0 under a "no lifter
+            on the real robot" convention; see evaluation/gap_target.py,
+            updated to match. D24, 2026-07-29: the XY pin moved from the box
+            anchor to the table's own XML pos -- the two no longer coincide.)
         """
         arm_qpos = jp.asarray(arm_qpos, dtype=float)
         box_pos = jp.asarray(box_pos, dtype=float)
@@ -1608,11 +1717,13 @@ class UR3Pick(ur3_base.UR3Base):
             mocap_pos=data.mocap_pos.at[self._mocap_target, :].set(target_pos),
         )
         if self._lifter_enabled:
-            # The table is real -- pin it LEVEL at the nominal height and nominal
-            # XY (the per-episode height/tilt draw is what gets bypassed here, not
-            # the table). See the docstring's "NOT bypassed" section (last bullet).
+            # The table is real -- pin it LEVEL at the nominal height and at its
+            # own FIXED XML XY (the per-episode height/tilt draw is what gets
+            # bypassed here, not the table). D24: was self._init_obj_pos[:2],
+            # the box anchor, which no longer coincides with the table.
+            # See the docstring's "NOT bypassed" section (last bullet).
             lifter_pos = jp.array(
-                [self._init_obj_pos[0], self._init_obj_pos[1], self._lifter_z_nom]
+                [self._lifter_xy[0], self._lifter_xy[1], self._lifter_z_nom]
             )
             data = data.replace(
                 mocap_pos=data.mocap_pos.at[self._lifter_mocap, :].set(lifter_pos),
@@ -1632,6 +1743,12 @@ class UR3Pick(ur3_base.UR3Base):
             "lifted": jp.array(0.0, dtype=float),
             "align_jaw": jp.array(0.0, dtype=float),
             "align_app": jp.array(0.0, dtype=float),
+            # D18/D24 reach-safeguard diagnostic (see _TARGET_WORLD_Z_CAP):
+            # terminal-gated capping RATE, mirroring box_target_dist_final's
+            # pattern so the W&B episode-sum equals the single 0/1 per episode.
+            # Always 0 out of reset_to_state (its target_pos is caller-supplied
+            # and bypasses reset()'s sampling and cap entirely).
+            "target_z_capped": jp.array(0.0, dtype=float),
             **{k: jp.array(0.0, dtype=float)
                for k in self._config.reward_config.scales.keys()},
         }
@@ -1652,6 +1769,10 @@ class UR3Pick(ur3_base.UR3Base):
             "grasped": jp.array(0.0, dtype=float),
             "lifted": jp.array(0.0, dtype=float),
             "box_rest_z": box_pos[2],
+            # D18/D24: never capped here -- target_pos is caller-supplied and
+            # bypasses reset()'s sampling and _TARGET_WORLD_Z_CAP entirely (same
+            # "bypassed vs not bypassed" convention as the rest of this method).
+            "target_z_capped": jp.array(0.0, dtype=float),
             "last_action": jp.zeros(self._nu, dtype=float),
             "dist_min": jp.array(1e3, dtype=float),
             "hold_counter": jp.array(0, dtype=jp.int32),
@@ -1662,7 +1783,9 @@ class UR3Pick(ur3_base.UR3Base):
                 {
                     "dr_mass_scale": self._dr_identity["mass_scale"],
                     "dr_fric_scale": self._dr_identity["fric_scale"],
-                    "dr_size_scale": self._dr_identity["size_scale"],
+                    # D19: independent xy/z half-extents replace the old scalar.
+                    "dr_half_xy": self._dr_identity["half_xy"],
+                    "dr_cube_half_z": self._dr_identity["cube_half_z"],
                     "dr_grav": self._dr_identity["grav"],
                     "dr_kp_scale": self._dr_identity["kp_scale"],
                     "dr_kv_scale": self._dr_identity["kv_scale"],
@@ -1684,6 +1807,30 @@ class UR3Pick(ur3_base.UR3Base):
                 }
             )
             metrics.update({"dr/action_delay_steps": jp.array(0.0, dtype=float)})
+
+        # D20 (2026-07-29): burst-perturbation state for cube_force /
+        # joint_torque -- a per-episode counter + the currently-held vector,
+        # mirroring the action_delay ring buffer's "STATIC gate -> keys exist
+        # only when the axis is enabled" pattern. counter=0 means "no burst
+        # active"; the trigger/hold logic itself lives in step(). This is the
+        # natural start state, not a special eval bypass: an episode simply
+        # begins with no burst in flight.
+        cf_init = self._config.domain_rand.cube_force
+        if cf_init.enable:
+            info.update(
+                {
+                    "cf_burst_counter": jp.array(0, dtype=jp.int32),
+                    "cf_burst_force": jp.zeros(3, dtype=float),
+                }
+            )
+        jt_init = self._config.domain_rand.joint_torque
+        if jt_init.enable:
+            info.update(
+                {
+                    "jt_burst_counter": jp.array(0, dtype=jp.int32),
+                    "jt_burst_torque": jp.zeros(6, dtype=float),
+                }
+            )
 
         on = self._config.domain_rand.obs_noise
         if on.enable:
@@ -1769,27 +1916,91 @@ class UR3Pick(ur3_base.UR3Base):
                 ),
             })
 
-        # Per-step environment DR: a fresh random 3D force on the box, drawn
-        # from info["rng"] and re-split EVERY step (unlike action_delay, this
-        # is NOT held per-episode -- it models a continuous small
-        # "environment disturbance", e.g. a bumped table, not a one-off
-        # event). STATIC gate -> the off path never touches
-        # state.data.xfrc_applied or info["rng"] at all.
+        # Per-step environment DR: a random 3D force on the box (xfrc_applied at
+        # its centre of mass), drawn from info["rng"]. STATIC gate -> the off
+        # path never touches state.data.xfrc_applied or info["rng"] at all.
+        #
+        # D20 (2026-07-29) RESPEC: this used to resample a fresh force EVERY step
+        # (0.5 N of continuous 50 Hz white noise) -- diagnosed as the likely cause
+        # of the L4/L5 training collapse (D14). It is now a BURST: each step has
+        # probability `force_prob` of TRIGGERING a new burst if none is active;
+        # once triggered the SAME force vector is HELD for `burst_steps` steps,
+        # then drops back to zero. Re-triggering while a burst is already active
+        # is a NO-OP (hold the vector, do not restart the clock). All state lives
+        # in `info` (not a Python closure), so it is jit/vmap-safe -- same pattern
+        # as the action_delay ring buffer above.
+        data_in = state.data
         cf = self._config.domain_rand.cube_force
         if cf.enable:
-            rng_force, rng_next = jax.random.split(info["rng"])
+            rng_trig, rng_force, rng_next = jax.random.split(info["rng"], 3)
             info["rng"] = rng_next
-            force = jax.random.uniform(
+            active = info["cf_burst_counter"] > 0
+            trigger = (
+                jax.random.uniform(rng_trig, ()) < float(cf.force_prob)
+            ) & jp.logical_not(active)
+            new_force = jax.random.uniform(
                 rng_force, (3,),
                 minval=-float(cf.force_mag), maxval=float(cf.force_mag),
             )
-            data_in = state.data.replace(
-                xfrc_applied=state.data.xfrc_applied.at[self._obj_body, :3].set(
-                    force
+            force = jp.where(trigger, new_force, info["cf_burst_force"])
+            counter = jp.where(
+                trigger,
+                jp.array(int(cf.burst_steps), dtype=jp.int32),
+                jp.where(
+                    active,
+                    info["cf_burst_counter"] - 1,
+                    jp.array(0, dtype=jp.int32),
+                ),
+            )
+            info["cf_burst_force"] = force
+            info["cf_burst_counter"] = counter
+            applied_force = jp.where(counter > 0, force, jp.zeros(3, dtype=float))
+            data_in = data_in.replace(
+                xfrc_applied=data_in.xfrc_applied.at[self._obj_body, :3].set(
+                    applied_force
                 )
             )
-        else:
-            data_in = state.data
+
+        # D20 (2026-07-29) NEW axis: arm joint-torque perturbation. Same burst
+        # trigger/hold state machine as cube_force above (its OWN independent
+        # counter + held vector), applied as an additive qfrc_applied nudge on
+        # the 6 arm DOFs. Indexed via self._robot_arm_dofadr (built from
+        # mj_model.jnt_dofadr in ur3_base._post_init -- the EXACT dof address,
+        # never assumed equal to the qpos address, which it is not once the box
+        # freejoint is in the model). STATIC gate -> the off path never touches
+        # qfrc_applied.
+        jt = self._config.domain_rand.joint_torque
+        if jt.enable:
+            rng_trig2, rng_torque, rng_next2 = jax.random.split(info["rng"], 3)
+            info["rng"] = rng_next2
+            active_jt = info["jt_burst_counter"] > 0
+            trigger_jt = (
+                jax.random.uniform(rng_trig2, ()) < float(jt.force_prob)
+            ) & jp.logical_not(active_jt)
+            new_torque = jax.random.uniform(
+                rng_torque, (6,),
+                minval=-float(jt.torque_mag), maxval=float(jt.torque_mag),
+            )
+            torque = jp.where(trigger_jt, new_torque, info["jt_burst_torque"])
+            counter_jt = jp.where(
+                trigger_jt,
+                jp.array(int(jt.burst_steps), dtype=jp.int32),
+                jp.where(
+                    active_jt,
+                    info["jt_burst_counter"] - 1,
+                    jp.array(0, dtype=jp.int32),
+                ),
+            )
+            info["jt_burst_torque"] = torque
+            info["jt_burst_counter"] = counter_jt
+            applied_torque = jp.where(
+                counter_jt > 0, torque, jp.zeros(6, dtype=float)
+            )
+            data_in = data_in.replace(
+                qfrc_applied=data_in.qfrc_applied.at[
+                    jp.asarray(self._robot_arm_dofadr)
+                ].set(applied_torque)
+            )
 
         data = mjx_env.step(model, data_in, ctrl, self.n_substeps)
 
@@ -1908,6 +2119,10 @@ class UR3Pick(ur3_base.UR3Base):
             lifted=info["lifted"],
             align_jaw=raw_signals["a_jaw"],
             align_app=raw_signals["a_app"],
+            # D18/D24 reach-safeguard diagnostic, terminal-gated exactly like
+            # box_target_dist_* so the W&B episode-sum is the single per-episode
+            # 0/1 and the cross-env mean is the true capping RATE.
+            target_z_capped=jp.where(is_terminal, info["target_z_capped"], 0.0),
         )
         # Realized per-episode DR factors, terminal-gated like box_target_dist_*
         # so brax's EvalWrapper episode-SUM equals the single per-episode value
@@ -1919,7 +2134,13 @@ class UR3Pick(ur3_base.UR3Base):
                     "dr/cube_friction": jp.where(
                         is_terminal, info["dr_fric_scale"], 0.0
                     ),
-                    "dr/cube_size": jp.where(is_terminal, info["dr_size_scale"], 0.0),
+                    # D19: realized ABSOLUTE half-extents (metres), not a scale.
+                    "dr/cube_size_xy": jp.where(
+                        is_terminal, info["dr_half_xy"], 0.0
+                    ),
+                    "dr/cube_size_z": jp.where(
+                        is_terminal, info["dr_cube_half_z"], 0.0
+                    ),
                     "dr/gravity_z": jp.where(is_terminal, info["dr_grav"][2], 0.0),
                     "dr/arm_stiffness": jp.where(
                         is_terminal, info["dr_kp_scale"], 0.0
