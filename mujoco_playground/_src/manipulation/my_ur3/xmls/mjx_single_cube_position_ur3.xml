@@ -9,7 +9,9 @@
          on its 3x3 cm base, 4 cm tall; the gripper grasps the 3 cm cross-section
          (fingers open to 5 cm -> 1 cm clearance per side). pos z = 0.02 = half the
          4 cm height so it rests on the floor. -->
-    <body name="box" pos="0.3 0 0.02">
+    <body name="box" pos="0.34 0 0.02">
+      <!-- D18 (2026-07-29): nominal spawn X shifted 0.30 -> 0.34 (Cheap DR ladder v2
+           position cluster); see vault Plan - Sim-to-Real Gap Protocol D18. -->
       <freejoint/>
       <geom type="box" name="box" size="0.015 0.015 0.02" condim="4"
             friction="1 .03 .003" rgba="0 1 0 1"
@@ -32,7 +34,7 @@
          from box/floor. It MUST stay AFTER mocap_target so the target keeps mocapid
          0 (the deployment render writes mocap_pos[0]). Default pose keeps it flat
          on the floor for un-reset (deploy) renders. -->
-    <body mocap="true" name="lifter" pos="0.3 0 0.0025">
+    <body mocap="true" name="lifter" pos="0.34 0 0.0025">
       <geom type="box" name="lifter" size="0.20 0.20 0.0025"
             contype="2" conaffinity="3" friction="1 .03 .003" rgba="0.8 0.6 1 1"/>
     </body>
@@ -42,19 +44,19 @@
   <keyframe>
     <key name="task_home"
       qpos="0 -2.0 1.6 -1.6 -1.5 0 0.0125 0.0125
-            0.4 0 0.02
+            0.34 0 0.02
             1 0 0 0"
       ctrl="0 -2.0 1.6 -1.6 -1.5 0  0.025"/>
 
     <key name="low_home"
       qpos="0 -1.7 2.25 -2.15 -1.5 -1.5  0 0
-            0.3 0 0.02
+            0.34 0 0.02
             1 0 0 0"
       ctrl="0 -1.7 2.25 -2.15 -1.5 -1.5  0"/>
 
     <key name="tucked"
       qpos="0 -2.36 2.36 -1.57 -1.57 0  0 0
-            0.3 0 0.02
+            0.34 0 0.02
             1 0 0 0"
       ctrl="0 -2.36 2.36 -1.57 -1.57 0  0"/>
   </keyframe>

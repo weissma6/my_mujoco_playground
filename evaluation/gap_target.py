@@ -35,27 +35,35 @@ bug in ur3_pick.py -- the env's randomness is correct and intentional; it is
 the protocol's job to freeze a specific draw from it, the same way Commit 5
 freezes one draw from the arm-pose distribution.
 
-`side`'s independent randomness is real, not an oversight to "fix" here
+`side` used to be real, uncontrolled randomness in the trained L0 -- D18 (2026-
+07-29) now FREEZES it for the eval-time profile
 --------------------------------------------------------------------------
-Note that even the DR-ladder's "fully deterministic" L0_none/LOO_no_pos
-config (box_xy_jitter=0, target_azim_min==target_azim_max) still draws `side`
-independently -- so L0's target position is not actually a single point, it
-is one of two mirror-image points, chosen randomly per training episode. This
-module reproduces that faithfully (freezing one of the two per protocol
-episode) rather than "fixing" it, because Commit 6/7's job is to replicate
-the trained distribution, not correct it.
+Historically, even the DR-ladder's "fully deterministic" L0_none config
+(box_xy_jitter=0, target_azim_min==target_azim_max) still drew `side`
+independently in ur3_pick.py's TRAINING reset() -- so L0's TRAINED target
+position was not actually a single point, it was one of two mirror-image
+points, chosen randomly per training episode. That training-time randomness
+is real and is NOT touched by this module (ur3_pick.py's reset() is
+unchanged) -- see the vault plan's open-items footnote on this.
+
+D18 (2026-07-29) separately decided that the EVAL/real-protocol side of this
+-- i.e. what THIS module freezes per protocol episode -- must pin `side` to a
+single fixed value for the "L0_deterministic" profile (`freeze_side=True`),
+because L0's real-robot target must be reproducibly the ONE eval drop point
+(D22: r=0.30, azim=45 deg, z=table+0.07), not a coin flip between two mirror
+points every time the protocol runs. The "default" profile (L1..L4) keeps
+drawing `side` per protocol episode exactly as before -- only L0 is frozen.
 
 Why only TWO target profiles cover every real-robot-bound config
 --------------------------------------------------------------------------
 target_r_min/max, target_azim_min/max, target_z_jitter are untouched by every
-DR-ladder line except L0_none and LOO_no_pos (see gen_dr_ladder.py's
-_DETERMINISTIC_POSITION) -- L1_pos..L5_full_obs and LOO_no_cube/robot/env all
-inherit the SAME baked ur3_pick.default_config() ranges. The plan's
-"Real-robot budget" only sends L0_none..L5_full_obs to the robot (LOO stays
-sim-only) -- so exactly two profiles are ever needed on real hardware:
-"L0_deterministic" (L0_none) and "default" (L1..L5). Both ranges are IMPORTED
-from their single source of truth below, never re-typed as literals -- typing
-them again here is exactly the mistake that cost 30 GPU-runs today (b170af5).
+DR-ladder line except L0_none (see gen_dr_ladder.py's _DETERMINISTIC_POSITION)
+-- L1_pos..L4_full all inherit the SAME baked ur3_pick.default_config()
+ranges (D21 dropped the LOO block entirely). So exactly two profiles are ever
+needed on real hardware: "L0_deterministic" (L0_none) and "default"
+(L1_pos..L4_full). Both ranges are IMPORTED from their single source of truth
+below, never re-typed as literals -- typing them again here is exactly the
+mistake that cost 30 GPU-runs today (b170af5).
 
 Why components are frozen ONCE per (protocol, episode, profile), not redrawn
 per repeat
@@ -85,10 +93,10 @@ Verified (see this module's __main__ smoke test): compute_target_pos's numpy
 port of the base_polar formula reproduced against a jax.numpy port of the
 SAME formula (independent re-derivation from ur3_pick.py's reset() lines,
 not copy-pasted) agrees to float32 precision across 200 random draws.
-base_xy=(0,0) and the task_home box anchor (0.4, 0, 0.02) are READ from the
-scene XML via plain `mujoco` (mirroring evaluation/ur3_reward_replay.SimFK's
-convention), never hardcoded, so a scene change cannot silently desync this
-module from the env.
+base_xy=(0,0) and the task_home box anchor (D18, 2026-07-29: shifted
+0.30/0.40 -> 0.34, 0, 0.02) are READ from the scene XML via plain `mujoco`
+(mirroring evaluation/ur3_reward_replay.SimFK's convention), never hardcoded,
+so a scene change cannot silently desync this module from the env.
 """
 
 import dataclasses
@@ -127,17 +135,14 @@ DEFAULT_XML = os.path.join(
 # config other than no_pos) inherits the SAME baked defaults. See the module
 # docstring for why this is exhaustive over every config the plan ever sends
 # to the real robot.
+# D21 (2026-07-29): the ladder is now 5 configs (LOO block dropped, L5_full_obs
+# absorbed into L4_full) -- see batch_runs/sweeps/gen_dr_ladder.py.
 CONFIG_TO_PROFILE = {
     "L0_none": "L0_deterministic",
     "L1_pos": "default",
     "L2_pos_cube": "default",
     "L3_pos_cube_robot": "default",
     "L4_full": "default",
-    "L5_full_obs": "default",
-    "LOO_no_pos": "L0_deterministic",
-    "LOO_no_cube": "default",
-    "LOO_no_robot": "default",
-    "LOO_no_env": "default",
 }
 
 
@@ -152,7 +157,7 @@ class TargetProfile:
 
 
 def _default_profile() -> TargetProfile:
-    """"default" profile -- L1_pos..L5_full_obs, LOO_no_{cube,robot,env}.
+    """"default" profile -- L1_pos..L4_full (D21's 5-config ladder).
 
     Values read from ur3_pick.default_config() at import time -- if that
     default ever changes, this profile changes with it automatically.
@@ -169,7 +174,7 @@ def _default_profile() -> TargetProfile:
 
 
 def _l0_profile() -> TargetProfile:
-    """"L0_deterministic" profile -- L0_none, LOO_no_pos.
+    """"L0_deterministic" profile -- L0_none (the only config using it, D21).
 
     Values read from gen_dr_ladder._DETERMINISTIC_POSITION -- the actual dict
     written into those sweep lines -- not re-derived here.
@@ -218,7 +223,16 @@ def sample_target_components(
     seed = int.from_bytes(hashlib.sha256(seed_str.encode("utf-8")).digest()[:8], "big")
     rng = np.random.default_rng(seed)
     dphi = float(rng.uniform(profile.target_azim_min, profile.target_azim_max))
-    side = float(np.sign(rng.uniform(-1.0, 1.0)))
+    # D18 (2026-07-29): freeze `side` for the L0_deterministic profile. L0's
+    # fixed target must equal the D22 eval drop point EXACTLY (r=0.30,
+    # azim=45deg) -- with a randomly-drawn side, L0 would still flip between
+    # two mirror-image points (see this module's docstring), which is no
+    # longer acceptable now that L0 has to reproduce one specific eval point.
+    # Every other profile ("default") keeps drawing side randomly, unchanged.
+    if profile_name == "L0_deterministic":
+        side = 1.0
+    else:
+        side = float(np.sign(rng.uniform(-1.0, 1.0)))
     r = float(rng.uniform(profile.target_r_min, profile.target_r_max))
     target_z_draw = float(
         rng.uniform(profile.target_z_jitter[0], profile.target_z_jitter[1])
