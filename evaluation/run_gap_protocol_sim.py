@@ -134,14 +134,24 @@ from policy_downloader import default_policy_dir, download_policy  # noqa: E402
 WANDB_ENTITY = "weissma6-zhaw-school-of-engineering"
 WANDB_PROJECT = "UR3_pick_ppo"
 
-# D17: exact geometry (confirmed 2026-07-22, see the plan's D17). "3cm" is the
-# sim's existing nominal box (Cube A, 3x3x4 cm) -- passing it through
+# D17 geometry (confirmed 2026-07-22), RETIRED as an OOD probe by D19
+# (2026-07-29): cube size is no longer a single scale factor with a hard
+# graspability clamp the 4cm cube sat outside of. domain_rand.cube_size_xy /
+# cube_size_z now draw INDEPENDENT ABSOLUTE half-extents spanning 2x2x3 cm to
+# 4x4x4 cm (and _dr_max_box_half_xy was raised 0.018 -> 0.020 to admit the top
+# of that range -- see ur3_pick.py), so "4cm" below is IN-distribution DR now,
+# not an extrapolation test. It reappears as D22/D23 Block E: a same-
+# distribution real-robot check.
+# "3cm" is the sim's nominal box (Cube A, 3x3x4 cm) -- passing it through
 # reset_to_state's cube_half_extents override is a NO-OP vs. not passing an
-# override at all, since it equals the model's baked nominal size. "4cm" is
-# Cube B (4x4x4 cm), the deliberate OOD probe -- +33% cross-section, outside
-# even the training-time _dr_max_box_half_xy=0.018 graspability clamp. Both
-# physical cubes are 4cm tall and share a mocap-rig centre (D17), so z stays
-# 0.02 for both -- only x,y differ.
+# override at all, since it equals the model's baked nominal size. Both
+# physical cubes are 4 cm tall and share a mocap-rig centre (D17), so z stays
+# 0.02 for both -- only x,y differ. This dict already stored independent xy/z
+# half-extents (it never was a single scalar), so D19 needed no structural
+# change here beyond this note.
+# NOTE the grouping discipline is UNCHANGED by D19: 3cm and 4cm remain
+# different physical conditions and must never be averaged together -- see
+# evaluation/gap_metrics.py's _filter_cube_size.
 CUBE_HALF_EXTENTS = {
     "3cm": (0.015, 0.015, 0.02),
     "4cm": (0.020, 0.020, 0.020),
@@ -285,6 +295,18 @@ def rollout_one(env, inference_fn, rng, arm_qpos, finger, box_pos, box_quat,
     pattern as ur3_reward_replay.sim_rollout_reward), plus box_target_dist/
     success/reward_total. Never checks `done` -- see the module docstring's
     "Fixed horizon" note.
+
+    D22 (2026-07-29) -- NO drop and NO landed-pose logging here, BY DESIGN.
+    After its H-step loop the REAL runner (robots/UR3e/run_gap_protocol.py)
+    opens the gripper, waits --drop_settle_s, reads the landed box pose off
+    mocap and scores it with evaluation.gap_metrics.place_error. This sim
+    mirror deliberately does none of that: it runs the fixed H steps and
+    stops. That is an expected real<->sim ASYMMETRY, not an omission --
+    place_error measures where a physically dropped cube came to rest, which
+    only exists on real hardware; there is no sim-side equivalent to compute,
+    and this function does not fabricate one. (place_error is also kept
+    strictly out of R_real / retention / noise_floor / sim_selection_regret in
+    gap_metrics.py, so nothing downstream expects a sim counterpart either.)
 
     `cube_half_extents` (D17): optional (3,) box geom half-extents override,
     forwarded verbatim to `env.reset_to_state` -- None (the default, and
