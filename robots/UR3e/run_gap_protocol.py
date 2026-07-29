@@ -432,27 +432,23 @@ def between_run_reset(robot, gripper, brake_wait_s: float) -> None:
     window, then open the gripper. Steps 4-6 (moveJ, cube prompt, settle +
     mocap read) are the top of the NEXT `run_episode_repeat` call.
 
-    D22 (2026-07-29) drop mechanism: this `gripper.open_gripper()` call,
-    which already ran here for D16's safety-window purpose, IS the D22 drop
-    -- the policy carries the cube into the eval target (D22's drop point
-    sits inside the trained target_z_jitter range, see D18) and this call
-    releases it with zero scripted arm motion, after which the cube falls
-    ~50 mm onto the taped square. NOTE (judgment call, flagged rather than
-    silently reordered): D16's existing sequence opens the gripper AFTER the
-    `brake_wait_s` window, not immediately when the H-step loop ends -- so
-    the cube is held ~`brake_wait_s` longer than D22's "drop right away"
-    framing literally implies before the D22 10 s reset window starts. Left
-    as-is here (not reordered) because this is tested real-robot control
-    flow this change cannot verify locally (no robot access) -- if Matthias
-    wants the drop to happen BEFORE the brake wait instead, swap the two
-    lines below.
+    NOT the D22 drop mechanism -- see `run_episode_repeat`'s D22 block
+    (right after `run_policy_loop` returns) for that. This function's
+    `gripper.open_gripper()` is D16's PRE-EXISTING safety-window open (clear
+    a protective stop / release the arm brakes before the next moveJ), which
+    runs AFTER `brake_wait_s` on every schedule entry regardless of
+    stop_reason. By the time this runs, the D22 drop (if the just-finished
+    episode completed) has already happened and been scored -- this call is
+    a harmless no-op on an already-open gripper in that case, and is still
+    needed as-is for an ABORTED episode (D22 does not attempt a drop there,
+    so the gripper may still be closed on the cube).
     """
     print(
         f"\n--- Reset window: waiting {brake_wait_s:.0f}s -- clear any "
         f"protective stop / release the arm brakes now if needed ---"
     )
     time.sleep(brake_wait_s)
-    gripper.open_gripper()  # D22 drop mechanism -- see docstring above.
+    gripper.open_gripper()
     print("--- Gripper opened. Moving to the next run. ---")
 
 
