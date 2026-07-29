@@ -8,13 +8,16 @@ bookkeeping (achieved_hz, overrun_count, stop_reason, protocol_hash).
 rows; a term's stage is fixed by STAGE_MAP.
 
 `cube_size` (D17, "3cm"/"4cm") is a grouping key like `config_id`, NOT an
-axis to average over: 3cm is the in-distribution probe, 4cm is a deliberate
-OOD probe (outside even the training-time size-DR clamp), and averaging the
-two together would silently blend an in-distribution result with an OOD one.
+axis to average over. D19 (2026-07-29) RETIRES the D17 framing of 4cm as an
+OOD probe -- cube size is now DR-covered in-distribution (domain_rand.
+cube_size_xy/cube_size_z span 2x2x3cm..4x4x4cm) and 4cm reappears as D22/D23
+Block E, a same-distribution real-robot check, not extrapolation. The
+grouping discipline below is UNCHANGED regardless: 3cm and 4cm are still
+different physical conditions and must never be silently averaged together.
 Every function below that pools rows into a mean therefore takes an optional
 `cube_size=` filter, and REFUSES to run (raises) if the input has more than
 one distinct `cube_size` and the caller did not pin one -- see
-`_filter_cube_size`. This is the code-level enforcement of D17's "3cm and 4cm
+`_filter_cube_size`. This is the code-level enforcement of "3cm and 4cm
 must always be reported/grouped separately, never averaged together".
 
 Deliberate NON-features (this project's primary result is a LEVEL SHIFT between
@@ -489,6 +492,49 @@ def gate_against_noise_floor(value, ci, floor):
 
 
 # ===========================================================================
+# D22 (2026-07-29) -- drop-in-square eval metric.
+#
+# Deliberately a SEPARATE, self-contained metric from R_real/the gap scoring
+# above: place_error scores where the box LANDED after the D22 eval drop
+# (policy carries the cube to the eval target, the eval script opens the
+# gripper, the box falls ~50 mm into a taped square). It has nothing to do
+# with scaled_return_H/the reward-gap machinery and must never be blended
+# into retention/noise_floor/sim_selection_regret -- report it on its own.
+# ===========================================================================
+
+# D22 drop square: 15x15 cm taped, centred at base-frame (0.212, 0.212) on
+# the table; half-width 0.075 m.
+DROP_SQUARE_CENTER = (0.212, 0.212)
+DROP_SQUARE_HALF_WIDTH = 0.075
+
+
+def place_error(landed_xy, square_center=DROP_SQUARE_CENTER,
+                 half_width=DROP_SQUARE_HALF_WIDTH):
+    """D22: how far the dropped box landed from the taped square's centre.
+
+    Args:
+      landed_xy: (x, y) world/base-frame metres of the landed box centre
+        (from a post-drop mocap read -- NOT the commanded/lift target).
+      square_center: (x, y) metres, taped-square centre. Defaults to the D22
+        eval drop square (0.212, 0.212).
+      half_width: metres, half the square's side length. Defaults to 0.075
+        (15 cm square).
+
+    Returns:
+      (distance, in_square): euclidean distance (m) from landed_xy to
+      square_center, and a bool for whether landed_xy falls inside the
+      square (an AXIS-ALIGNED box check using half_width, not a circle --
+      matches how the square is actually taped on the table).
+    """
+    lx, ly = float(landed_xy[0]), float(landed_xy[1])
+    cx, cy = float(square_center[0]), float(square_center[1])
+    dx, dy = lx - cx, ly - cy
+    distance = float((dx * dx + dy * dy) ** 0.5)
+    in_square = abs(dx) <= half_width and abs(dy) <= half_width
+    return distance, bool(in_square)
+
+
+# ===========================================================================
 # Synthetic long-format data (shared with the plots' --demo and the selftest)
 # ===========================================================================
 
@@ -822,6 +868,18 @@ def _selftest():
     assert gate_against_noise_floor(10.0, (6.0, 14.0), floor=5.0) == "reportable"
     assert gate_against_noise_floor(3.0, (-1.0, 7.0), floor=5.0) == "within_noise_floor"
     assert gate_against_noise_floor(-10.0, (-14.0, -6.0), 5.0) == "reportable"
+    print("OK")
+
+    # ---- D22 place_error sanity ----
+    print("place_error ...", end=" ")
+    d0, in0 = place_error(DROP_SQUARE_CENTER)
+    assert d0 == 0.0 and in0, (d0, in0)
+    d1, in1 = place_error((0.212 + 0.075, 0.212))  # exactly on the edge
+    assert abs(d1 - 0.075) < 1e-9 and in1, (d1, in1)
+    d2, in2 = place_error((0.212 + 0.10, 0.212))  # outside in x
+    assert abs(d2 - 0.10) < 1e-9 and not in2, (d2, in2)
+    d3, in3 = place_error((0.212 + 0.03, 0.212 - 0.04))  # 3-4-5 triangle, inside
+    assert abs(d3 - 0.05) < 1e-9 and in3, (d3, in3)
     print("OK")
 
     print("\nSELFTEST OK (no MJX, no robot, no correlation, no normalisation).")

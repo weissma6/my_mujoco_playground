@@ -127,6 +127,28 @@ evaluation/run_gap_protocol_sim.py call the SAME function, so a real run and
 its sim counterpart can never disagree about which target they were scored
 against.
 
+D22 (2026-07-29) -- eval drop mechanic
+--------------------------------------------------------------------------
+The policy performs the ENTIRE pick-and-place, including the drop -- this
+only works because D18 widened target_z_jitter down to U(0.07, 0.21), so the
+eval target (D18's C0_none / L0_none target: r=0.30, azim=45deg,
+z=table+0.07) sits INSIDE the trained distribution rather than below it.
+Immediately after the fixed H=400-step policy loop ends (`run_policy_loop`
+above), and ONLY if the run completed all H steps, THIS SCRIPT (not the
+policy, no scripted arm motion) opens the gripper -- see the
+`gripper.open_gripper()` / `place_error(...)` block right after that call --
+so the carried cube drops ~50mm into the 15x15cm taped square centred at
+base-frame (0.212, 0.212). After `--drop_settle_s` (default 1.5s, lets the
+fall/bounce settle), the landed pose is read off mocap and scored with
+`evaluation.gap_metrics.place_error` (distance + in-square bool), written to
+ur3_pick_meta.json as landed_box_xy/place_error_m/place_in_square. This is
+DELIBERATELY a separate metric from R_real/the reward-gap scoring in
+gap_metrics.py -- never mixed into retention/noise_floor/sim_selection_regret.
+This is NOT the same gripper-open as `between_run_reset`'s step 3 (D16,
+releasing the arm brakes between episodes) -- that one still runs
+unconditionally after every episode, complete or aborted; the D22 open here
+is the scored drop and only fires on a completed run.
+
 Loop-mechanics knobs (action_scale, gripper_action_scale, servoJ gains, ...)
 --------------------------------------------------------------------------
 Read from ur3_pick.default_config(), overridden per the DR-ladder sweep's
@@ -184,6 +206,7 @@ from policy_downloader import default_policy_dir, download_policy  # noqa: E402
 
 from evaluation.protocols import load_protocol  # noqa: E402
 from evaluation import gap_target  # noqa: E402
+from evaluation.gap_metrics import place_error  # noqa: E402  -- D22 drop metric
 from mujoco_playground._src.manipulation.my_ur3 import ur3_pick  # noqa: E402
 from batch_runs.sweeps.gen_dr_ladder import _CONFIGS as _LADDER_CONFIGS  # noqa: E402
 
@@ -408,13 +431,28 @@ def between_run_reset(robot, gripper, brake_wait_s: float) -> None:
     """D16 steps 1-3: (error already caught by the caller) wait for the brake
     window, then open the gripper. Steps 4-6 (moveJ, cube prompt, settle +
     mocap read) are the top of the NEXT `run_episode_repeat` call.
+
+    D22 (2026-07-29) drop mechanism: this `gripper.open_gripper()` call,
+    which already ran here for D16's safety-window purpose, IS the D22 drop
+    -- the policy carries the cube into the eval target (D22's drop point
+    sits inside the trained target_z_jitter range, see D18) and this call
+    releases it with zero scripted arm motion, after which the cube falls
+    ~50 mm onto the taped square. NOTE (judgment call, flagged rather than
+    silently reordered): D16's existing sequence opens the gripper AFTER the
+    `brake_wait_s` window, not immediately when the H-step loop ends -- so
+    the cube is held ~`brake_wait_s` longer than D22's "drop right away"
+    framing literally implies before the D22 10 s reset window starts. Left
+    as-is here (not reordered) because this is tested real-robot control
+    flow this change cannot verify locally (no robot access) -- if Matthias
+    wants the drop to happen BEFORE the brake wait instead, swap the two
+    lines below.
     """
     print(
         f"\n--- Reset window: waiting {brake_wait_s:.0f}s -- clear any "
         f"protective stop / release the arm brakes now if needed ---"
     )
     time.sleep(brake_wait_s)
-    gripper.open_gripper()
+    gripper.open_gripper()  # D22 drop mechanism -- see docstring above.
     print("--- Gripper opened. Moving to the next run. ---")
 
 
@@ -549,6 +587,36 @@ def run_episode_repeat(
     )
     df_final.to_csv(os.path.join(out_dir, "ur3_pick_states.csv"), index=False)
 
+    # D22 (2026-07-29): the eval "drop" mechanism -- the policy carries the
+    # cube through the fixed H=400 steps to the eval target (D18 widened
+    # target_z_jitter down to U(0.07, 0.21) specifically so this target sits
+    # INSIDE the trained distribution); once the loop ends, THIS SCRIPT (not
+    # the policy) opens the gripper so the cube drops ~50mm into the taped
+    # square below. Zero scripted arm motion -- see the module docstring's
+    # D22 note. Only attempted for a run that actually completed all H
+    # steps: an aborted episode (mocap loss / hang / robot error) may not
+    # even have the cube grasped, so scoring a "drop" there would be
+    # meaningless -- landed_box_xy/place_error_m/place_in_square stay None.
+    landed_box_xy = None
+    place_error_m = None
+    place_in_square = None
+    if stop_reason == "complete":
+        print("  D22: opening gripper (scripted drop into the taped square) ...")
+        gripper.open_gripper()
+        time.sleep(args.drop_settle_s)  # let the ~50mm fall/bounce settle
+        landed_xyz, _landed_quat = mocap.get_rigid_body_pose()
+        landed_box_xy = (float(landed_xyz[0]), float(landed_xyz[1]))
+        place_error_m, place_in_square = place_error(landed_box_xy)
+        print(
+            f"  D22 place_error: {place_error_m * 1000:.1f} mm "
+            f"(in_square={place_in_square}), landed_xy={landed_box_xy}"
+        )
+    else:
+        print(
+            f"  D22: skipped scripted drop -- stop_reason={stop_reason!r} "
+            "(not a completed run)."
+        )
+
     meta = {
         "protocol_id": protocol.protocol_id,
         "poses_sha256": protocol.poses_sha256,
@@ -572,6 +640,13 @@ def run_episode_repeat(
         "actual_steps_used": len(df_final),
         "protocol_complete": stop_reason == "complete",
         "note": note,
+        # D22 -- NEW: scripted-drop outcome (None/None/None if the run did
+        # not complete all H steps, see above). Kept clearly separate from
+        # the reward-gap columns (gap_metrics.py never reads these).
+        "landed_box_xy": landed_box_xy,
+        "place_error_m": place_error_m,
+        "place_in_square": place_in_square,
+        "drop_settle_s": args.drop_settle_s,
         "achieved_hz": stats.get("mean_loop_hz_true", float("nan")),
         "overrun_count": stats.get("num_overruns", None),
         "control_hz_requested": args.control_hz,
@@ -959,6 +1034,11 @@ def _build_argparser():
     ap.add_argument("--brake_wait_s", type=float, default=DEFAULT_BRAKE_WAIT_S,
                     help="D16: window between episodes to clear a protective "
                          "stop / release the arm brakes.")
+    ap.add_argument("--drop_settle_s", type=float, default=1.5,
+                    help="D22: pause after the D22 gripper-open drop, before "
+                         "reading the landed box pose off mocap -- lets the "
+                         "~50mm fall/bounce settle so place_error isn't scored "
+                         "against a box still in mid-air/mid-bounce.")
     return ap
 
 
