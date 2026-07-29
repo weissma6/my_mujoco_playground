@@ -365,14 +365,141 @@ def cube_prompt_message(cube_size: str, other_cube_size: str, marker: str,
     )
 
 
-def run_dir(out_root, config_id, protocol_id, episode_id, repeat, cube_size):
+# ===========================================================================
+# D23 test board (2026-07-29) -- supersedes D17's 10-pose x 2-cube full cross.
+#
+# 9 physical CONDITIONS, not 10 arm poses. The old campaign varied the ARM
+# start pose per episode and crossed it with 2 cubes (240 runs). D23 instead
+# varies what actually stresses transfer -- where the cube sits, how it is
+# turned, what it sits ON -- and holds the rest fixed:
+#
+#   A (3x) workspace baseline : P1/P2/P3, flat 95 mm table, 3 cm cube, yaw 0
+#   B (2x) rotation           : P1/P3, yaw 45 deg
+#   C (1x) tilt               : P2, ~5 deg wedge
+#   D (1x) lifter height      : P2, 55 mm block on the table (-> 150 mm top)
+#   E (2x) cube size          : P1/P3, the 4x4x4 cm cube
+#
+# 9 conditions x 3 repeats x 5 policies = 135 runs (~1.9 h). See the vault
+# plan's D23. `episode_id` still indexes the frozen protocol artifact for the
+# ARM start pose (reachable by construction, hash-verified) -- the conditions
+# do not invent arm poses, they only re-specify the cube.
+#
+# `yaw` is measured from the operator's own X/Y+ mark on the cube (2026-07-29:
+# Matthias marked both cubes physically). The policy cannot perceive yaw
+# anyway on a square cross-section -- the obs uses max|axis . box_axis| with
+# abs, so 0/90/180/270 deg are indistinguishable BY CONSTRUCTION -- but the
+# mocap rigid body can, and the sim mirror replays box_quat exactly, so the
+# placement still has to be repeatable and recorded.
+# ===========================================================================
+
+D23_BOARD = [
+    dict(condition_id="A1", episode_id=0, marker="P1", cube_size="3cm",
+         yaw_deg=0,  lifter="none", tilt="flat"),
+    dict(condition_id="A2", episode_id=1, marker="P2", cube_size="3cm",
+         yaw_deg=0,  lifter="none", tilt="flat"),
+    dict(condition_id="A3", episode_id=2, marker="P3", cube_size="3cm",
+         yaw_deg=0,  lifter="none", tilt="flat"),
+    dict(condition_id="B1", episode_id=3, marker="P1", cube_size="3cm",
+         yaw_deg=45, lifter="none", tilt="flat"),
+    dict(condition_id="B2", episode_id=4, marker="P3", cube_size="3cm",
+         yaw_deg=45, lifter="none", tilt="flat"),
+    dict(condition_id="C1", episode_id=5, marker="P2", cube_size="3cm",
+         yaw_deg=0,  lifter="none", tilt="~5 deg wedge, low edge toward robot"),
+    dict(condition_id="D1", episode_id=6, marker="P2", cube_size="3cm",
+         yaw_deg=0,  lifter="55 mm block (top ~150 mm)", tilt="flat"),
+    dict(condition_id="E1", episode_id=7, marker="P1", cube_size="4cm",
+         yaw_deg=0,  lifter="none", tilt="flat"),
+    dict(condition_id="E2", episode_id=8, marker="P3", cube_size="4cm",
+         yaw_deg=0,  lifter="none", tilt="flat"),
+]
+
+_D23_BY_ID = {c["condition_id"]: c for c in D23_BOARD}
+
+
+def build_d23_schedule(configs, repeats, conditions=None):
+    """D23 campaign order: CONDITION outermost, then policy, then repeat.
+
+    Rationale: the expensive thing is the PHYSICAL setup (moving a wedge,
+    stacking a lifter block, swapping cubes), not loading a checkpoint. With
+    condition outermost you rig 9 times total instead of 135. Policy stays
+    interleaved *within* a condition, which is what D16's ordering tip
+    actually cares about -- it de-confounds policy against session time
+    (mocap drift, lighting, operator fatigue all track the clock).
+    """
+    board = [_D23_BY_ID[c] for c in conditions] if conditions else list(D23_BOARD)
+    entries = []
+    for cond in board:
+        for cfg in configs:
+            for rep in range(1, repeats + 1):
+                entries.append(dict(
+                    condition_id=cond["condition_id"],
+                    episode_id=cond["episode_id"],
+                    config_id=cfg,
+                    repeat=rep,
+                    cube_size=cond["cube_size"],
+                    marker=cond["marker"],
+                    yaw_deg=cond["yaw_deg"],
+                    lifter=cond["lifter"],
+                    tilt=cond["tilt"],
+                ))
+    return entries
+
+
+def format_condition_banner(entry, prev_entry, run_idx, total):
+    """The operator-facing placement banner (D23).
+
+    Every field that CHANGED since the previous run is flagged, because that
+    is precisely where placement mistakes happen -- an unchanged field is
+    read past, a changed one needs action. A run that changes nothing but the
+    repeat counter says so explicitly rather than showing a wall of text that
+    looks identical to the last one.
+    """
+    def mark(key):
+        if prev_entry is None:
+            return ""
+        return "   <== CHANGED" if entry[key] != prev_entry[key] else ""
+
+    cube_txt = {"3cm": "3 cm  (3x3x4 cm)", "4cm": "4 cm  (4x4x4 cm)"}.get(
+        entry["cube_size"], entry["cube_size"])
+    other = next((c for c in CUBE_SIZES if c != entry["cube_size"]),
+                 entry["cube_size"])
+
+    lines = [
+        "",
+        "=" * 78,
+        f"  RUN {run_idx}/{total}      condition {entry['condition_id']}"
+        f"      policy {entry['config_id']}      repeat {entry['repeat']}",
+        "-" * 78,
+        f"  Field:      {entry['marker']}{mark('marker')}",
+        f"  Cube:       {cube_txt}{mark('cube_size')}",
+        f"  Yaw:        {entry['yaw_deg']} deg   "
+        f"(from your X/Y+ mark on the cube){mark('yaw_deg')}",
+        f"  Lifter:     {entry['lifter']}{mark('lifter')}",
+        f"  Tilt:       {entry['tilt']}{mark('tilt')}",
+        "-" * 78,
+        f"  Remove the {other} cube from the mocap volume "
+        f"(shared CubeInCube2 body).",
+        "=" * 78,
+    ]
+    return "\n".join(lines)
+
+
+def run_dir(out_root, config_id, protocol_id, episode_id, repeat, cube_size,
+            condition_id=None):
     """D17: cube_size is part of the folder key. Without it a 3cm and a 4cm
     run of the same (config, episode, repeat) collide and resume silently
     skips one of them.
+
+    D23: `condition_id` joins the key when running the board. Two conditions
+    can share a marker AND a cube and differ only in yaw/tilt/lifter (e.g.
+    A1 vs B1, both P1 + 3cm, 0 vs 45 deg). Keyed on episode alone those would
+    collide and resume would silently skip one -- the same class of bug D17
+    fixed for cube_size.
     """
-    return os.path.join(
-        out_root, config_id, protocol_id, f"ep{episode_id}_rep{repeat}_{cube_size}"
-    )
+    leaf = f"ep{episode_id}_rep{repeat}_{cube_size}"
+    if condition_id is not None:
+        leaf = f"{condition_id}_{leaf}"
+    return os.path.join(out_root, config_id, protocol_id, leaf)
 
 
 def _finalize_run(df: pd.DataFrame, horizon: int, loop_stopped_reason: str):
@@ -769,7 +896,8 @@ def _execute_schedule(schedule, args, protocol, episodes_by_id, config_ctx):
     last_cube_size = None
     completed = 0
     try:
-        for entry in schedule:
+        prev_entry = None
+        for run_idx, entry in enumerate(schedule, start=1):
             cid, eid, rep, cube = (
                 entry["config_id"], entry["episode_id"], entry["repeat"],
                 entry["cube_size"],
@@ -781,7 +909,14 @@ def _execute_schedule(schedule, args, protocol, episodes_by_id, config_ctx):
                 loaded_config = cid
             cube_changed = last_cube_size is not None and cube != last_cube_size
             other_cube = next((c for c in CUBE_SIZES if c != cube), cube)
-            out_dir = run_dir(args.out_root, cid, protocol.protocol_id, eid, rep, cube)
+            # D23: print the full placement banner before anything moves, so
+            # the operator sees the setup for THIS run (and what changed since
+            # the last one) while the arm is still parked.
+            if "condition_id" in entry:
+                print(format_condition_banner(
+                    entry, prev_entry, run_idx, len(schedule)))
+            out_dir = run_dir(args.out_root, cid, protocol.protocol_id, eid, rep,
+                              cube, entry.get("condition_id"))
 
             try:
                 ok = run_episode_repeat(
@@ -805,6 +940,7 @@ def _execute_schedule(schedule, args, protocol, episodes_by_id, config_ctx):
                       "this one -- its folder was not fully written).")
 
             last_cube_size = cube
+            prev_entry = entry
             # D16 steps 1-3 (error already caught above): brake window, then
             # open the gripper. Steps 4-6 happen at the top of the next loop
             # iteration's run_episode_repeat call.
@@ -890,21 +1026,38 @@ def run_campaign(args):
     repeats = args.repeats or protocol.real_repeats
     cube_sizes = args.cube_sizes or list(CUBE_SIZES)
 
-    print(f"Campaign: {len(configs)} configs x {len(episode_ids)} episodes x "
-          f"{repeats} repeats x {len(cube_sizes)} cube size(s) = "
-          f"{len(configs) * len(episode_ids) * repeats * len(cube_sizes)} runs "
-          f"(order={args.order}).")
+    if args.board == "d23":
+        # D23 (2026-07-29): 9 physical conditions, condition-outermost.
+        full_schedule = build_d23_schedule(configs, repeats, args.conditions)
+        n_cond = len(args.conditions) if args.conditions else len(D23_BOARD)
+        print(f"Campaign (D23 board): {n_cond} conditions x {len(configs)} "
+              f"policies x {repeats} repeats = {len(full_schedule)} runs.")
+        print("  Order: condition outermost -- you rig each physical setup "
+              f"ONCE ({n_cond} setups total), all policies run back-to-back.")
+        missing = set(e["episode_id"] for e in full_schedule) - set(episodes_by_id)
+        if missing:
+            raise SystemExit(
+                f"D23 board references episode_id(s) {sorted(missing)} that the "
+                f"protocol artifact does not contain. The board uses protocol "
+                f"episodes only for their frozen ARM start pose -- either the "
+                f"wrong protocol is loaded, or D23_BOARD needs remapping.")
+    else:
+        full_schedule = build_campaign_schedule(
+            sorted(episode_ids), configs, repeats, cube_sizes, args.order
+        )
+        print(f"Campaign (legacy D17 cross): {len(configs)} configs x "
+              f"{len(episode_ids)} episodes x {repeats} repeats x "
+              f"{len(cube_sizes)} cube size(s) = {len(full_schedule)} runs "
+              f"(order={args.order}).")
 
     config_ctx = _resolve_config_ctx(
         configs, override_action_scale=args.action_scale)
 
-    full_schedule = build_campaign_schedule(
-        sorted(episode_ids), configs, repeats, cube_sizes, args.order
-    )
     pending = []
     for entry in full_schedule:
         out_dir = run_dir(args.out_root, entry["config_id"], protocol.protocol_id,
-                          entry["episode_id"], entry["repeat"], entry["cube_size"])
+                          entry["episode_id"], entry["repeat"], entry["cube_size"],
+                          entry.get("condition_id"))
         if os.path.exists(out_dir) and not args.force:
             continue
         pending.append(entry)
@@ -943,6 +1096,15 @@ def _build_argparser():
                     help="D17: which physical cube size(s) to run; default = "
                          "both (full cross). Pass a single size (e.g. '3cm') "
                          "for the Commit-6 pilot / a 3cm-only backfill.")
+    ap.add_argument("--board", choices=["d23", "legacy"], default="d23",
+                    help="d23 (default): the 9-condition test board -- 3 workspace "
+                         "baselines, 2 yaw, 1 tilt, 1 lifter, 2 cube-size, x repeats "
+                         "x policies (135 runs at 3 repeats / 5 policies). "
+                         "legacy: D17's episode x cube full cross (240 runs).")
+    ap.add_argument("--conditions", nargs="+", default=None,
+                    metavar="ID",
+                    help="D23 board only: run just these condition ids "
+                         "(e.g. --conditions A1 A2 A3). Default: all 9.")
     ap.add_argument("--order", choices=["episode_major", "policy_major"],
                     default="episode_major",
                     help="D16/D17 campaign ordering; default episode_major "
