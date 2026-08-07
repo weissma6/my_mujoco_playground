@@ -1,0 +1,21 @@
+\begin{table}[h]
+\centering
+\caption{Aborted real trials per configuration and cube, as aborted/attempted. An abort is a protective stop, RTDE error, mocap loss or hang-watchdog trip; simulation never aborts. $L0$ never closes the gripper, so it cannot fail a grasp -- its 4\,cm column is not evidence of robustness.}
+\label{tab:abort}
+\begin{tabular}{lcc}
+\hline
+\textbf{Configuration} & \textbf{3\,cm cube} & \textbf{4\,cm cube} \\
+\hline
+L0 (none) & 7/21 & 0/6 \\
+L1 (pos) & 4/21 & 6/6 \\
+L2 (pos+cube) & 0/21 & 4/6 \\
+L3 (pos+cube+robot) & 8/21 & 6/6 \\
+L4 (full) & 6/21 & 3/6 \\
+\hline
+\end{tabular}
+
+\vspace{2pt}
+\begin{minipage}{0.95\linewidth}
+\footnotesize Jaw opening is 49.9~mm (\texttt{mujoco\_playground/\_src/manipulation/my\_ur3/universal\_robots\_ur3e/ur3e\_position.xml}). The 3\,cm cube leaves 10.0~mm per side and its diagonal (42.4~mm) still fits, so every yaw is graspable. The 4\,cm cube leaves only 4.9~mm per side and its diagonal (56.6~mm) exceeds the opening, so the jaws can only close over $\pm17^\circ$ of yaw about each $90^\circ$ symmetry, i.e.\ 38\,\% of orientations.
+\end{minipage}
+\end{table}

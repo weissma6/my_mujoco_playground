@@ -18,6 +18,16 @@ line numpy port of `ur3_pick.py`'s `_get_reward`, keyed to
 `hold_radius`, `hold_tau`, `lift_eps`) so it can never silently drift from
 the live training weights -- those are imported, never hardcoded here.
 
+PRECISION CAVEAT (measured 2026-08, do not re-litigate): this module's FK is
+float64 MuJoCo, while the training env runs MJX in float32 (MJX cannot run
+under JAX_ENABLE_X64 -- its integer carry dtypes break jax.lax.scan). Feeding
+the same qpos to both gives TCP / finger-site positions that differ by ~0.6 mm,
+which propagates to ~3e-2 in `alignment`. That is MJX round-off, NOT a port
+error: fed IDENTICAL geometry (the env's own data.site_xpos and data.xmat), the
+two implementations agree to 2.4e-6 on alignment and 5e-9 on span_jaw, in both
+align_mode branches. So compare formulas on shared geometry, never by handing
+this module a qpos read out of an MJX rollout.
+
 On the real robot, contact (`grasp`) and floor-collision are not directly
 observable the way sim's touch sensors are; the caller supplies a proxy
 (Hand-E object-detection flag for `grasp_contact`, default no floor contact).
@@ -40,6 +50,7 @@ Usage (smoke test, pure MuJoCo FK, safe to run locally -- no MJX, no robot):
     python evaluation/ur3_reward_replay.py
 """
 
+import json
 import os
 import sys
 
@@ -65,6 +76,79 @@ GRASP_ALIGN_THRESH = float(_CFG.grasp_align_thresh)
 HOLD_RADIUS = float(_CFG.hold_radius)
 HOLD_TAU = float(_CFG.hold_tau)
 LIFT_EPS = float(_CFG.lift_eps)
+SUCCESS_TOL = float(_CFG.success_tol)
+
+# Box half-extents per protocol cube size, mirroring
+# evaluation/run_gap_protocol_sim.CUBE_HALF_EXTENTS. Needed by the axis-aware
+# alignment (jaw-span preference is measured against the REALIZED box).
+CUBE_HALF_EXTENTS = {
+    "3cm": (0.015, 0.015, 0.020),
+    "4cm": (0.020, 0.020, 0.020),
+}
+_POLICY_ROOT = os.path.join(REPO_ROOT, "evaluation", "downloaded_policies")
+# Built configs, keyed by (policy_run_id, root). gap_metrics calls
+# config_for_policy once per RUN (179 leaf dirs in the D23 campaign) but there
+# are only ~5 distinct policies, so without this the disk read and the
+# provenance print would repeat ~36x each. Sharing the ConfigDict is safe:
+# RewardReplayer.__init__ copies every value it needs out into plain floats.
+_CONFIG_CACHE = {}
+
+
+def config_for_policy(policy_run_id, policy_root=None):
+    """Return ur3_pick.default_config() with a TRAINED run's env_overrides applied.
+
+    Why this exists: this module used to score every real-robot run with the
+    module-level SCALES / GRASP_ALIGN_THRESH read from default_config() at
+    import time. That was fine while every deployed policy shared the defaults,
+    but the v3 ladder trains with align_mode="axis_aware", a raised
+    grasp_align_thresh, and reduced action_rate / robot_target_qpos. Scoring a
+    v3 real run with v2 reward would silently compare two different objectives
+    and corrupt every retention number -- exactly the class of bug the stale
+    two-scale cascade already caused once.
+
+    Reads evaluation/downloaded_policies/<policy_run_id>/metadata.json, whose
+    "env_overrides" is written verbatim from the training run's
+    inference_config.json. Only a value that appears there is a real trained
+    value (see robots/UR3e/ur3_realrobot_pickloop.py's _resolve_scale, which
+    refuses to trust metadata.json's bare top-level action_scale for the same
+    reason). Returns the plain default config, with a printed warning, if the
+    policy directory or the key is missing -- old campaigns keep working.
+    """
+    cfg = ur3_pick.default_config()
+    if not policy_run_id:
+        return cfg
+    root = policy_root or _POLICY_ROOT
+    ck = (str(policy_run_id), root)
+    if ck in _CONFIG_CACHE:
+        return _CONFIG_CACHE[ck]
+    meta_path = os.path.join(root, str(policy_run_id), "metadata.json")
+    if not os.path.isfile(meta_path):
+        print(f"[ur3_reward_replay] warning: no metadata.json for policy "
+              f"{policy_run_id!r} under {root} -- scoring with DEFAULT reward "
+              f"config. If this policy trained with non-default reward scales "
+              f"or align_mode, its returns will be wrong.")
+        return cfg
+    with open(meta_path, "r", encoding="utf-8") as f:
+        overrides = (json.load(f) or {}).get("env_overrides") or {}
+    applied = {}
+    for k, v in overrides.items():
+        if k.startswith("reward_config.scales."):
+            name = k.split(".")[-1]
+            if name in cfg.reward_config.scales:
+                cfg.reward_config.scales[name] = float(v)
+                applied[k] = float(v)
+        elif k in ("grasp_align_thresh", "align_pref_floor", "success_tol",
+                   "lift_eps", "hold_radius", "hold_tau"):
+            cfg[k] = float(v)
+            applied[k] = float(v)
+        elif k == "align_mode":
+            cfg[k] = str(v)
+            applied[k] = str(v)
+    if applied:
+        print(f"[ur3_reward_replay] {policy_run_id}: reward config from "
+              f"metadata.json -> {applied}")
+    _CONFIG_CACHE[ck] = cfg
+    return cfg
 TERMS = list(SCALES.keys())  # gripper_box, approach_open, grasp, lift, box_target,
                               # hold_target, gripper_align, no_floor_collision,
                               # robot_target_qpos, action_rate
@@ -162,14 +246,48 @@ class RewardReplayer:
     then `step()` once per logged tick, in order.
     """
 
-    def __init__(self, fk: SimFK):
+    def __init__(self, fk: SimFK, cfg=None):
+        """cfg: the env config THIS policy trained with (see
+        `config_for_policy`). None -> ur3_pick.default_config(), i.e. the
+        module-level SCALES / GRASP_ALIGN_THRESH, which is what every caller got
+        before per-run configs existed and keeps the v2 campaign reproducible.
+        """
         self.fk = fk
+        self.cfg = ur3_pick.default_config() if cfg is None else cfg
+        self.scales = {k: float(v) for k, v in self.cfg.reward_config.scales.items()}
+        self.grasp_align_thresh = float(self.cfg.grasp_align_thresh)
+        self.hold_radius = float(self.cfg.hold_radius)
+        self.hold_tau = float(self.cfg.hold_tau)
+        self.lift_eps = float(self.cfg.lift_eps)
+        self.success_tol = float(self.cfg.success_tol)
+        # align_mode / align_pref_floor are absent from configs produced before
+        # the v3 reward fix, so fall back to the legacy behaviour rather than
+        # raising -- this module must keep replaying archived campaigns.
+        self.align_axis_aware = (
+            str(self.cfg.get("align_mode", "axis_free")) == "axis_aware"
+        )
+        self.align_pref_floor = float(self.cfg.get("align_pref_floor", 0.15))
+        # Pad-to-pad jaw opening, parsed from the same geoms ur3_pick.__init__
+        # parses so the two can never disagree.
+        _lf = fk.model.geom("left_finger_collision")
+        _rf = fk.model.geom("right_finger_collision")
+        self.jaw_opening = float(
+            (_rf.pos[0] - _rf.size[0]) - (_lf.pos[0] + _lf.size[0])
+        )
         self.reset()
 
-    def reset(self, box_rest_z: float = None, init_arm_q=None):
+    def reset(self, box_rest_z: float = None, init_arm_q=None, box_half=None):
         self.box_rest_z = None if box_rest_z is None else float(box_rest_z)
         self.init_arm_q = (
             None if init_arm_q is None else np.asarray(init_arm_q, dtype=float)
+        )
+        # Realized box half-extents (m) for this episode -- drives the
+        # axis-aware jaw-span preference. Defaults to the nominal 3x3x4 cm
+        # prism; the D17 4 cm probe must pass CUBE_HALF_EXTENTS["4cm"] or its
+        # jaw preference is computed against the wrong geometry.
+        self.box_half = np.array(
+            CUBE_HALF_EXTENTS["3cm"] if box_half is None else box_half,
+            dtype=float,
         )
         self.reached = 0.0
         self.grasped = 0.0
@@ -177,6 +295,13 @@ class RewardReplayer:
         self.hold_counter = 0
         self.dist_min = 1e3
         self.prev_action = np.zeros(7, dtype=float)
+        # success_bonus state. TERMS is derived from reward_config.scales, which
+        # carries success_bonus, so `raw` must carry it too or every consumer
+        # that iterates TERMS raises KeyError (the module smoke test did).
+        # Mirrors ur3_pick.py:2146-2165: 3 CONSECUTIVE in-tolerance steps arm
+        # `success`, and the bonus is EDGE-triggered so it pays at most once.
+        self.success_counter = 0
+        self.success_ever = 0.0
 
     def step(
         self,
@@ -218,10 +343,32 @@ class RewardReplayer:
         app_axis = app_axis / (np.linalg.norm(app_axis) + 1e-6)
         a_jaw = float(np.max(np.abs(jaw_axis @ box_axes)))
         a_app = float(np.max(np.abs(app_axis @ box_axes)))
-        _cos_bound = 0.5
+        _cos_bound = float(ur3_pick._COS_BOUND)
         jaw_score = float(np.clip((a_jaw - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0))
         app_score = float(np.clip((a_app - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0))
-        alignment = jaw_score * app_score
+        align_face = jaw_score * app_score
+        # Box support width along the jaw axis (see ur3_pick._get_reward).
+        span_jaw = float(2.0 * (self.box_half @ np.abs(jaw_axis @ box_axes)))
+        if self.align_axis_aware:
+            # Line-for-line mirror of ur3_pick._get_reward's axis_aware branch.
+            # NOTE the top-down term uses +app_axis[2], NOT -app_axis[2]: the
+            # `tcp` site sits 6 mm PAST the finger pads, so app_axis points back
+            # toward the palm and a top-down grasp gives app_axis[2] ~ +1.
+            clear_now = self.jaw_opening - span_jaw
+            clear_best = self.jaw_opening - 2.0 * float(np.min(self.box_half))
+            jaw_pref = float(np.clip(clear_now / (clear_best + 1e-9), 0.0, 1.0))
+            app_down = float(
+                np.clip((app_axis[2] - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0)
+            )
+            f = self.align_pref_floor
+            pref = (f + (1.0 - f) * jaw_pref) * (f + (1.0 - f) * app_down)
+            # Gated on the PREVIOUS step's sticky lifted latch, matching the env
+            # (which reads info["lifted"] before the latch block updates it).
+            alignment = align_face * (1.0 if self.lifted > 0.5 else pref)
+        else:
+            jaw_pref = 1.0
+            app_down = 1.0
+            alignment = align_face
         # Proximity gate WIDENED tanh(5d)->tanh(3d), matching ur3_pick.py.
         gripper_align_Reward = alignment * (1.0 - np.tanh(3.0 * gripper_box_dist))
 
@@ -232,10 +379,10 @@ class RewardReplayer:
         grasp_now = (
             (self.reached > 0.5)
             and bool(grasp_contact)
-            and (alignment > GRASP_ALIGN_THRESH)
+            and (alignment > self.grasp_align_thresh)
         )
         self.grasped = max(self.grasped, float(grasp_now))
-        box_off_rest = box_pos_fk[2] > (self.box_rest_z + LIFT_EPS)
+        box_off_rest = box_pos_fk[2] > (self.box_rest_z + self.lift_eps)
         lift_now = box_off_rest and (self.grasped > 0.5)
         self.lifted = max(self.lifted, float(lift_now))
 
@@ -245,10 +392,21 @@ class RewardReplayer:
         finger_open = float(np.tanh(finger_touch_dist / 0.05))
         finger_closed = 1.0 - finger_open
 
+        # THREE-scale cascade, mirroring ur3_pick.py:2590-2594. This replayer
+        # carried the old TWO-scale form (0.5*(1-tanh(5d)) + 0.5*(1-tanh(30d)))
+        # long after the env gained the coarse 1.5 scale in commit 7c83352, so
+        # every real-robot return it produced was under-counted -- by 0.59
+        # raw/step at d=0.40 m and 0.79 at 0.20 m, i.e. worst exactly where the
+        # real arm spends most of its time. Because the real arm is ~5x slower
+        # than sim (deploy control-law rebase, see robots/UR3e/
+        # ur3_realrobot_dependencies.py), it dwells at long range far longer
+        # than the sim rollouts it is compared against, so the bias was
+        # ASYMMETRIC and inflated every reported sim->real gap.
         gripper_box_Reward = (
-            0.5 * (1.0 - np.tanh(5.0 * gripper_box_dist))
-            + 0.5 * (1.0 - np.tanh(30.0 * gripper_box_dist))
-        )
+            (1.0 - np.tanh(1.5 * gripper_box_dist))
+            + (1.0 - np.tanh(5.0 * gripper_box_dist))
+            + (1.0 - np.tanh(30.0 * gripper_box_dist))
+        ) / 3.0
         # Shaped by alignment (continuous), matching ur3_pick.py.
         grasp_Reward = finger_closed * reached * alignment
         approach_open_Reward = finger_open * (1.0 - reached)
@@ -256,15 +414,21 @@ class RewardReplayer:
         lift_height = float(np.clip(box_pos_fk[2] - self.box_rest_z, 0.0, 0.12))
         lift_Reward = float(np.tanh(lift_height / 0.06)) * reached
 
+        # THREE-scale cascade, mirroring ur3_pick.py:2625-2629. Note the scales
+        # are (1.5, 6, 40) here, NOT gripper_box's (1.5, 5, 30). Same stale-form
+        # bug as gripper_box above and far larger in absolute terms because
+        # box_target's weight is 20.0: the old two-scale form under-counted by
+        # 3.03 raw/step at d=0.40 m and 4.17 at 0.20 m.
         box_target_Reward = (
-            0.5 * (1.0 - np.tanh(5.0 * box_target_dist))
-            + 0.5 * (1.0 - np.tanh(30.0 * box_target_dist))
-        ) * lifted
+            (1.0 - np.tanh(1.5 * box_target_dist))
+            + (1.0 - np.tanh(6.0 * box_target_dist))
+            + (1.0 - np.tanh(40.0 * box_target_dist))
+        ) / 3.0 * lifted
 
-        in_hold = (lifted > 0.5) and (box_target_dist < HOLD_RADIUS)
+        in_hold = (lifted > 0.5) and (box_target_dist < self.hold_radius)
         self.hold_counter = self.hold_counter + 1 if in_hold else 0
         hold_target_Reward = float(in_hold) * float(
-            np.tanh(self.hold_counter / HOLD_TAU)
+            np.tanh(self.hold_counter / self.hold_tau)
         )
 
         robot_target_qpos_penalty = (
@@ -278,7 +442,19 @@ class RewardReplayer:
         # (caller may pass floor_collision=True from another signal).
         no_floor_collision_Reward = 1.0 - float(bool(floor_collision))
 
+        # Edge-triggered success bonus, mirroring ur3_pick.py:2146-2165. The
+        # DEFAULT scale is 0.0 (deliberately off -- see the hover-farming note
+        # in ur3_pick.default_config()), so this contributes nothing today; it
+        # is computed faithfully rather than stubbed so the replayer stays
+        # correct if a sweep ever turns success_bonus on. Note gap_metrics.py's
+        # TERM_ORDER does not include it, so it never reaches the report.
+        success_now = box_target_dist < self.success_tol
+        self.success_counter = self.success_counter + 1 if success_now else 0
+        newly_succeeded = (self.success_counter >= 3) and (self.success_ever < 0.5)
+        self.success_ever = max(self.success_ever, float(self.success_counter >= 3))
+
         raw = {
+            "success_bonus": float(newly_succeeded),
             "gripper_box": gripper_box_Reward,
             "approach_open": approach_open_Reward,
             "grasp": grasp_Reward,
@@ -290,7 +466,7 @@ class RewardReplayer:
             "robot_target_qpos": robot_target_qpos_penalty,
             "action_rate": action_rate_Reward,
         }
-        scaled = {k: raw[k] * SCALES[k] for k in raw}
+        scaled = {k: raw[k] * self.scales[k] for k in raw}
         total = float(np.clip(sum(scaled.values()), -1e4, 1e4))
 
         out = dict(scaled)
@@ -303,6 +479,14 @@ class RewardReplayer:
                 "lifted": lifted,
                 "a_jaw": a_jaw,
                 "a_app": a_app,
+                # Mirrors ur3_pick._get_reward's raw_signals; align_face /
+                # jaw_pref / app_down / span_jaw exist in BOTH modes (the
+                # preferences are 1.0 under axis_free) so the parity test
+                # against the env's metrics can compare them unconditionally.
+                "align_face": align_face,
+                "jaw_pref": jaw_pref,
+                "app_down": app_down,
+                "span_jaw": span_jaw,
                 "alignment": alignment,
                 "gripper_box_dist": gripper_box_dist,
                 "box_target_dist": box_target_dist,
@@ -323,9 +507,22 @@ def replay_dataframe(
     target=None,
     contact_col: str = "grasped",
     box_rest_z: float = None,
+    cfg=None,
+    box_half=None,
 ) -> pd.DataFrame:
     """Replay a logged real-robot run (as produced by
     `UR3RealRobotPick.run_policy_loop`) through `RewardReplayer`.
+
+    cfg: the env config the REPLAYED POLICY trained with -- build it with
+      `config_for_policy(meta["policy_run_id"])`. None keeps the module
+      defaults, which is correct for every policy trained before the v3 reward
+      fix and wrong for every one after it (a v3 policy trained with
+      align_mode="axis_aware" and grasp_align_thresh=0.45 scored under v2
+      reward would have a completely different `grasped` latch, and therefore
+      different grasp/lift/box_target/hold_target returns).
+    box_half: (3,) realized box half-extents, from
+      CUBE_HALF_EXTENTS[meta["cube_size"]]. Only affects the axis-aware jaw-span
+      preference; None -> the nominal 3 cm prism.
 
     Expects columns q0..q5, finger_pos_est, box_x/y/z, action0..action6, and
     (ideally) box_qw/qx/qy/qz (from the mocap-orientation logging commit) --
@@ -340,7 +537,7 @@ def replay_dataframe(
         return pd.DataFrame()
 
     fk = SimFK(xml_path)
-    replayer = RewardReplayer(fk)
+    replayer = RewardReplayer(fk, cfg=cfg)
 
     has_quat = all(c in df.columns for c in ["box_qw", "box_qx", "box_qy", "box_qz"])
     if not has_quat:
@@ -363,7 +560,8 @@ def replay_dataframe(
     if box_rest_z is None:
         box_rest_z = float(df.iloc[0]["box_z"])
     init_arm_q = df.iloc[0][[f"q{i}" for i in range(6)]].to_numpy(dtype=float)
-    replayer.reset(box_rest_z=box_rest_z, init_arm_q=init_arm_q)
+    replayer.reset(box_rest_z=box_rest_z, init_arm_q=init_arm_q,
+                   box_half=box_half)
 
     rows = []
     prev_action = np.zeros(7, dtype=float)

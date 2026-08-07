@@ -1,0 +1,406 @@
+{
+  "abort_L0_none_3cm": {
+    "note": "aborted / attempted real trials",
+    "value": "7/21"
+  },
+  "abort_L0_none_4cm": {
+    "note": "aborted / attempted real trials",
+    "value": "0/6"
+  },
+  "abort_L1_pos_3cm": {
+    "note": "aborted / attempted real trials",
+    "value": "4/21"
+  },
+  "abort_L1_pos_4cm": {
+    "note": "aborted / attempted real trials",
+    "value": "6/6"
+  },
+  "abort_L2_pos_cube_3cm": {
+    "note": "aborted / attempted real trials",
+    "value": "0/21"
+  },
+  "abort_L2_pos_cube_4cm": {
+    "note": "aborted / attempted real trials",
+    "value": "4/6"
+  },
+  "abort_L3_pos_cube_robot_3cm": {
+    "note": "aborted / attempted real trials",
+    "value": "8/21"
+  },
+  "abort_L3_pos_cube_robot_4cm": {
+    "note": "aborted / attempted real trials",
+    "value": "6/6"
+  },
+  "abort_L4_full_3cm": {
+    "note": "aborted / attempted real trials",
+    "value": "6/21"
+  },
+  "abort_L4_full_4cm": {
+    "note": "aborted / attempted real trials",
+    "value": "3/6"
+  },
+  "admissible_yaw_deg_3cm": {
+    "note": "half-angle of graspable yaw about each 90 deg symmetry",
+    "value": 90.0
+  },
+  "admissible_yaw_deg_4cm": {
+    "note": "half-angle of graspable yaw about each 90 deg symmetry",
+    "value": 16.9
+  },
+  "admissible_yaw_fraction_3cm": {
+    "note": "fraction of yaw angles the jaws can close over",
+    "value": 1.0
+  },
+  "admissible_yaw_fraction_4cm": {
+    "note": "fraction of yaw angles the jaws can close over",
+    "value": 0.376
+  },
+  "clearance_per_side_mm_3cm": {
+    "note": "per-side clearance at aligned yaw",
+    "value": 9.95
+  },
+  "clearance_per_side_mm_4cm": {
+    "note": "per-side clearance at aligned yaw",
+    "value": 4.95
+  },
+  "gate_L0_none": {
+    "note": "noise-floor gate verdict, 3cm",
+    "value": "within_noise_floor"
+  },
+  "gate_L1_pos": {
+    "note": "noise-floor gate verdict, 3cm",
+    "value": "reportable"
+  },
+  "gate_L2_pos_cube": {
+    "note": "noise-floor gate verdict, 3cm",
+    "value": "within_noise_floor"
+  },
+  "gate_L3_pos_cube_robot": {
+    "note": "noise-floor gate verdict, 3cm",
+    "value": "reportable"
+  },
+  "gate_L4_full": {
+    "note": "noise-floor gate verdict, 3cm",
+    "value": "reportable"
+  },
+  "gripper_opening_mm": {
+    "note": "Hand-E pad-to-pad opening, parsed from the model XML",
+    "value": 49.9
+  },
+  "n_real_complete": {
+    "note": "real trials completing all H=400 steps",
+    "value": 91
+  },
+  "n_real_runs": {
+    "note": "real robot trials in the D23 campaign",
+    "value": 135
+  },
+  "n_sim_runs": {
+    "note": "matched-initialisation sim rollouts",
+    "value": 91
+  },
+  "place_best_cm_L0_none": {
+    "note": "closest landing, 3 cm cube",
+    "value": 26.2
+  },
+  "place_best_cm_L1_pos": {
+    "note": "closest landing, 3 cm cube",
+    "value": 25.2
+  },
+  "place_best_cm_L2_pos_cube": {
+    "note": "closest landing, 3 cm cube",
+    "value": 3.9
+  },
+  "place_best_cm_L3_pos_cube_robot": {
+    "note": "closest landing, 3 cm cube",
+    "value": 26.5
+  },
+  "place_best_cm_L4_full": {
+    "note": "closest landing, 3 cm cube",
+    "value": 5.3
+  },
+  "place_in_square_L0_none": {
+    "note": "trials landing inside the 15x15 cm square, 3 cm cube",
+    "value": "0/21"
+  },
+  "place_in_square_L1_pos": {
+    "note": "trials landing inside the 15x15 cm square, 3 cm cube",
+    "value": "0/17"
+  },
+  "place_in_square_L2_pos_cube": {
+    "note": "trials landing inside the 15x15 cm square, 3 cm cube",
+    "value": "3/21"
+  },
+  "place_in_square_L3_pos_cube_robot": {
+    "note": "trials landing inside the 15x15 cm square, 3 cm cube",
+    "value": "0/13"
+  },
+  "place_in_square_L4_full": {
+    "note": "trials landing inside the 15x15 cm square, 3 cm cube",
+    "value": "2/15"
+  },
+  "realized_height_D1_m": {
+    "note": "",
+    "value": 0.15
+  },
+  "realized_tilt_max_deg": {
+    "note": "largest tilt the C1 wedge actually produced",
+    "value": 5.47
+  },
+  "regret": {
+    "note": "sim-selection regret",
+    "value": 0.0
+  },
+  "regret_ci_hi": {
+    "note": "",
+    "value": 1025.4
+  },
+  "regret_n_common_episodes": {
+    "note": "episodes shared by all five configurations, both domains",
+    "value": 3
+  },
+  "regret_pick_real": {
+    "note": "",
+    "value": "L2_pos_cube"
+  },
+  "regret_pick_sim": {
+    "note": "",
+    "value": "L2_pos_cube"
+  },
+  "retention_L0_none": {
+    "note": "real/sim return retention, 3cm",
+    "value": 1.664
+  },
+  "retention_L1_pos": {
+    "note": "real/sim return retention, 3cm",
+    "value": 0.501
+  },
+  "retention_L2_pos_cube": {
+    "note": "real/sim return retention, 3cm",
+    "value": 0.72
+  },
+  "retention_L3_pos_cube_robot": {
+    "note": "real/sim return retention, 3cm",
+    "value": 0.504
+  },
+  "retention_L4_full": {
+    "note": "real/sim return retention, 3cm",
+    "value": 0.601
+  },
+  "retention_baseline_L0_none": {
+    "note": "retention on A1-A3 only",
+    "value": 3.889
+  },
+  "retention_baseline_L1_pos": {
+    "note": "retention on A1-A3 only",
+    "value": 0.494
+  },
+  "retention_baseline_L2_pos_cube": {
+    "note": "retention on A1-A3 only",
+    "value": 0.841
+  },
+  "retention_baseline_L3_pos_cube_robot": {
+    "note": "retention on A1-A3 only",
+    "value": 0.584
+  },
+  "retention_baseline_L4_full": {
+    "note": "retention on A1-A3 only",
+    "value": 0.546
+  },
+  "retention_perturbed_L0_none": {
+    "note": "retention on B1,B2,C1,D1",
+    "value": 1.216
+  },
+  "retention_perturbed_L1_pos": {
+    "note": "retention on B1,B2,C1,D1",
+    "value": 0.505
+  },
+  "retention_perturbed_L2_pos_cube": {
+    "note": "retention on B1,B2,C1,D1",
+    "value": 0.64
+  },
+  "retention_perturbed_L3_pos_cube_robot": {
+    "note": "retention on B1,B2,C1,D1",
+    "value": 0.477
+  },
+  "retention_perturbed_L4_full": {
+    "note": "retention on B1,B2,C1,D1",
+    "value": 0.676
+  },
+  "sim_success_L0_none": {
+    "note": "simulated episodes meeting the env success criterion, 3cm",
+    "value": "0/21"
+  },
+  "sim_success_L1_pos": {
+    "note": "simulated episodes meeting the env success criterion, 3cm",
+    "value": "2/18"
+  },
+  "sim_success_L2_pos_cube": {
+    "note": "simulated episodes meeting the env success criterion, 3cm",
+    "value": "5/23"
+  },
+  "sim_success_L3_pos_cube_robot": {
+    "note": "simulated episodes meeting the env success criterion, 3cm",
+    "value": "2/15"
+  },
+  "sim_success_L4_full": {
+    "note": "simulated episodes meeting the env success criterion, 3cm",
+    "value": "0/15"
+  },
+  "stage_retention_approach_L0_none": {
+    "note": "per-stage retention, 3cm",
+    "value": 1.26
+  },
+  "stage_retention_approach_L1_pos": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.606
+  },
+  "stage_retention_approach_L2_pos_cube": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.809
+  },
+  "stage_retention_approach_L3_pos_cube_robot": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.6
+  },
+  "stage_retention_approach_L4_full": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.807
+  },
+  "stage_retention_grasp_L0_none": {
+    "note": "per-stage retention, 3cm",
+    "value": null
+  },
+  "stage_retention_grasp_L1_pos": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.077
+  },
+  "stage_retention_grasp_L2_pos_cube": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.211
+  },
+  "stage_retention_grasp_L3_pos_cube_robot": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.121
+  },
+  "stage_retention_grasp_L4_full": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.061
+  },
+  "stage_retention_lift_L0_none": {
+    "note": "per-stage retention, 3cm",
+    "value": null
+  },
+  "stage_retention_lift_L1_pos": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.196
+  },
+  "stage_retention_lift_L2_pos_cube": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.715
+  },
+  "stage_retention_lift_L3_pos_cube_robot": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.149
+  },
+  "stage_retention_lift_L4_full": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.027
+  },
+  "stage_retention_regularizer_L0_none": {
+    "note": "per-stage retention, 3cm",
+    "value": 1.419
+  },
+  "stage_retention_regularizer_L1_pos": {
+    "note": "per-stage retention, 3cm",
+    "value": 1.28
+  },
+  "stage_retention_regularizer_L2_pos_cube": {
+    "note": "per-stage retention, 3cm",
+    "value": 1.54
+  },
+  "stage_retention_regularizer_L3_pos_cube_robot": {
+    "note": "per-stage retention, 3cm",
+    "value": 1.378
+  },
+  "stage_retention_regularizer_L4_full": {
+    "note": "per-stage retention, 3cm",
+    "value": 1.38
+  },
+  "stage_retention_transport_L0_none": {
+    "note": "per-stage retention, 3cm",
+    "value": null
+  },
+  "stage_retention_transport_L1_pos": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.141
+  },
+  "stage_retention_transport_L2_pos_cube": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.341
+  },
+  "stage_retention_transport_L3_pos_cube_robot": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.099
+  },
+  "stage_retention_transport_L4_full": {
+    "note": "per-stage retention, 3cm",
+    "value": 0.008
+  },
+  "tcp_rms_mm_L0_none": {
+    "note": "median one-step replay TCP error",
+    "value": 1.02
+  },
+  "tcp_rms_mm_L1_pos": {
+    "note": "median one-step replay TCP error",
+    "value": 1.14
+  },
+  "tcp_rms_mm_L2_pos_cube": {
+    "note": "median one-step replay TCP error",
+    "value": 1.16
+  },
+  "tcp_rms_mm_L3_pos_cube_robot": {
+    "note": "median one-step replay TCP error",
+    "value": 0.89
+  },
+  "tcp_rms_mm_L4_full": {
+    "note": "median one-step replay TCP error",
+    "value": 0.96
+  },
+  "tcp_rms_mm_max": {
+    "note": "",
+    "value": 1.16
+  },
+  "tcp_rms_mm_min": {
+    "note": "",
+    "value": 0.89
+  },
+  "trained_tilt_max_deg": {
+    "note": "",
+    "value": 2.86
+  },
+  "trained_tilt_max_rad": {
+    "note": "lifter_tilt_max",
+    "value": 0.05
+  },
+  "ttd_steps_L0_none": {
+    "note": "median open-loop time-to-divergence",
+    "value": 15.0
+  },
+  "ttd_steps_L1_pos": {
+    "note": "median open-loop time-to-divergence",
+    "value": 21.0
+  },
+  "ttd_steps_L2_pos_cube": {
+    "note": "median open-loop time-to-divergence",
+    "value": 20.0
+  },
+  "ttd_steps_L3_pos_cube_robot": {
+    "note": "median open-loop time-to-divergence",
+    "value": 75.5
+  },
+  "ttd_steps_L4_full": {
+    "note": "median open-loop time-to-divergence",
+    "value": 15.0
+  }
+}

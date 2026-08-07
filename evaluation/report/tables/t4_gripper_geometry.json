@@ -1,0 +1,18 @@
+{
+  "opening_m": 0.0499,
+  "xml": "mujoco_playground/_src/manipulation/my_ur3/universal_robots_ur3e/ur3e_position.xml",
+  "3cm": {
+    "side_m": 0.03,
+    "diagonal_m": 0.042426406871192854,
+    "clearance_per_side_m": 0.00995,
+    "admissible_halfangle_deg": 90.0,
+    "admissible_fraction": 1.0
+  },
+  "4cm": {
+    "side_m": 0.04,
+    "diagonal_m": 0.05656854249492381,
+    "clearance_per_side_m": 0.0049499999999999995,
+    "admissible_halfangle_deg": 16.89864291009794,
+    "admissible_fraction": 0.37552539800217644
+  }
+}

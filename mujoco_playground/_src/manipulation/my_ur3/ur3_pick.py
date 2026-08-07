@@ -61,6 +61,11 @@ _BOX_HALF_EXTENT_XY = 0.015
 # Tolerance (m) for the table/box-anchor consistency guards in __init__. See the
 # comment at the lifter check for why this is 1 um and not 0.
 _ANCHOR_TOL = 1e-6
+# Grasp-frame alignment cone bound, cos(60 deg). Shared by the face scores and
+# by the axis-aware top-down score, so widening the cone widens both together.
+# Was a local `_cos_bound` inside _get_reward; hoisted so the alignment smoke
+# tests can import the exact value the env uses instead of re-typing 0.5.
+_COS_BOUND = 0.5
 
 # --- Reach envelope (D18 open risk, re-derived for the 95 mm table in D24) ---
 # The UR3e's usable WORKING radius with a cube in the jaws is ~0.49 m. That
@@ -105,6 +110,39 @@ _DR_METRIC_KEYS = (
     "gravity_z",
     "arm_stiffness",
     "arm_damping",
+)
+
+# 2026-08 approach/grasp diagnostics. Before these, the approach phase was
+# effectively invisible in W&B: grip_box_dist, alignment and finger_touch_dist
+# were computed into _get_reward's raw_signals but never copied into `metrics`,
+# and nothing about speed or time-to-stage existed at all -- so "the approach is
+# slow" and "the grasp is misaligned" were both unmeasurable from a training run.
+#
+# Declared once and consumed by BOTH metrics dicts (reset and reset_to_state) so
+# they cannot drift apart -- brax's EvalWrapper requires the reset and step
+# metric key sets to match exactly, and a key seeded in only one of the two
+# resets fails at eval time, not at trace time.
+#
+# PER-STEP (brax SUMS these into eval/episode_*; divide by episode_length for a
+# mean).
+_STEP_METRIC_KEYS = (
+    "grip_box_dist",        # TCP->box distance, m
+    "finger_touch_dist",    # pad separation, m
+    "alignment",            # the value that actually gates the `grasped` latch
+    "jaw_span",             # box support width along the jaw axis, m
+    "tcp_speed",            # m/s
+    "grasp_gate_blocked",   # steps where only the alignment gate blocked a grasp
+)
+# TERMINAL-GATED (nonzero on the single terminal step, so the W&B episode-sum
+# equals that one value and the cross-env mean is the true mean -- same pattern
+# as box_target_dist_final).
+_TERMINAL_METRIC_KEYS = (
+    "grip_box_dist_min",    # closest TCP->box approach, m
+    "align_at_grasp",       # alignment at the rising edge of `grasped`
+    "jaw_span_at_grasp",    # jaw span at that same edge, m (expect ~0.030)
+    "t_reach",              # steps to first reach  (== episode_length if never)
+    "t_grasp",              # steps to first grasp  (== episode_length if never)
+    "t_lift",               # steps to first lift   (== episode_length if never)
 )
 
 
@@ -270,6 +308,22 @@ def default_config() -> config_dict.ConfigDict:
                 # box_target_dist floored at ~30mm / success ~3% on the
                 # 20260709 speedtest runs, partly because this term penalized
                 # exactly the motion transport requires.
+                #
+                # 2026-08 "moving is net negative" finding. Despite the name
+                # this is a BONUS (positive scale, raw signal maximal at zero
+                # deviation), so it pays the arm to stay near where it started
+                # for the entire pre-lift phase. Measured cost of travelling:
+                # -0.163/tick SUSTAINED, against a gripper_box pull of only
+                # +0.023/tick at d = 0.40 m. Together with action_rate below
+                # (-0.175/tick at |dA| = 0.5) that makes standing still the
+                # optimal action until d ~= 2 cm -- the reward-side half of the
+                # "slow approach when far away" diagnostic.
+                # RECOMMENDED v3 value: 0.05 (moves the break-even from ~2 cm
+                # out to ~15 cm). Set it PER SWEEP LINE, not here: this default
+                # is what evaluation/ur3_reward_replay.py reads at import time
+                # to score ARCHIVED real-robot runs, so changing it would
+                # retroactively rescore the D23 campaign with scales those
+                # policies never trained under.
                 robot_target_qpos=0.3,
                 # Penalize large action deltas between consecutive steps
                 # (DeXtreme-style smoothness term) to stop the visible
@@ -279,6 +333,15 @@ def default_config() -> config_dict.ConfigDict:
                 # to the others; NEGATIVE scale turns the raw magnitude into a
                 # penalty (same sign convention `franka_emika_panda_robotiq`
                 # and `leap_hand` use for their action_rate terms).
+                #
+                # 2026-08: this is the larger half of the "moving is net
+                # negative" problem (see robot_target_qpos above). Being an
+                # UNBOUNDED squared L2 over 7 dims, a modest |dA| = 0.5 per dim
+                # already costs 7 * 0.25 * 0.10 = -0.175/tick, roughly 7.6x the
+                # +0.023/tick that closing distance pays at d = 0.40 m.
+                # RECOMMENDED v3 value: -0.02. Same warning as above -- set it
+                # per sweep line, not here, or the archived-campaign replay
+                # gets rescored.
                 action_rate=-0.10,
                 # Sustained-proximity bonus: pay for KEEPING a lifted box inside
                 # the target sphere, ramping with dwell time so the policy
@@ -386,7 +449,14 @@ def default_config() -> config_dict.ConfigDict:
         # Box spawn yaw about world Z (rad); yaw ~ uniform(-r, +r). pi/4 covers
         # all yaw thanks to the cube's 4-fold symmetry, so the policy must learn
         # to match the jaw axis to a face rather than getting a free alignment.
-        box_z_rot_range=6.28319,  # 2*pi (full-rotation yaw coverage)
+        # 2*pi, full-rotation yaw coverage. NOT a no-op and NOT reducible to
+        # pi/2 via the cube's symmetry: the alignment REWARD is symmetry-
+        # invariant (max|axis . box_axis|) but the OBSERVATION is not -- it
+        # carries raw signed projections onto the box axes, so a 180 deg yaw
+        # is a different input vector. Narrowing it broke the real policy on a
+        # 180 deg-rotated cube. Full reasoning at the sampling site in
+        # _reset_box_pose; decision D26 in the vault plan. DO NOT NARROW.
+        box_z_rot_range=6.28319,
         # Y-axis center offset (m) for the box spawn / lift target, applied
         # BEFORE their existing jitter ranges (box jitter Y +-0.2, target
         # jitter Y +-0.03) — see reset(). Both currently jitter around the
@@ -502,17 +572,83 @@ def default_config() -> config_dict.ConfigDict:
         # (tanh(counter/tau) ~=0.76 @10 steps, ~=0.96 @20 steps).
         hold_radius=0.03,
         hold_tau=10.0,
-        # Minimum grasp-frame alignment (jaw_score * app_score, each in [0,1])
-        # required for the `grasped` sticky latch to set -- blocks the "grab
-        # while misaligned" shortcut that let a lucky 2-pad contact on a
-        # rotated/tilted cube unlock the whole sticky lift/box_target/hold
-        # chain regardless of alignment (DIAGHOLD300 W&B finding). Soft:
-        # gripper_align (reward_config.scales, above) still pays a continuous
-        # gradient below this bar, so there is no dead zone -- only the LATCH
-        # is hard-gated. 0.3 ~= both jaw and approach axes within ~40 deg of
-        # a box face-normal. Lower toward 0.2 if `grasped` fails to unlock at
-        # all early in training.
+        # Minimum grasp-frame alignment required for the `grasped` sticky latch
+        # to set -- blocks the "grab while misaligned" shortcut that let a lucky
+        # 2-pad contact on a rotated/tilted cube unlock the whole sticky
+        # lift/box_target/hold chain regardless of alignment (DIAGHOLD300 W&B
+        # finding). Soft: gripper_align (reward_config.scales, above) still pays
+        # a continuous gradient below this bar, so there is no dead zone -- only
+        # the LATCH is hard-gated.
+        #
+        # This latch is the single highest-leverage gate in the reward: it
+        # unlocks lift(5) + box_target(20) + hold_target(6) = 31 raw/step for
+        # the REST of the episode.
+        #
+        # UNITS DEPEND ON align_mode -- never carry a value across modes:
+        #   axis_free : 0.30 == sqrt(0.30)=0.548 per axis -> a_jaw=a_app=0.774
+        #               -> 39.3 deg of misalignment allowed on EACH axis. Far
+        #               too loose: measured D23 grasp-stage sim->real retention
+        #               was 0.06-0.21, i.e. the grasp is the stage that does not
+        #               transfer, and this is why. Sim contact tolerates a 39 deg
+        #               grab; the Hand-E does not.
+        #   axis_aware: the same 39 deg pose now scores 0.091, because the two
+        #               physical preference factors multiply in. Measured
+        #               calibration ladder (jaw misaligned in-plane by the same
+        #               angle as the approach, nominal 3x3x4 cm box):
+        #                 10 deg -> 0.730   15 deg -> 0.582
+        #                 20 deg -> 0.443   25 deg -> 0.321
+        #                 30 deg -> 0.220   39 deg -> 0.091
+        #               0.45 ~= 20 deg on both axes WITH a good jaw span.
+        #               0.35 ~= 24 deg (the safer first try).
+        #               For reference, the two grasps the axis_free score cannot
+        #               tell apart: a top-down grasp on a 3 cm face scores 1.000
+        #               under BOTH modes, while a side grasp spanning the 4 cm
+        #               axis scores 1.000 under axis_free and 0.086 under
+        #               axis_aware. Reaching upward scores 1.000 vs 0.150.
+        #
+        # Every sweep line MUST set align_mode and grasp_align_thresh EXPLICITLY
+        # and TOGETHER, so the pair lands in env_overrides -> metadata.json.
+        # Splitting them across a default and an override silently reinterprets
+        # the number. Watch eval/episode_grasp_gate_blocked: if it is large
+        # while eval/episode_grasped stays ~0, the bar is too high and the
+        # lift/box_target/hold chain will never bootstrap -- lower it.
         grasp_align_thresh=0.3,
+        # ------------------------------------------------------------------
+        # Grasp-frame alignment mode (STATIC; resolved at trace time in __init__)
+        # ------------------------------------------------------------------
+        # "axis_free"  = legacy: jaw_score * app_score with max|axis . box_axis|
+        #                over ALL THREE box axes. Symmetry-invariant, and that
+        #                is exactly the defect. The box is a 3x3x4 cm PRISM
+        #                (geom size 0.015 0.015 0.020), not a cube, and the jaw
+        #                opening is 49.9 mm. So the legacy score rates a jaw
+        #                spanning the 4 cm axis (9.9 mm total clearance)
+        #                IDENTICALLY to one spanning a 3 cm axis (19.9 mm), and
+        #                rates a horizontal approach identically to top-down.
+        #                The in-code claim that max|.| buys invariance to the
+        #                "cube's 24-fold octahedral symmetry" does not hold: a
+        #                3x3x4 prism has only D4h (16-element) symmetry -- the z
+        #                axis is NOT interchangeable with x/y.
+        # "axis_aware" = the legacy face score TIMES two physically-grounded
+        #                preference factors: (a) jaw span measured in real
+        #                finger clearance, (b) top-down approach. Both are
+        #                floored by align_pref_floor so there is never a dead
+        #                zone, and both switch OFF once the box is lifted so
+        #                they shape approach/grasp only and never fight
+        #                transport. DR-SAFE by construction: it consumes the
+        #                REALIZED per-episode half-extents (info["box_half"]),
+        #                so a cube_size draw anywhere in 2x2x3 .. 4x4x4 cm is
+        #                handled without a hardcoded "local z is the long axis"
+        #                assumption -- which is WRONG for ~25% of draws
+        #                (P(xy_half > z_half) = 0.25 under
+        #                U(0.010,0.020) x U(0.015,0.020)).
+        align_mode="axis_free",
+        # Floor for each axis-aware preference factor: pref -> f + (1-f)*pref,
+        # so the worst grasp still scores f (not 0) and gripper_align keeps a
+        # gradient everywhere. Zero here would recreate exactly the
+        # chicken-and-egg dead zone the old hard 30 deg cone had (see the
+        # _COS_BOUND note in _get_reward): the policy would have to luck into a
+        # good pose before the reward ever turned on.
+        align_pref_floor=0.15,
         # When True (default, legacy behavior): grasped/lifted are STICKY
         # (jp.maximum) -- once true for an episode, stay true even if the box
         # is dropped, so grasp/lift/box_target/hold_target keep paying after a
@@ -905,6 +1041,45 @@ class UR3Pick(ur3_base.UR3Base):
             "cube_half_z": jp.array(self._dr_nom_half_z, dtype=float),
         }
 
+        # ------------------------------------------------------------------
+        # Grasp-frame alignment mode (see default_config().align_mode).
+        # ------------------------------------------------------------------
+        # STATIC, like sticky_latches / target_mode / the DR enables: the branch
+        # in _get_reward is resolved at TRACE time, so the axis_free path is
+        # byte-for-byte the pre-change env. Validate loudly here rather than
+        # silently falling through to legacy on a typo -- a misspelled
+        # align_mode in a sweep line would otherwise train the wrong reward and
+        # only show up as an unexplained flat result 12 h later.
+        _align_mode = str(self._config.align_mode)
+        if _align_mode not in ("axis_free", "axis_aware"):
+            raise ValueError(
+                f"align_mode must be 'axis_free' or 'axis_aware', got "
+                f"{_align_mode!r}. See ur3_pick.default_config().align_mode; "
+                f"note grasp_align_thresh's UNITS depend on this value, so the "
+                f"two must always be set together in a sweep line."
+            )
+        self._align_axis_aware = _align_mode == "axis_aware"
+        # Pad-to-pad jaw opening (m) at full extension, PARSED from the finger
+        # collision geoms so it can never drift from the simulated gripper the
+        # way a hardcoded constant would. Same derivation as
+        # evaluation/report/build_report.py's _gripper_geometry: the inner face
+        # of each pad is its centre offset +- its half-extent along the travel
+        # axis, and the finger slide joints are at range-min (fully open) in the
+        # model's rest pose that geom_pos describes.
+        #   (0.0305 - 0.0056) - (-0.0305 + 0.0055) = 0.0499 m
+        _lf_g = self._mj_model.geom("left_finger_collision")
+        _rf_g = self._mj_model.geom("right_finger_collision")
+        self._jaw_opening = float(
+            (_rf_g.pos[0] - _rf_g.size[0]) - (_lf_g.pos[0] + _lf_g.size[0])
+        )
+        if not (0.02 < self._jaw_opening < 0.10):
+            raise ValueError(
+                f"parsed jaw opening {self._jaw_opening:.4f} m is implausible "
+                f"for the Hand-E (expected ~0.0499). The finger pad geoms in "
+                f"universal_robots_ur3e/ur3e_position.xml changed shape or "
+                f"axis; fix the parse above before training."
+            )
+
     def _sample_physics_dr(self, rng: jax.Array) -> Dict[str, jax.Array]:
         """Sample per-episode physics-randomization factors.
 
@@ -1158,6 +1333,28 @@ class UR3Pick(ur3_base.UR3Base):
         # is the dominant spawn DOF; the slight plate tilt below adds the
         # out-of-plane component that makes the full 2-of-3-axis grasp alignment
         # (not just yaw) matter.
+        #
+        # WHY THE FULL 2*pi RANGE IS REQUIRED -- SETTLED, DO NOT NARROW IT.
+        # It is tempting to argue that yaw only needs a pi/2 (or pi/4) range
+        # because the cube has 90 deg rotational symmetry and the alignment
+        # REWARD is built from max|axis . box_axis| -- absolute value and max,
+        # hence invariant to that symmetry and to axis sign flips. That
+        # argument is about the reward and does NOT carry over to the
+        # OBSERVATION, which is what the network actually consumes.
+        #
+        # _get_obs feeds the policy `jaw_proj = jaw_axis @ box_axes` and
+        # `app_proj = app_axis @ box_axes`: RAW SIGNED dot products onto all
+        # three box axes, with no absolute value and no max. A 180 deg yaw
+        # negates b0 and b1, so [a, b, c] becomes [-a, -b, c]; a 90 deg yaw
+        # permutes and negates them. The MLP has no notion of the cube's
+        # symmetry and sees each of those as a distinct input.
+        #
+        # Narrowing the range therefore DOES shrink the effective training
+        # distribution of the observation. Observed empirically: with a
+        # narrow yaw range the policy failed outright once the physical cube
+        # was rotated 180 deg -- textbook out-of-distribution input. The real
+        # mocap streams yaw over the full 2*pi, so training must cover it.
+        # See the D26 entry in the vault's "Plan - Sim-to-Real Gap Protocol".
         theta = jax.random.uniform(
             rng_quat,
             (),
@@ -1471,6 +1668,11 @@ class UR3Pick(ur3_base.UR3Base):
             # Always 0 out of reset_to_state (its target_pos is caller-supplied
             # and bypasses reset()'s sampling and cap entirely).
             "target_z_capped": jp.array(0.0, dtype=float),
+            # 2026-08 approach/grasp/speed diagnostics -- see the module-level
+            # _STEP_METRIC_KEYS / _TERMINAL_METRIC_KEYS comment for how to read
+            # each one. Seeded identically in reset() and reset_to_state().
+            **{k: jp.array(0.0, dtype=float)
+               for k in _STEP_METRIC_KEYS + _TERMINAL_METRIC_KEYS},
             **{k: jp.array(0.0, dtype=float)
                for k in self._config.reward_config.scales.keys()},
         }
@@ -1512,6 +1714,56 @@ class UR3Pick(ur3_base.UR3Base):
             # if hold_target proves hard to learn, adding it to obs is the
             # fallback, not done preemptively.
             "hold_counter": jp.array(0, dtype=jp.int32),
+            # REALIZED box half-extents (m) along the box's own local axes.
+            # ALWAYS present -- deliberately NOT gated on self._dr_enable,
+            # because _get_reward's axis-aware alignment reads it every step and
+            # must not branch on the DR switch. `dr` is self._dr_identity when
+            # DR is off, so this is the nominal (0.015, 0.015, 0.020) there. The
+            # jp.minimum mirrors _randomize_physics's _dr_max_box_half_xy
+            # graspability clamp, so this is the half-extent the PHYSICS
+            # actually got, not the pre-clamp draw.
+            "box_half": jp.stack(
+                [
+                    jp.minimum(dr["half_xy"], self._dr_max_box_half_xy),
+                    jp.minimum(dr["half_xy"], self._dr_max_box_half_xy),
+                    dr["cube_half_z"],
+                ]
+            ),
+            # This episode's ACTUAL arm start pose, for robot_target_qpos.
+            # That term used to measure against self._init_q (the task_home
+            # KEYFRAME), but episodes start either from a pose drawn out of
+            # init_poses/train/mid.json (init_start_random="mid", the default)
+            # or from the keyframe plus init_qpos_noise whose wrist_3 amplitude
+            # is 6.28 rad -- so it was rewarding the policy for driving toward a
+            # pose the episode never started at, and with the wrist term
+            # dominating the norm it was mostly tanh-saturated anyway.
+            # evaluation/ur3_reward_replay.py:201 already does it this way on
+            # the real side (self.init_arm_q = arm_q on the first tick), so this
+            # also closes a silent sim/replay parity gap.
+            "init_arm_q": noisy_arm_qpos,
+            # Time-to-stage counters (steps), latched on the rising edge of each
+            # stage in _get_reward. Initialized to episode_length so "never
+            # happened" reads as a right-censored value rather than 0 -- a 0
+            # would average in as "reached instantly", inverting the metric.
+            "t_reach": jp.array(int(self._config.episode_length), dtype=jp.int32),
+            "t_grasp": jp.array(int(self._config.episode_length), dtype=jp.int32),
+            "t_lift": jp.array(int(self._config.episode_length), dtype=jp.int32),
+            # Alignment and jaw span sampled at the rising edge of `grasped` --
+            # the direct readout of whether grasp_align_thresh did what it was
+            # raised to do. Expect jaw_span_at_grasp ~= 0.030 (the 3 cm face),
+            # not 0.040 (the 4 cm long axis).
+            "align_at_grasp": jp.array(0.0, dtype=float),
+            "jaw_span_at_grasp": jp.array(0.0, dtype=float),
+            # Running minimum gripper-to-box distance (closest approach). The
+            # existing "dist_min" tracks BOX-to-TARGET; there was no approach
+            # -phase distance diagnostic at all, which is why the approach was
+            # effectively unobservable in W&B.
+            "grip_dist_min": jp.array(1e3, dtype=float),
+            # Previous-step TCP position, for the tcp_speed diagnostic. Zeroed
+            # here on purpose: mjx_env.make_data does NOT run forward kinematics,
+            # so data.site_xpos is all-zero at this point and seeding from it
+            # would be meaningless. _get_reward guards the first step explicitly.
+            "prev_tcp": jp.zeros(3, dtype=float),
         }
 
         # Stash the per-episode DR factors in info (read by _randomize_physics in
@@ -1840,6 +2092,11 @@ class UR3Pick(ur3_base.UR3Base):
             # Always 0 out of reset_to_state (its target_pos is caller-supplied
             # and bypasses reset()'s sampling and cap entirely).
             "target_z_capped": jp.array(0.0, dtype=float),
+            # 2026-08 approach/grasp/speed diagnostics -- see the module-level
+            # _STEP_METRIC_KEYS / _TERMINAL_METRIC_KEYS comment for how to read
+            # each one. Seeded identically in reset() and reset_to_state().
+            **{k: jp.array(0.0, dtype=float)
+               for k in _STEP_METRIC_KEYS + _TERMINAL_METRIC_KEYS},
             **{k: jp.array(0.0, dtype=float)
                for k in self._config.reward_config.scales.keys()},
         }
@@ -1867,6 +2124,26 @@ class UR3Pick(ur3_base.UR3Base):
             "last_action": jp.zeros(self._nu, dtype=float),
             "dist_min": jp.array(1e3, dtype=float),
             "hold_counter": jp.array(0, dtype=jp.int32),
+            # Nominal box half-extents. reset_to_state bypasses the per-episode
+            # physics DR draw (see the docstring above), so the identity values
+            # are correct here -- EXCEPT when the D17 cube-size probe supplies
+            # cube_half_extents, which overrides this a few lines below.
+            "box_half": jp.stack(
+                [
+                    self._dr_identity["half_xy"],
+                    self._dr_identity["half_xy"],
+                    self._dr_identity["cube_half_z"],
+                ]
+            ),
+            # Caller-supplied start pose (see reset()'s "init_arm_q" comment).
+            "init_arm_q": arm_qpos,
+            "t_reach": jp.array(int(self._config.episode_length), dtype=jp.int32),
+            "t_grasp": jp.array(int(self._config.episode_length), dtype=jp.int32),
+            "t_lift": jp.array(int(self._config.episode_length), dtype=jp.int32),
+            "align_at_grasp": jp.array(0.0, dtype=float),
+            "jaw_span_at_grasp": jp.array(0.0, dtype=float),
+            "grip_dist_min": jp.array(1e3, dtype=float),
+            "prev_tcp": jp.zeros(3, dtype=float),
         }
 
         if self._dr_enable:
@@ -1949,6 +2226,12 @@ class UR3Pick(ur3_base.UR3Base):
             info[_DR17_EVAL_CUBE_HALF_EXTENTS_KEY] = jp.asarray(
                 cube_half_extents, dtype=float
             )
+            # The caller's value MUST win over the nominal seeded above: step()
+            # writes cube_half_extents straight into model.geom_size UNCLAMPED
+            # (see the matching block there), so leaving box_half at nominal
+            # would score the 4 cm E1/E2 probe against 3 cm geometry and make
+            # its axis-aware jaw preference silently wrong.
+            info["box_half"] = jp.asarray(cube_half_extents, dtype=float)
 
         obs = self._get_obs(data, info)
         reward, done = jp.zeros(2)
@@ -2210,6 +2493,31 @@ class UR3Pick(ur3_base.UR3Base):
             lifted=info["lifted"],
             align_jaw=raw_signals["a_jaw"],
             align_app=raw_signals["a_app"],
+            # --- 2026-08 approach/grasp/speed diagnostics ---
+            # PER-STEP (brax sums; divide the logged eval/episode_* by
+            # episode_length to read a mean). Note align_jaw/align_app above are
+            # the PRE-cone raw cosines, so `alignment` here is not reconstructible
+            # from them -- it is the post-cone, post-preference value that
+            # actually gates the `grasped` latch, which is why it is logged
+            # separately.
+            grip_box_dist=raw_signals["grip_box_dist"],
+            finger_touch_dist=raw_signals["finger_touch_dist"],
+            alignment=raw_signals["alignment"],
+            jaw_span=raw_signals["span_jaw"],
+            tcp_speed=raw_signals["tcp_speed"],
+            grasp_gate_blocked=raw_signals["grasp_gate_blocked"],
+            # TERMINAL-GATED, same pattern as box_target_dist_* above. The three
+            # t_* counters are initialized to episode_length in reset, so a stage
+            # that never fired reads as a right-censored episode_length rather
+            # than a 0 that would average in as "happened instantly".
+            grip_box_dist_min=jp.where(is_terminal, info["grip_dist_min"], 0.0),
+            align_at_grasp=jp.where(is_terminal, info["align_at_grasp"], 0.0),
+            jaw_span_at_grasp=jp.where(
+                is_terminal, info["jaw_span_at_grasp"], 0.0
+            ),
+            t_reach=jp.where(is_terminal, info["t_reach"].astype(jp.float32), 0.0),
+            t_grasp=jp.where(is_terminal, info["t_grasp"].astype(jp.float32), 0.0),
+            t_lift=jp.where(is_terminal, info["t_lift"].astype(jp.float32), 0.0),
             # D18/D24 reach-safeguard diagnostic, terminal-gated exactly like
             # box_target_dist_* so the W&B episode-sum is the single per-episode
             # 0/1 and the cross-env mean is the true capping RATE.
@@ -2445,6 +2753,23 @@ class UR3Pick(ur3_base.UR3Base):
         # assumptions); max over the 3 box axes + abs makes the score invariant
         # to the cube's 24-fold (octahedral) symmetry, so every equivalent grasp
         # scores the same.
+        #
+        # 2026-08: that symmetry argument is FALSE for this geometry, which is
+        # why config.align_mode="axis_aware" adds a second tier below. The box
+        # is a 3x3x4 cm PRISM, so it has D4h (16-element) symmetry, not
+        # octahedral -- its local z is not interchangeable with x/y. Under the
+        # 3-axis max, a jaw spanning the 4 cm axis (9.9 mm of total finger
+        # clearance against the 49.9 mm opening) scores exactly as well as one
+        # spanning a 3 cm axis (19.9 mm), and a horizontal approach scores
+        # exactly as well as top-down.
+        #
+        # Sticky "lifted" as of the PREVIOUS step, read here before the latch
+        # block below updates it. Used to switch the axis-aware preferences off
+        # once the box is up: they exist to shape the approach and the grasp,
+        # and leaving them on would make gripper_align (scale 5.0, and ~fully
+        # paid at gripper_box_dist ~= 0 while holding) fight the transport stage
+        # every time the wrist has to tilt to reach a high or lateral target.
+        was_lifted = info["lifted"]
         jaw_axis = right_finger_touch_pos - left_finger_touch_pos
         jaw_axis = jaw_axis / (jp.linalg.norm(jaw_axis) + 1e-6)
         app_axis = (
@@ -2464,10 +2789,66 @@ class UR3Pick(ur3_base.UR3Base):
         # trap: the policy had to luck into near-perfect alignment before the
         # reward ever turned on. Still a PRODUCT so both axes must improve ("2 of
         # 3 axes aligned"), still proximity-gated below so it can't be farmed.
-        _cos_bound = 0.5
-        jaw_score = jp.clip((a_jaw - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0)
-        app_score = jp.clip((a_app - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0)
-        alignment = jaw_score * app_score
+        jaw_score = jp.clip((a_jaw - _COS_BOUND) / (1.0 - _COS_BOUND), 0.0, 1.0)
+        app_score = jp.clip((a_app - _COS_BOUND) / (1.0 - _COS_BOUND), 0.0, 1.0)
+        align_face = jaw_score * app_score
+
+        # Box support width along the jaw axis. For a box this is EXACTLY
+        # 2 * sum_i h_i * |u . b_i| (the support function of a rectangular
+        # cuboid), i.e. how far apart the fingers must be to clear it on this
+        # heading. Continuous in orientation -- no argmax, so no cliff and no
+        # tie-breaking on a symmetric cube -- and it already folds "is the jaw
+        # face-aligned" into "how wide must the jaw open", because any diagonal
+        # heading presents a wider span than the narrowest face.
+        span_jaw = 2.0 * (info["box_half"] @ jp.abs(jaw_axis @ box_axes))
+
+        if self._align_axis_aware:
+            # (a) JAW SPAN preference, in real finger-clearance units.
+            #     self._jaw_opening is parsed from the pad geoms (0.0499 m) in
+            #     __init__ so it cannot drift from the model. On the nominal
+            #     3x3x4 prism:
+            #       jaw || a 3 cm axis -> span 0.030 -> clearance 0.0199 -> 1.00
+            #       jaw || the 4 cm axis -> span 0.040 -> clearance 0.0099 -> 0.50
+            #     i.e. exactly the 19.9 vs 9.9 mm mechanical ratio -- DERIVED
+            #     from the gripper, not tuned. Expressed as a ratio against the
+            #     best achievable span for THIS episode's box, so it means the
+            #     same thing across the whole 2x2x3 .. 4x4x4 cm cube_size DR
+            #     range instead of silently rescaling with the draw.
+            clear_now = self._jaw_opening - span_jaw
+            clear_best = self._jaw_opening - 2.0 * jp.min(info["box_half"])
+            jaw_pref = jp.clip(clear_now / (clear_best + 1e-9), 0.0, 1.0)
+            # (b) TOP-DOWN approach preference.
+            #     SIGN IS LOAD-BEARING AND VERIFIED: the `tcp` site sits 6 mm
+            #     PAST the finger pads (mount-local z 0.145 vs 0.139), so
+            #     app_axis = fingertip_midpoint - tcp points BACK toward the
+            #     palm -- the opposite of what _get_obs's docstring calls
+            #     "palm -> fingertips". A top-down grasp therefore has
+            #     app_axis[2] ~ +1 (measured +0.807 at the task_home keyframe);
+            #     reaching UPWARD gives -1. Do NOT negate this term. The
+            #     axis_free scores above are unaffected either way because they
+            #     take jp.abs.
+            #     WORLD frame on purpose, not the box frame: the box always
+            #     rests upright (spawned with a world-Z yaw, flush on a plate
+            #     tilted <= ~4 deg), so "along the box's long axis" and
+            #     "downward" coincide at nominal -- but they DISAGREE for the
+            #     ~25% of cube_size draws where the box is oblate
+            #     (xy_half > z_half), and there only the world rule is right:
+            #     a box-frame rule would ask for a vertical jaw axis, i.e. one
+            #     finger underneath the table.
+            app_down = jp.clip(
+                (app_axis[2] - _COS_BOUND) / (1.0 - _COS_BOUND), 0.0, 1.0
+            )
+            # Floor both preferences so neither can zero the product: the whole
+            # point of the 0.5 cone above is that there is never a dead zone,
+            # and an unfloored preference would reintroduce one (a horizontal
+            # approach has app_down == 0 exactly).
+            f = float(self._config.align_pref_floor)
+            pref = (f + (1.0 - f) * jaw_pref) * (f + (1.0 - f) * app_down)
+            alignment = align_face * jp.where(was_lifted > 0.5, 1.0, pref)
+        else:
+            jaw_pref = jp.array(1.0, dtype=float)
+            app_down = jp.array(1.0, dtype=float)
+            alignment = align_face
         # Weighted by approach proximity so it shapes the final approach and
         # can't be farmed in free space. Gate WIDENED tanh(5d)->tanh(3d) so this
         # pays earlier in the approach, not only the final ~cm (DIAGHOLD300:
@@ -2484,9 +2865,17 @@ class UR3Pick(ur3_base.UR3Base):
         # lift -> transport chain behind alignment. 1.5 cm lets the pick chain
         # unlock a bit before perfect alignment (the `grasped` latch below still
         # needs real finger-pad contact, so this can't be farmed).
+        reach_now = gripper_box_dist < 0.015
+        info["t_reach"] = jp.where(
+            reach_now & (info["reached_box"] < 0.5), info["step"], info["t_reach"]
+        )
         info["reached_box"] = jp.maximum(
-            info["reached_box"],
-            (gripper_box_dist < 0.015).astype(float),
+            info["reached_box"], reach_now.astype(float)
+        )
+        # Closest approach seen this episode (approach-phase counterpart of
+        # info["dist_min"], which tracks BOX-to-TARGET).
+        info["grip_dist_min"] = jp.minimum(
+            info["grip_dist_min"], gripper_box_dist
         )
         # grasped: at the box AND both finger pads in contact with it.
         finger_box_contact = [
@@ -2507,11 +2896,36 @@ class UR3Pick(ur3_base.UR3Base):
             & both_pads_touch
             & (alignment > self._config.grasp_align_thresh)
         )
+        # Rising edge, computed BEFORE the jp.maximum below overwrites the latch.
+        # align_at_grasp / jaw_span_at_grasp are the direct readout of whether
+        # raising grasp_align_thresh actually changed WHICH grasps latch, rather
+        # than just how often: expect jaw_span_at_grasp ~= 0.030 (a 3 cm face),
+        # not 0.040 (the 4 cm long axis).
+        newly_grasped = grasp_now & (info["grasped"] < 0.5)
+        info["align_at_grasp"] = jp.where(
+            newly_grasped, alignment, info["align_at_grasp"]
+        )
+        info["jaw_span_at_grasp"] = jp.where(
+            newly_grasped, span_jaw, info["jaw_span_at_grasp"]
+        )
+        info["t_grasp"] = jp.where(newly_grasped, info["step"], info["t_grasp"])
+        # TRIPWIRE for a too-tight grasp_align_thresh: the hand IS at the box
+        # with both pads in contact, and only the alignment gate is holding the
+        # latch shut. If eval/episode_grasp_gate_blocked is large WHILE
+        # eval/episode_grasped stays ~0, the bar is too high and the whole
+        # lift/box_target/hold chain will never bootstrap -- lower the threshold
+        # rather than waiting out a flat 12 h run.
+        grasp_gate_blocked = (
+            (info["reached_box"] > 0.5) & both_pads_touch & jp.logical_not(grasp_now)
+        ).astype(float)
         info["grasped"] = jp.maximum(info["grasped"], grasp_now.astype(float))
         # lifted: a grasped box has cleared its per-episode resting height by
         # lift_eps. Anti-push latch — box_target only pays once this is set.
         box_off_rest = box_pos[2] > (info["box_rest_z"] + self._lift_eps)
         lift_now = box_off_rest & (info["grasped"] > 0.5)
+        info["t_lift"] = jp.where(
+            lift_now & (info["lifted"] < 0.5), info["step"], info["t_lift"]
+        )
         info["lifted"] = jp.maximum(info["lifted"], lift_now.astype(float))
 
         # LIVE (non-sticky) counterparts: grasped_live/lifted_live reflect
@@ -2623,15 +3037,54 @@ class UR3Pick(ur3_base.UR3Base):
         # its init pose to reach the (raised) target -- an un-gated version
         # actively fights that motion. box_target_dist floored around 30mm /
         # success ~3% on the 20260709 speedtest runs partly because of this.
+        #
+        # 2026-08 REFERENCE FIX: this measured against self._init_q -- the
+        # task_home KEYFRAME -- but episodes do not start there. They start from
+        # a pose drawn out of init_poses/train/mid.json (init_start_random="mid",
+        # the default) or from the keyframe plus init_qpos_noise, whose wrist_3
+        # amplitude is a full 6.28 rad. So the term was paying the policy to
+        # drive toward a pose the episode never started at, and with the wrist
+        # contribution dominating the norm it sat tanh-saturated (~0) for most
+        # of the approach anyway. info["init_arm_q"] is this episode's ACTUAL
+        # start pose; evaluation/ur3_reward_replay.py:201 already computed it
+        # that way on the real side, so this also closes a sim/replay parity gap
+        # that was silently biasing the regularizer stage of every retention
+        # number.
+        #
+        # NOTE this is a BONUS despite the name: the scale is POSITIVE and the
+        # raw signal is maximal at zero deviation, so it pays the arm to stay
+        # put. Combined with action_rate it is what made long-range motion net
+        # negative (measured: -0.163/tick sustained vs a +0.023/tick pull from
+        # gripper_box at d=0.40 m). Hence the default scale drop to 0.05.
         robot_target_qpos_penalty = (
             1
             - jp.tanh(
                 jp.linalg.norm(
-                    data.qpos[self._robot_arm_qposadr]
-                    - self._init_q[self._robot_arm_qposadr]
+                    data.qpos[self._robot_arm_qposadr] - info["init_arm_q"]
                 )
             )
         ) * (1 - lifted)
+
+        # TCP speed diagnostic (m/s). Not a reward term -- purely so the
+        # approach phase is observable in W&B, which it previously was not:
+        # nothing about speed, time-to-stage, or gripper-box distance was ever
+        # logged. First step is guarded because info["prev_tcp"] is seeded to
+        # zeros (mjx_env.make_data does not run forward kinematics, so there is
+        # no meaningful TCP position at reset time to seed from).
+        #
+        # The guard is `<= 1`, NOT `< 1`: step() does info["step"] += 1 BEFORE
+        # calling _get_reward, so the very first reward evaluation of an episode
+        # already sees step == 1. With `< 1` the guard never fired and step 1
+        # reported |gripper_pos - 0| / dt, i.e. ~21 m/s instead of 0.
+        # (The t_reach/t_grasp/t_lift counters share this 1-based convention:
+        # a stage that fires on the first step records 1, and "never" stays at
+        # the episode_length seeded in reset.)
+        tcp_speed = jp.where(
+            info["step"] <= 1,
+            0.0,
+            jp.linalg.norm(gripper_pos - info["prev_tcp"]) / self.dt,
+        )
+        info["prev_tcp"] = gripper_pos
 
         # Action-rate penalty: discourage large deltas between consecutive
         # actions (DeXtreme-style smoothness term). Raw value is a squared L2
@@ -2678,10 +3131,20 @@ class UR3Pick(ur3_base.UR3Base):
             "grip_box_dist": gripper_box_dist,
             "finger_touch_dist": finger_touch_dist,
 
-            # grasp-frame alignment (2-of-3-axis)
+            # grasp-frame alignment (2-of-3-axis face score, then the
+            # axis_aware preference factors; both are 1.0 under axis_free so
+            # the keys exist unconditionally and the pytree stays stable)
             "a_jaw": a_jaw,
             "a_app": a_app,
+            "align_face": align_face,
+            "jaw_pref": jaw_pref,
+            "app_down": app_down,
+            "span_jaw": span_jaw,
             "alignment": alignment,
+
+            # speed / gate diagnostics
+            "tcp_speed": tcp_speed,
+            "grasp_gate_blocked": grasp_gate_blocked,
 
             # events
             "reached_box": info["reached_box"],

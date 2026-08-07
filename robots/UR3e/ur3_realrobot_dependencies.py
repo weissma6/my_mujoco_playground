@@ -330,6 +330,12 @@ class UR3RealRobotPick:
         # position in the unsaturated regime; ctrl in (0.025, 0.05] just over-
         # drives against the joint limit, exactly as in sim).
         self._gripper_ctrl: float = 0.0
+        # Arm command integrator for control_law="integrate" (see
+        # policy_step_ctrl_update). None until the first tick of a rollout seeds
+        # it from the measured q; run_policy_loop MUST reset it to None per
+        # rollout, exactly like _gripper_ctrl / _finger_pos_est, or run N+1
+        # starts from run N's last command.
+        self._arm_ctrl: Optional[np.ndarray] = None
         self._gripper_lo: float = 0.0
         self._gripper_hi: float = 0.05
         self._finger_hi: float = 0.025
@@ -1067,6 +1073,8 @@ class UR3RealRobotPick:
         dt: float = 0.02,
         gripper_tau: float = 0.0,
         gripper_max_rate: float = float("inf"),
+        control_law: str = "rebase",
+        arm_lead_max: float = 0.04,
         dtype=np.float32,
     ) -> Tuple[np.ndarray, float, dict]:
         """Compute arm servoj target and gripper command from a 7D action.
@@ -1096,8 +1104,56 @@ class UR3RealRobotPick:
         action = np.asarray(action, dtype=dtype).reshape(-1)
         q = np.asarray(q, dtype=dtype)
 
-        # --- Arm: delta on measured joint positions ---
-        arm_ctrl = q + float(action_scale) * action[:6]
+        # --- Arm ------------------------------------------------------------
+        # TWO CONTROL LAWS. This is the single largest sim-to-real discrepancy
+        # measured in the D23 campaign, and it is a DEPLOY bug, not a model gap.
+        #
+        #   "rebase" (LEGACY, default): arm_ctrl = q + action_scale*action, with
+        #       q the joint position measured THIS tick. The servoJ target is
+        #       therefore never more than one delta ahead of where the arm
+        #       actually is, so the position loop's tracking error can never
+        #       accumulate to the level that would produce the commanded
+        #       velocity. Measured achieved/commanded joint rate on hardware:
+        #       0.137, and flat at 0.1355-0.1377 across ALL FIVE ladder policies
+        #       and 127 gap-protocol runs -- a textbook common-mode systematic,
+        #       and the reason the DR dose-response came out flat.
+        #
+        #   "integrate": arm_ctrl += action_scale*action, mirroring sim's
+        #       `ctrl = clip(data.ctrl + delta)` (ur3_pick.step). A/B in the SAME
+        #       MuJoCo model, same action, same dt: the sim law achieves 0.589 of
+        #       the commanded joint rate, the rebase law 0.112 -- a 5.3x gap with
+        #       zero dynamics error involved.
+        #
+        # arm_lead_max is a CONTINUOUS DIAL between them and the only safety knob
+        # to touch during bring-up:
+        #   arm_lead_max == action_scale -> the integrated command can never lead
+        #       measured q by more than one delta, i.e. functionally "rebase";
+        #   arm_lead_max == inf          -> pure open-loop, exactly sim.
+        # It exists because rebasing was an ACCIDENTAL anti-windup: recomputing
+        # the target from q every tick meant a blocked or stalled joint could
+        # never accumulate command. Open-loop integration has no such bound, so a
+        # protective stop, a collision, or a joint against its limit would let the
+        # command run arbitrarily far ahead and then snap when the obstruction
+        # clears. This clamp is the explicit replacement for that property.
+        if str(control_law) == "rebase":
+            arm_ctrl = q + float(action_scale) * action[:6]
+        elif str(control_law) == "integrate":
+            if self._arm_ctrl is None:
+                self._arm_ctrl = np.asarray(q, dtype=np.float64).copy()
+            self._arm_ctrl = self._arm_ctrl + float(action_scale) * action[:6]
+            lead = float(arm_lead_max)
+            if np.isfinite(lead):
+                self._arm_ctrl = np.clip(self._arm_ctrl, q - lead, q + lead)
+            if self._ctrl_lowers is not None and self._ctrl_uppers is not None:
+                self._arm_ctrl = np.clip(
+                    self._arm_ctrl, self._ctrl_lowers[:6], self._ctrl_uppers[:6]
+                )
+            arm_ctrl = self._arm_ctrl.astype(dtype)
+        else:
+            raise ValueError(
+                f"control_law must be 'rebase' or 'integrate', got "
+                f"{control_law!r}"
+            )
         if self._ctrl_lowers is not None and self._ctrl_uppers is not None:
             arm_ctrl = np.clip(arm_ctrl, self._ctrl_lowers[:6], self._ctrl_uppers[:6])
         arm_ctrl_pre_alpha = arm_ctrl.copy()
@@ -1167,6 +1223,11 @@ class UR3RealRobotPick:
         gripper_state_fn=None,
         gripper_tau: float = 0.0,
         gripper_max_rate: float = float("inf"),
+        # Arm control law -- see policy_step_ctrl_update. "rebase" is the legacy
+        # behaviour and stays the default so every archived run reproduces
+        # byte-for-byte; "integrate" mirrors sim and is ~5x faster on hardware.
+        control_law: str = "rebase",
+        arm_lead_max: float = 0.04,
         use_fk_tcp: bool = False,
         reach_tol: float = None,
         dwell_time_s: float = 0.0,
@@ -1231,6 +1292,10 @@ class UR3RealRobotPick:
         # the start of the run).
         self._gripper_ctrl = float(getattr(self, "_gripper_ctrl", 0.0))
         self._finger_pos_est = 0.0
+        # Arm command integrator: None => the first tick seeds it from measured
+        # q (mirrors ur3_pick.reset()'s init_ctrl = the arm's start qpos). MUST
+        # be cleared per rollout or run N+1 inherits run N's last command.
+        self._arm_ctrl = None
         # addvelocity: reset the finger-velocity finite-difference state per
         # rollout too, so a fresh run never diffs against the previous run's
         # last finger position. build_obs_from_feedback returns 0.0 velocity
@@ -1395,6 +1460,7 @@ class UR3RealRobotPick:
                     gripper_action_scale=gripper_action_scale,
                     alpha=alpha, dt=dt,
                     gripper_tau=gripper_tau, gripper_max_rate=gripper_max_rate,
+                    control_law=control_law, arm_lead_max=arm_lead_max,
                     dtype=dtype,
                 )
                 t1_ctrl = time.perf_counter()
@@ -1471,6 +1537,16 @@ class UR3RealRobotPick:
                     **{f"ctrl_pre_alpha{i}": diag["arm_ctrl_pre_alpha"][i]
                        for i in range(6)},
                     **{f"ctrl{i}": arm_ctrl[i] for i in range(6)},
+                    # Per-joint command LEAD over the measured position. This is
+                    # the number that distinguishes the two control laws and the
+                    # one to watch during bring-up: under "rebase" it is
+                    # identically action_scale*action (bounded by construction),
+                    # under "integrate" it grows until the servo keeps up. If it
+                    # pins at arm_lead_max for several consecutive ticks the arm
+                    # cannot follow and you are at the limit -- do not raise the
+                    # clamp further. Also lets the achieved/commanded ratio be
+                    # recomputed offline for every archived run.
+                    **{f"arm_lead{i}": float(arm_ctrl[i] - q[i]) for i in range(6)},
                     **{f"obs_q{i}": float(obs_batch[0, i]) for i in range(6)},
                     **{f"action{i}": action[i] for i in range(7)},
                     "gripper_norm": gripper_norm,

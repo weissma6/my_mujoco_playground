@@ -1,0 +1,6 @@
+config,real_3cm,real_3cm_complete,real_4cm,real_4cm_complete,sim
+L0_none,21,14,6,6,20
+L1_pos,21,17,6,0,17
+L2_pos_cube,21,21,6,2,23
+L3_pos_cube_robot,21,13,6,0,13
+L4_full,21,15,6,3,18

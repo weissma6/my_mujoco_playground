@@ -1,0 +1,16 @@
+\begin{table}[h]
+\centering
+\caption{Return retention on the 3~cm (in-distribution) cube. $R$ is the mean episode return, summed over the exact-parity reward subset only (\texttt{gripper\_box}, \texttt{approach\_open}, \texttt{gripper\_align}, \texttt{grasp}, \texttt{lift}, \texttt{action\_rate}), over paired episodes; retention is $R_{\mathrm{real}}/R_{\mathrm{sim}}$ on raw returns with a paired bootstrap resampling episodes. \enquote{Above floor} is the D9 reportability gate: yes only if the 95\,\% interval of the gap lies entirely outside the $\pm$noise-floor band.}
+\label{tab:retention}
+\begin{tabular}{lrrrrcrrc}
+\hline
+\textbf{Configuration} & \textbf{$n_{\mathrm{ep}}$} & \textbf{$R_{\mathrm{sim}}$} & \textbf{$R_{\mathrm{real}}$} & \textbf{Retention} & \textbf{95\,\% CI} & \textbf{Gap} & \textbf{Floor} & \textbf{Above floor} \\
+\hline
+L0 (none) & 5 & 370 & 616 & 1.66 & [1.00, 2.90] & -246 & 172 & no \\
+L1 (pos) & 6 & 3,586 & 1,795 & 0.50 & [0.41, 0.65] & 1,791 & 762 & yes \\
+L2 (pos+cube) & 7 & 3,163 & 2,276 & 0.72 & [0.55, 1.06] & 887 & 959 & no \\
+L3 (pos+cube+robot) & 5 & 3,524 & 1,777 & 0.50 & [0.37, 0.60] & 1,747 & 576 & yes \\
+L4 (full) & 6 & 2,839 & 1,705 & 0.60 & [0.45, 0.76] & 1,134 & 403 & yes \\
+\hline
+\end{tabular}
+\end{table}

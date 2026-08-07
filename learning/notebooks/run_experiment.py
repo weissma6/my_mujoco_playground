@@ -146,6 +146,15 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "gripper_align",
         "hold_target",
         "success_bonus",
+        # 2026-08 (v3 reward fix): the two scales behind the "moving is net
+        # negative at long range" diagnostic. Exposed so a sweep line can dial
+        # them without a code edit -- their DEFAULTS deliberately stay at the
+        # legacy -0.10 / 0.3, because evaluation/ur3_reward_replay.py reads
+        # ur3_pick.default_config() at import time to score ARCHIVED real-robot
+        # runs, and moving a default would retroactively rescore the D23
+        # campaign with scales those policies never trained under.
+        "robot_target_qpos",
+        "gripper_box",
         "success_tol",
         "num_eval_envs",
         "seed",
@@ -163,6 +172,14 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "target_z_jitter",
         "finger_random_init",
         "obs_include_velocity",
+        # 2026-08 (v3 reward fix): grasp-frame alignment knobs. align_mode is a
+        # STRING ("axis_free" | "axis_aware"); grasp_align_thresh's UNITS depend
+        # on it (a 39 deg misaligned grasp scores 0.307 under axis_free but
+        # 0.091 under axis_aware), so a sweep line must always set the two
+        # TOGETHER or the number is silently reinterpreted.
+        "align_mode",
+        "align_pref_floor",
+        "grasp_align_thresh",
     }
     overrides: Dict[str, Any] = {}
     for k, v in cfg.items():
@@ -1036,6 +1053,46 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_overrides["reward_config.scales.success_bonus"] = float(
                 cfg["success_bonus"]
             )
+        # --- 2026-08 v3 reward fix: anti-motion pressure -------------------
+        # Measured per-tick economics at d = 0.40 m: gripper_box pays +0.023 for
+        # closing distance flat out, while action_rate costs -0.175 (|dA| = 0.5
+        # over 7 dims) and robot_target_qpos costs -0.163 SUSTAINED for having
+        # left the start pose. Standing still was optimal until d ~= 2 cm --
+        # the reward-side half of the "slow approach when far away" finding.
+        # Recommended v3: robot_target_qpos 0.05, action_rate -0.02 (moves the
+        # break-even out to ~15 cm). Defaults stay legacy on purpose; see the
+        # reserved-set comment above.
+        if "robot_target_qpos" in cfg:
+            env_overrides["reward_config.scales.robot_target_qpos"] = float(
+                cfg["robot_target_qpos"]
+            )
+        if "gripper_box" in cfg:
+            # The approach-pull weight itself. Raising it is the only in-term
+            # lever left on long-range pull: the cascade's coarse scale (1.5) is
+            # already within ~15% of the best any single tanh can do at 0.40 m
+            # (k*sech^2(k*d) peaks at k ~= 1.9 there), so a tanh cannot be
+            # retuned into a strong long-range gradient -- only reweighted.
+            env_overrides["reward_config.scales.gripper_box"] = float(
+                cfg["gripper_box"]
+            )
+        # --- 2026-08 v3 reward fix: grasp-frame alignment ------------------
+        if "align_mode" in cfg:
+            # STRING knob, NOT a float. ur3_pick.__init__ validates it and
+            # resolves the branch at trace time. "axis_free" reproduces the
+            # pre-v3 env byte-for-byte; "axis_aware" additionally prefers a
+            # top-down approach and a jaw span with real finger clearance, so a
+            # side grasp across the box's 4 cm axis (9.9 mm clearance) stops
+            # scoring identically to a 3 cm face grasp (19.9 mm).
+            env_overrides["align_mode"] = str(cfg["align_mode"])
+        if "align_pref_floor" in cfg:
+            env_overrides["align_pref_floor"] = float(cfg["align_pref_floor"])
+        if "grasp_align_thresh" in cfg:
+            # UNITS DEPEND ON align_mode -- always set the pair together. This
+            # gate gutted the D23 grasp stage: at 0.3 under axis_free a 39.3 deg
+            # misaligned grasp still latched, unlocking lift(5) + box_target(20)
+            # + hold_target(6) = 31 raw/step for the rest of the episode, and
+            # measured grasp-stage sim->real retention was 0.06-0.21.
+            env_overrides["grasp_align_thresh"] = float(cfg["grasp_align_thresh"])
         if "success_tol" in cfg:
             env_overrides["success_tol"] = float(cfg["success_tol"])
         if "sticky_latches" in cfg:

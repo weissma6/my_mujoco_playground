@@ -153,6 +153,56 @@ LOOKAHEAD_TIME = 0.1              # servoj smoothing [0.03, 0.2]
 GAIN = 300                        # servoj stiffness [100, 2000]
 SERVOJ_A = 0.3                    # max joint accel [rad/s^2]
 SERVOJ_V = 1.0                    # max joint vel  [rad/s]
+# ---------------------------------------------------------------------------
+# ARM CONTROL LAW -- the largest measured sim-to-real discrepancy in the D23
+# campaign, and a DEPLOY bug rather than a model gap.
+#
+# "rebase" (default, legacy) recomputes the servoJ target from the MEASURED
+# joint position every tick, so the command can never lead the arm by more than
+# one delta and the position loop's tracking error never accumulates. Measured
+# achieved/commanded joint rate: 0.137, flat at 0.1355-0.1377 across all five
+# ladder policies and 127 gap-protocol runs. Sim integrates the COMMAND instead
+# (ur3_pick.step: ctrl = clip(data.ctrl + delta)); A/B in the same MuJoCo model
+# with the same action gives 0.589 (sim law) vs 0.112 (rebase) -- 5.3x, with no
+# dynamics error involved at all.
+#
+# BRING-UP ORDER MATTERS -- do NOT flip this to "integrate" first:
+#   1. sweep (SERVOJ_A, SERVOJ_V) 0.3/1.0 -> 4.0/3.0. NOTE URScript documents
+#      servoj's a and v as "not used in current version", so this may be inert;
+#      test it before assuming, because if they ARE honoured they are the
+#      binding constraint and nothing else matters. At action_scale=0.04 and
+#      50 Hz the policy asks for 2.0 rad/s, which 0.3 rad/s^2 needs 6.7 s to
+#      reach and 1.0 rad/s caps outright.
+#   2. LOOKAHEAD_TIME 0.1 -> 0.05 -> 0.03. 0.1 s is 5x the 20 ms control period
+#      -- the same class of error as the already-fixed servoJ t=5*dt.
+#   3. GAIN 300 -> 600. Raise LAST; this is the one that produces vibration and
+#      protective stops.
+#   4. only then CONTROL_LAW="integrate" with ARM_LEAD_MAX = ACTION_SCALE, which
+#      must reproduce step 3's ratio within noise -- if it does not, the
+#      integrator is wrong, stop.
+#   5. ramp ARM_LEAD_MAX upward, watching the arm_lead* CSV columns.
+# The arm will end up moving ~5x faster than in any previous run. Brief the
+# operator and keep a hand on the E-stop.
+CONTROL_LAW = "rebase"            # "rebase" (legacy) | "integrate" (sim parity)
+# Max rad the integrated command may lead the measured position. Replaces the
+# anti-windup that rebasing provided by accident: without it, a protective stop
+# or a collision lets the command run arbitrarily far ahead and then snap when
+# the obstruction clears. Ignored under CONTROL_LAW="rebase".
+# ARM_LEAD_MAX == ACTION_SCALE reproduces the legacy law exactly (verified).
+#
+# DO NOT SET THIS TO inf, AND DO NOT SIZE IT FROM AN OPEN-LOOP MEASUREMENT.
+# Measured 2026-08: replaying the D23 logged actions through the MuJoCo plant
+# under free integration drives the command lead to 3.30 rad median / 5.07 rad
+# max -- ~190 deg of wind-up. That is an artifact worth understanding rather
+# than a target: those actions are near-saturated BECAUSE the rebase law made
+# the arm too slow to ever arrive, so replayed open-loop they never stop
+# pushing. In a real closed loop the policy would see the arm actually moving
+# and back off. But it bounds the hazard: with no clamp, one stalled joint is
+# enough to wind up a large command that snaps when the stall clears.
+# Ramp in SMALL steps during bring-up (0.04 -> 0.08 -> 0.12 -> 0.16), watching
+# the arm_lead* CSV columns. If they pin at the clamp for more than a few
+# consecutive ticks the arm cannot keep up -- stop there, do not raise further.
+ARM_LEAD_MAX = 0.04
 ALPHA = 1                      # 1.0 = send the policy's full action (no blend; matches training)
 USE_FK_TCP = True                 # compute tcp_pos via MuJoCo FK (matches sim site)
 # Finger-plant low-pass. The first hardware success (9a6e399) ran TAU=0.1 s and
@@ -377,6 +427,8 @@ df, stats = robot.run_policy_loop(
     gripper_state_fn=gripper_state_fn,
     gripper_tau=GRIPPER_TAU,
     gripper_max_rate=GRIPPER_MAX_RATE,
+    control_law=CONTROL_LAW,
+    arm_lead_max=ARM_LEAD_MAX,
     use_fk_tcp=USE_FK_TCP,
     reach_tol=REACH_TOL,
     dwell_time_s=DWELL_TIME_S,
@@ -478,6 +530,12 @@ robot.save_run_metadata(
     alpha=ALPHA,
     gripper_tau=GRIPPER_TAU,
     gripper_max_rate=GRIPPER_MAX_RATE,
+    # Recorded in the run meta so a later analysis can tell a rebase-law run
+    # from an integrate-law one. gap_metrics.py's campaign filter needs this to
+    # keep the D23 campaign and any post-fix campaign apart -- mixing them
+    # fabricates double-counted runs, which its build already asserts against.
+    control_law=CONTROL_LAW,
+    arm_lead_max=ARM_LEAD_MAX,
     use_fk_tcp=USE_FK_TCP,
     policy_path=POLICY_PATH,
     model_path=MODEL_PATH,

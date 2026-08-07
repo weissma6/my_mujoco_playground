@@ -331,19 +331,57 @@ def load_real_trajectory(path: str, meta: dict = None) -> ReplayTrajectory:
 
 
 def apply_action_command_mode(
-    traj: ReplayTrajectory, action_scale: float, ctrl_lo, ctrl_hi
+    traj: ReplayTrajectory, action_scale: float, ctrl_lo, ctrl_hi,
+    control_law: str = "rebase", arm_lead_max: float = 0.04,
 ) -> ReplayTrajectory:
-    """Rebuild arm_ctrl from the raw action: clip(q_real[t] + action_scale*action).
+    """Rebuild arm_ctrl from the raw action under a chosen ARM CONTROL LAW.
 
     The gripper stays on the logged gripper_ctrl (it is an integrator on the
     real robot, not reconstructible from one action). action_scale MUST come
     from the run's meta.json -- never hardcode it.
+
+    control_law mirrors robots/UR3e/ur3_realrobot_dependencies.
+    policy_step_ctrl_update:
+
+      "rebase"    clip(q_real[t] + action_scale*action[t])  -- what every
+                  archived run actually executed. The command never leads the
+                  measured position by more than one delta, so the servo's
+                  tracking error cannot accumulate; measured achieved/commanded
+                  joint rate on hardware was 0.137, flat across all 5 policies
+                  and 127 runs.
+      "integrate" ctrl[t] = clip(ctrl[t-1] + action_scale*action[t]), bounded to
+                  within +-arm_lead_max of the measured q. This is what SIM does
+                  (ur3_pick.step) and what the deploy fix switches to.
+
+    Passing "integrate" here replays an ARCHIVED run under the PROPOSED law, so
+    the fix can be evaluated on already-collected data before any hardware time.
+    Read the result carefully though: the logged actions were produced by a
+    policy reacting to the rebase law's slow arm, so this is a counterfactual on
+    the CONTROLLER only, not a prediction of the new closed-loop trajectory.
     """
     if traj.action is None:
         raise ValueError("command_mode='action' needs action0..6 columns.")
-    arm_ctrl = np.clip(
-        traj.arm_q + action_scale * traj.action[:, :6], ctrl_lo[:6], ctrl_hi[:6]
-    )
+    if control_law == "rebase":
+        arm_ctrl = np.clip(
+            traj.arm_q + action_scale * traj.action[:, :6], ctrl_lo[:6], ctrl_hi[:6]
+        )
+    elif control_law == "integrate":
+        n = traj.arm_q.shape[0]
+        arm_ctrl = np.empty_like(traj.arm_q)
+        # Seeded from the first measured pose, mirroring the deploy loop's
+        # per-rollout `self._arm_ctrl = None`.
+        c = traj.arm_q[0].astype(float).copy()
+        for t in range(n):
+            c = c + action_scale * traj.action[t, :6]
+            if np.isfinite(arm_lead_max):
+                c = np.clip(c, traj.arm_q[t] - arm_lead_max,
+                            traj.arm_q[t] + arm_lead_max)
+            c = np.clip(c, ctrl_lo[:6], ctrl_hi[:6])
+            arm_ctrl[t] = c
+    else:
+        raise ValueError(
+            f"control_law must be 'rebase' or 'integrate', got {control_law!r}"
+        )
     return dataclasses.replace(traj, arm_ctrl=arm_ctrl)
 
 
@@ -357,9 +395,17 @@ def _load_meta(run_dir: str) -> dict:
 
 
 def replay_real_run(
-    run_dir: str, command_mode: str = "ctrl", xml_path: str = None
+    run_dir: str, command_mode: str = "ctrl", xml_path: str = None,
+    control_law: str = "rebase", arm_lead_max: float = 0.04,
 ) -> dict:
-    """One-step + open-loop replay of one real run folder. Returns a summary."""
+    """One-step + open-loop replay of one real run folder. Returns a summary.
+
+    control_law / arm_lead_max apply ONLY when command_mode == "action" (the
+    "ctrl" mode drives the model with the servoJ targets exactly as logged, so
+    there is no law to choose). Use command_mode="action" with
+    control_law="integrate" to replay an archived run under the PROPOSED deploy
+    control law -- the offline gate that must pass before any hardware bring-up.
+    """
     rep = DynamicsReplay(xml_path)
     traj = load_real_trajectory(run_dir)
     meta = _load_meta(run_dir) if os.path.isdir(run_dir) else {}
@@ -372,7 +418,8 @@ def replay_real_run(
                 "ur3_pick_meta.json (never hardcoded)."
             )
         traj = apply_action_command_mode(
-            traj, float(action_scale), rep.ctrl_lo, rep.ctrl_hi
+            traj, float(action_scale), rep.ctrl_lo, rep.ctrl_hi,
+            control_law=control_law, arm_lead_max=arm_lead_max,
         )
 
     os_df = rep.one_step(traj)
@@ -383,6 +430,8 @@ def replay_real_run(
         "run_dir": run_dir,
         "n_ticks": len(traj),
         "command_mode": command_mode,
+        "control_law": control_law if command_mode == "action" else "logged",
+        "arm_lead_max": arm_lead_max if command_mode == "action" else float("nan"),
         "one_step": os_df,
         "open_loop": ol_df,
         "E_replay_onestep_joint_rad2": e_replay(os_df, "joint_sq_err"),

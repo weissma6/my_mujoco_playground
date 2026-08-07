@@ -1,0 +1,13 @@
+VT2 Results -- provenance
+============================================================
+git commit      : 5d590113e8db8ad4eeb53a669713b6e664cbe952
+git branch      : addvelocity
+git status      : dirty
+gap_metrics.csv : sha256 c39f0d8e0bdeb6ee799c61bbffface5917179bf180d0166db95eb8f61d2f5879
+                  2260 rows
+f6_replay_summary.csv : sha256 f8e825c1970b5d7767b41fb2a97bfb196af495bb922716b59fcaa7f72d904ae3
+
+Regenerate everything from the raw run folders:
+  python evaluation/gap_metrics.py --build      # -> gap_metrics.csv
+  python evaluation/run_f6_replay.py            # -> f6_replay_summary.csv
+  python evaluation/report/build_report.py      # -> tables/ figures/

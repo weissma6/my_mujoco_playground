@@ -1,0 +1,21 @@
+\begin{table}[h]
+\centering
+\caption{Dynamics-replay fidelity over completed real trials. One-step error re-synchronises the model to the measured state every control tick and integrates a single tick; open-loop sets the measured initial state once and then replays the whole logged command sequence without correction. Time-to-divergence is the first tick at which open-loop tool-centre-point error exceeds 1\,cm.}
+\label{tab:replay}
+\begin{tabular}{lrrrrrr}
+\hline
+\textbf{Configuration} & \textbf{$n$} & \textbf{One-step TCP (mm)} & \textbf{$E_{\mathrm{replay}}$ (rad$^2$)} & \textbf{TTD (steps)} & \textbf{TTD (s)} & \textbf{Never div.} \\
+\hline
+L0 (none) & 20 & 1.02 & 7.80e-06 & 15 & 0.30 & 3 \\
+L1 (pos) & 17 & 1.14 & 1.01e-05 & 21 & 0.42 & 0 \\
+L2 (pos+cube) & 23 & 1.16 & 8.15e-06 & 20 & 0.40 & 0 \\
+L3 (pos+cube+robot) & 13 & 0.89 & 7.02e-06 & 76 & 1.50 & 1 \\
+L4 (full) & 18 & 0.96 & 7.32e-06 & 15 & 0.30 & 0 \\
+\hline
+\end{tabular}
+
+\vspace{2pt}
+\begin{minipage}{0.95\linewidth}
+\footnotesize Replay is driven by the logged servoJ targets, so the policy is not in the feedback loop; it measures model-versus-robot error along the states that policy visited, and is therefore not a policy-independent quantity. Time-to-divergence is not comparable across configurations, since each policy generates a different trajectory.
+\end{minipage}
+\end{table}

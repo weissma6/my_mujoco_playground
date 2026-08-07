@@ -1,0 +1,21 @@
+\begin{table}[h]
+\centering
+\caption{Board conditions against the pose ranges seen during training. \enquote{in} means the condition falls inside the randomization range that configuration was trained with. $L0$ is out of distribution everywhere by construction: the ladder generator collapses every pose parameter to a single point for it, so it saw one cube position, one yaw, a flat table at nominal height and one arm pose.}
+\label{tab:coverage}
+\begin{tabular}{llllcc}
+\hline
+\textbf{Cond.} & \textbf{Ep.} & \textbf{What varies} & \textbf{Trained range} & \textbf{$L1$--$L4$} & \textbf{$L0$} \\
+\hline
+A1--A3 & 0--2 & Field position (P1/P2/P3) & \texttt{box\_xy\_jitter} (0.17, 0.24) & in & \textbf{out} \\
+B1--B2 & 3--4 & Cube yaw $45^\circ$ & \texttt{box\_z\_rot\_range} $6.28$ rad (full) & in & \textbf{out} \\
+C1 & 5 & Table tilt 5.5$^\circ$ & \texttt{lifter\_tilt\_max} 2.9$^\circ$ & \textbf{out} & \textbf{out} \\
+D1 & 6 & Support height 150~mm & \texttt{lifter\_height\_abs} 0.00--0.22~m & in & \textbf{out} \\
+E1--E2 & 7--8 & 4~cm cube & \texttt{cube\_size\_xy} $\leq0.020$~m half-extent & \textbf{out} & \textbf{out} \\
+\hline
+\end{tabular}
+
+\vspace{2pt}
+\begin{minipage}{0.95\linewidth}
+\footnotesize Ranges are read from \texttt{ur3\_pick.default\_config()} and \texttt{batch\_runs/sweeps/gen\_dr\_ladder.py}; the realized tilt and height are read from the sim mirror's metadata, which reproduces the physically measured condition. The paired comparison remains valid for out-of-distribution conditions, since simulation is given the same condition as the robot; what they do not support is reading the absolute returns as an achievable ceiling.
+\end{minipage}
+\end{table}

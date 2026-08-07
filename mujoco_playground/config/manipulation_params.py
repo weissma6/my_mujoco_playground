@@ -180,6 +180,22 @@ def brax_ppo_config(
         # the issue and is left unchanged. LR decay intentionally NOT added --
         # brax uses constant LR here by design (stability came from 64
         # minibatches, not decay); revisit only if v_loss still spikes.
+        #
+        # CLARIFICATION (2026-07-30, resolved a vault/thesis discrepancy): the
+        # "64" above documents a finding from a SPECIFIC early sweep-JSONL
+        # override (the 2026-07-10 first-successful-real-pick run and its
+        # "reproduce winner" follow-ups explicitly set num_minibatches=64 in
+        # their own sweep line), NOT this block's own num_minibatches (30
+        # lines up), which has been 32 in every commit touching this file
+        # since 2025-01-19 -- confirmed via `git log --follow -p`, never once
+        # 64. This comment was added in commit cef9a876 (2026-07-10) without
+        # that commit touching num_minibatches at all, so it was always
+        # describing someone else's override, not this default. The DR-ladder
+        # sweeps (batch_runs/sweeps/gen_dr_ladder*.py) never override
+        # num_minibatches either, so they train at this file's 32 -- an
+        # inherited default, not a regression from 64. See [[UR3Pick
+        # Environment]] "num_minibatches settled" in the vault for the full
+        # trace, and stop treating this as an open question.
         rl_config.reward_scaling = 0.05
         rl_config.network_factory.policy_hidden_layer_sizes = (32, 32, 32, 32)
         if impl == "warp":

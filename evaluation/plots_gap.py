@@ -34,7 +34,9 @@ Local usage:
 """
 
 import argparse
+import json
 import os
+import re
 import sys
 
 import matplotlib
@@ -81,6 +83,66 @@ def _config_color(i: int):
     return _TAB20[i % len(_TAB20)]
 
 
+# ===========================================================================
+# Policy provenance -- which trained checkpoint is behind each ladder rung.
+# A bare "L1_pos" legend entry names the DR level, not the policy; these
+# helpers put the median-seed run_id (robots/UR3e/gap_protocol_policy_map.
+# json) on the figure: a short tag in the legend/tick label, the full run_id
+# in a footnote. Figures where the policy IS the series (F2's legend, F9's
+# x-groups) carry it; F1/F5 (level on the x-axis) and F4 (level in the title)
+# are unchanged.
+# ===========================================================================
+
+POLICY_MAP_PATH = os.path.join(REPO_ROOT, "robots", "UR3e",
+                               "gap_protocol_policy_map.json")
+
+# `L1_pos_vel_s1_20260729_112044_2201` -> seed 1, 2026-07-29 11:20:44.
+_RUN_ID_RE = re.compile(r"_s(\d+)_(\d{8})_(\d{6})")
+
+
+def load_policy_map(path: str = POLICY_MAP_PATH):
+    """{config_id: run_id} from gap_protocol_policy_map.json. Underscore-
+    prefixed keys (`_comment`, `_superseded_*`) are bookkeeping, not configs.
+    Returns {} if the file is missing -- provenance annotation is optional,
+    a missing map must not take the figures down.
+    """
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        raw = json.load(f)
+    return {k: v for k, v in raw.items()
+            if not k.startswith("_") and isinstance(v, str)}
+
+
+def _short_policy_tag(run_id: str):
+    """Legend-sized provenance: `s1, 0729_1120` (seed, MMDD_HHMM). Falls back
+    to the run_id's tail if it doesn't follow the sweep naming convention.
+    """
+    m = _RUN_ID_RE.search(run_id)
+    if not m:
+        return run_id[-18:]
+    seed, date, time = m.groups()
+    return f"s{seed}, {date[4:8]}_{time[:4]}"
+
+
+def _policy_legend_label(config_id: str, policy_map):
+    """`L1_pos (s1, 0729_1120)` -- or the bare config_id if unmapped."""
+    run_id = (policy_map or {}).get(config_id)
+    return config_id if not run_id else f"{config_id} ({_short_policy_tag(run_id)})"
+
+
+def _policy_footnote(configs, policy_map):
+    """Full run_ids, one per line, for the figure's caption block. Returns ""
+    when nothing is mapped, so callers can skip the text() call entirely.
+    """
+    lines = [f"    {c} = {policy_map[c]}"
+             for c in configs if c in (policy_map or {})]
+    if not lines:
+        return ""
+    return ("policy checkpoints (median-seed selection, "
+            "robots/UR3e/gap_protocol_policy_map.json):\n" + "\n".join(lines))
+
+
 def _savefig(fig, out_path: str):
     """png+pdf @ dpi=300, bbox_inches="tight" -- the repo's existing pattern."""
     base, _ext = os.path.splitext(out_path)
@@ -122,13 +184,19 @@ def _f1_series(df, levels, failed_configs, cube_size):
             real_mean.append(np.nan); real_err.append(0.0)
             continue
         sub = sub_all[(sub_all["config_id"] == c) & (sub_all["domain"] == "sim")]
+        # Exact-parity subset (D8) -- must match the retention/floor calls
+        # below, or the sim line and the real line would be summed over
+        # different reward definitions.
+        sub = gm._filter_terms(sub, gm.EXACT_PARITY_TERMS, "_f1_series")
         per_seed = gm._run_totals(sub).groupby("seed")["total"].mean()
         sim_mean.append(float(per_seed.mean()))
         sim_lo.append(float(per_seed.min()))
         sim_hi.append(float(per_seed.max()))
-        r = gm.retention(sub_all, c, cube_size=cube_size)
+        r = gm.retention(sub_all, c, cube_size=cube_size,
+                          terms=gm.EXACT_PARITY_TERMS)
         real_mean.append(r["R_real"])
-        real_err.append(gm.noise_floor(sub_all, c, cube_size=cube_size)["noise_floor"])
+        real_err.append(gm.noise_floor(sub_all, c, cube_size=cube_size,
+                                        terms=gm.EXACT_PARITY_TERMS)["noise_floor"])
     return tuple(map(np.array, (sim_mean, sim_lo, sim_hi, real_mean, real_err)))
 
 
@@ -244,13 +312,17 @@ def f1_dose_response_cube_split(df, levels, out_path, failed_configs=(),
 # ===========================================================================
 
 
-def f2_term_retention(df, configs, out_path, cube_size=None):
+def f2_term_retention(df, configs, out_path, cube_size=None, policy_map=None):
     """Grouped bars, one group per term (gm.TERM_ORDER, which already starts
     gripper_box -> approach_open -> gripper_align -> grasp -> lift ->
     box_target), one bar per config within a group. Proxy terms
     (gm.PROXY_TERMS: grasp, no_floor_collision) are hatched.
 
     `cube_size` (D17): pin to "3cm"/"4cm" -- required if `df` mixes both.
+
+    `policy_map` ({config_id: run_id}, e.g. `load_policy_map()`): the policy
+    IS the legend here, so each entry gets a short provenance tag and the
+    full run_ids go in a footnote. None -> bare config_ids, as before.
     """
     n_cfg = len(configs)
     terms = gm.TERM_ORDER
@@ -264,7 +336,7 @@ def f2_term_retention(df, configs, out_path, cube_size=None):
         for j, (xp, val, h) in enumerate(zip(xpos, tr["retention"].to_numpy(), hatches)):
             ax.bar(xp, val, width=width, color=_config_color(i), hatch=h,
                    edgecolor="black", linewidth=0.4,
-                   label=c if j == 0 else None)
+                   label=_policy_legend_label(c, policy_map) if j == 0 else None)
 
     ax.axhline(1.0, color="black", linewidth=1, linestyle="--", alpha=0.6)
     ax.set_xticks(np.arange(len(terms)))
@@ -274,7 +346,12 @@ def f2_term_retention(df, configs, out_path, cube_size=None):
                  "(DIAGNOSTIC / proposed -- no precedent for this figure; "
                  "hatched = proxy term, no direct real sensor)",
                  fontweight="bold", fontsize=10)
-    ax.legend(fontsize=8, ncol=min(n_cfg, 4))
+    ax.legend(fontsize=8, ncol=min(n_cfg, 3))
+    footnote = _policy_footnote(configs, policy_map)
+    if footnote:
+        ax.text(0.0, -0.30, footnote, transform=ax.transAxes,
+                ha="left", va="top", fontsize=6.5, style="italic",
+                family="monospace")
     ax.grid(True, alpha=0.3, axis="y")
     plt.tight_layout()
     return _savefig(fig, out_path)
@@ -356,10 +433,13 @@ def f3_per_step_trace(step_reward, out_path, policies=None):
 
 
 def f4_paired_scatter(df, config, out_path, cube_size=None, n_boot=10000, seed=0):
-    """`cube_size` (D17): pin to "3cm"/"4cm" -- required if `df` mixes both."""
-    piv = gm.per_episode_returns(df, config, cube_size=cube_size)
+    """`cube_size` (D17): pin to "3cm"/"4cm" -- required if `df` mixes both.
+    Exact-parity subset (D8), matching the retention/regret tables."""
+    piv = gm.per_episode_returns(df, config, cube_size=cube_size,
+                                  terms=gm.EXACT_PARITY_TERMS)
     sim, real = piv["sim"].to_numpy(), piv["real"].to_numpy()
-    floor = gm.noise_floor(df, config, cube_size=cube_size)["noise_floor"]
+    floor = gm.noise_floor(df, config, cube_size=cube_size,
+                            terms=gm.EXACT_PARITY_TERMS)["noise_floor"]
 
     rng = np.random.default_rng(seed)
     idx = gm._boot_episode_indices(len(piv), n_boot, rng)
@@ -399,11 +479,15 @@ def f4_paired_scatter(df, config, out_path, cube_size=None, n_boot=10000, seed=0
 
 
 def f5_selection_regret(df, configs, out_path, cube_size=None, n_boot=10000, seed=0):
-    """`cube_size` (D17): pin to "3cm"/"4cm" -- required if `df` mixes both."""
+    """`cube_size` (D17): pin to "3cm"/"4cm" -- required if `df` mixes both.
+    Exact-parity subset (D8), matching the t7_regret table."""
     res = gm.sim_selection_regret(df, configs=configs, cube_size=cube_size,
-                                  n_boot=n_boot, seed=seed)
+                                  n_boot=n_boot, seed=seed,
+                                  terms=gm.EXACT_PARITY_TERMS)
     floor = float(np.mean([
-        gm.noise_floor(df, c, cube_size=cube_size)["noise_floor"] for c in configs
+        gm.noise_floor(df, c, cube_size=cube_size,
+                        terms=gm.EXACT_PARITY_TERMS)["noise_floor"]
+        for c in configs
     ]))
 
     fig = plt.figure(figsize=(13, 8))
@@ -548,10 +632,12 @@ def f8_loo_attribution(df, full_config, loo_configs, out_path, cube_size=None):
     LOO sim rollouts are cube-agnostic in practice, but the guard still
     applies if the table happens to carry both).
     """
-    r_full = gm.retention(df, full_config, cube_size=cube_size)["R_sim"]
+    r_full = gm.retention(df, full_config, cube_size=cube_size,
+                          terms=gm.EXACT_PARITY_TERMS)["R_sim"]
     drops, labels = [], []
     for c in loo_configs:
-        r_c = gm.retention(df, c, cube_size=cube_size)["R_sim"]
+        r_c = gm.retention(df, c, cube_size=cube_size,
+                           terms=gm.EXACT_PARITY_TERMS)["R_sim"]
         drops.append(r_full - r_c)
         labels.append(c)
 
@@ -580,17 +666,26 @@ def f8_loo_attribution(df, full_config, loo_configs, out_path, cube_size=None):
 # ===========================================================================
 
 
-def f9_abort_rate_bar(df, configs, out_path, cube_sizes=("3cm", "4cm")):
+def f9_abort_rate_bar(df, configs, out_path, cube_sizes=("3cm", "4cm"),
+                      policy_map=None):
     """Grouped bar chart, one group per policy, one bar per cube_size:
     fraction of real runs with stop_reason == "abort" (gap_metrics.
     abort_rate, D16/D17). D17 explicitly predicts this will be HIGH for the
     4cm cube (Hand-E clearance drops to ~0.5cm/side, right at the mechanical
     grasp limit) -- expect it and report it as a finding, not a bug.
+
+    `policy_map` ({config_id: run_id}, e.g. `load_policy_map()`): the legend
+    here is cube_size, so the per-policy provenance tag rides on the x tick
+    labels instead, with the full run_ids in the caption. None -> bare
+    config_ids, as before.
     """
     n_cube = len(cube_sizes)
     width = 0.8 / max(n_cube, 1)
     x = np.arange(len(configs))
-    fig, ax = plt.subplots(figsize=(9, 5.5))
+    tagged = [c for c in configs if c in (policy_map or {})]
+    # Two-line tick labels (config + provenance tag) can't also be rotated --
+    # the diagonal second line runs straight into the caption block below.
+    fig, ax = plt.subplots(figsize=(11 if tagged else 9, 5.5))
 
     for i, cube in enumerate(cube_sizes):
         rates = [gm.abort_rate(df, c, cube_size=cube)["abort_rate"] for c in configs]
@@ -601,18 +696,32 @@ def f9_abort_rate_bar(df, configs, out_path, cube_sizes=("3cm", "4cm")):
               edgecolor="black", linewidth=0.5, label=label)
 
     ax.set_xticks(x)
-    ax.set_xticklabels(configs, rotation=20, ha="right")
+    if tagged:
+        ax.set_xticklabels(
+            [c if c not in policy_map
+             else f"{c}\n({_short_policy_tag(policy_map[c])})" for c in configs],
+            rotation=0, ha="center", fontsize=8)
+    else:
+        ax.set_xticklabels(configs, rotation=20, ha="right")
     ax.set_ylim(0, 1)
-    ax.set_ylabel("abort rate (fraction of real runs, stop_reason == abort)")
+    # Short ylabel: the full "stop_reason == abort" definition lives in the
+    # caption below, and the long form overruns the axes height once the
+    # provenance tick labels + footnote take their space.
+    ax.set_ylabel("abort rate (fraction of real runs)", fontsize=9)
     ax.set_title("F9 -- abort rate by policy x cube_size", fontweight="bold")
     ax.text(
-        0.5, -0.32,
+        0.5, -0.20 if tagged else -0.32,
         "D16/D17: abort = protective stop / RTDE error / mocap loss / hang watchdog\n"
         "(real robot only -- sim never aborts). 4cm is OOD (hatched, outside the\n"
         "trained cube_size DR range, D17); a high 4cm abort rate is an expected,\n"
         "reportable finding, not a bug.",
         transform=ax.transAxes, ha="center", va="top", fontsize=7.5, style="italic",
     )
+    footnote = _policy_footnote(configs, policy_map)
+    if footnote:
+        ax.text(0.0, -0.45, footnote, transform=ax.transAxes,
+                ha="left", va="top", fontsize=6.5, style="italic",
+                family="monospace")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3, axis="y")
     plt.tight_layout()

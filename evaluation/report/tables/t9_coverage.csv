@@ -1,0 +1,6 @@
+condition,episodes,in_dist_L1_L4,in_dist_L0
+A1-A3,0-2,in,out
+B1-B2,3-4,in,out
+C1,5,out,out
+D1,6,in,out
+E1-E2,7-8,out,out

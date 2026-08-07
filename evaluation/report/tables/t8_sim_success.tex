@@ -1,0 +1,16 @@
+\begin{table}[h]
+\centering
+\caption{Task outcome in simulation on the 3~cm cube: the environment's own success flag over the matched-initialisation rollouts, and the median final cube-to-target distance. Even in simulation the policies succeed on a minority of episodes, so the retention ratios in Table~\ref{tab:retention} compare two imperfect systems rather than a solved simulation against a failing robot.}
+\label{tab:sim_success}
+\begin{tabular}{lrrrr}
+\hline
+\textbf{Configuration} & \textbf{$n$} & \textbf{Successes} & \textbf{Rate} & \textbf{Median final dist.\ (cm)} \\
+\hline
+L0 (none) & 21 & 0 & 0\,\% & 35.4 \\
+L1 (pos) & 18 & 2 & 11\,\% & 2.4 \\
+L2 (pos+cube) & 23 & 5 & 22\,\% & 12.7 \\
+L3 (pos+cube+robot) & 15 & 2 & 13\,\% & 6.9 \\
+L4 (full) & 15 & 0 & 0\,\% & 19.9 \\
+\hline
+\end{tabular}
+\end{table}

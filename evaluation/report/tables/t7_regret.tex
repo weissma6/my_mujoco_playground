@@ -1,0 +1,21 @@
+\begin{table}[h]
+\centering
+\caption{Sim-selection regret on the 3~cm cube: the real return given up by choosing a configuration on simulated return alone. \enquote{Picked} is how often the bootstrap selects that configuration as the simulated best.}
+\label{tab:regret}
+\begin{tabular}{lrrr}
+\hline
+\textbf{Configuration} & \textbf{$R_{\mathrm{sim}}$} & \textbf{$R_{\mathrm{real}}$} & \textbf{Picked} \\
+\hline
+L2 (pos+cube) & 2,938 & 1,853 & 64\,\% \\
+L3 (pos+cube+robot) & 2,777 & 1,072 & 36\,\% \\
+L1 (pos) & 2,563 & 1,509 & 0\,\% \\
+L4 (full) & 2,390 & 1,615 & 0\,\% \\
+L0 (none) & 385 & 490 & 0\,\% \\
+\hline
+\end{tabular}
+
+\vspace{2pt}
+\begin{minipage}{0.95\linewidth}
+\footnotesize Regret 0 (95\,\% CI [0, 1025]) over the 3 episodes common to all five configurations in both domains. The point estimate is zero because simulation and reality agree on the best configuration here, but with only 3 shared episodes the interval still admits a substantial loss.
+\end{minipage}
+\end{table}

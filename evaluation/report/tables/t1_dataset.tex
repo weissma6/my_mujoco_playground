@@ -1,0 +1,17 @@
+\begin{table}[h]
+\centering
+\caption{Trials in the D23 evaluation campaign, after the campaign filter. \enquote{Compl.} counts trials that ran all $H=400$ steps; the remainder aborted (protective stop, RTDE error, mocap loss or hang watchdog). Sim rollouts mirror only completed real trials.}
+\label{tab:dataset}
+\begin{tabular}{lrrrrr}
+\hline
+\textbf{Configuration} & \textbf{Real 3\,cm} & \textbf{Compl.} & \textbf{Real 4\,cm} & \textbf{Compl.} & \textbf{Sim} \\
+\hline
+L0 (none) & 21 & 14 & 6 & 6 & 20 \\
+L1 (pos) & 21 & 17 & 6 & 0 & 17 \\
+L2 (pos+cube) & 21 & 21 & 6 & 2 & 23 \\
+L3 (pos+cube+robot) & 21 & 13 & 6 & 0 & 13 \\
+L4 (full) & 21 & 15 & 6 & 3 & 18 \\
+\textbf{Total} & \textbf{105} & \textbf{80} & \textbf{30} & \textbf{11} & \textbf{91} \\
+\hline
+\end{tabular}
+\end{table}

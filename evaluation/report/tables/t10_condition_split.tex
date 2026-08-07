@@ -1,0 +1,21 @@
+\begin{table}[h]
+\centering
+\caption{Retention split by condition group on the 3~cm cube: the baseline conditions A1--A3, which vary only the field position, against the perturbed conditions B1, B2, C1 and D1. For the four configurations that learn the task the two agree within the sampling error, so the comparison between configurations is not an artifact of the perturbed conditions. $L0$ has a single paired baseline episode and its split is not interpretable.}
+\label{tab:condition_split}
+\begin{tabular}{lrrrr}
+\hline
+\textbf{Configuration} & \textbf{$n$ base} & \textbf{Retention base} & \textbf{$n$ pert.} & \textbf{Retention pert.} \\
+\hline
+L0 (none) & 1 & 3.89 & 4 & 1.22 \\
+L1 (pos) & 2 & 0.49 & 4 & 0.50 \\
+L2 (pos+cube) & 3 & 0.84 & 4 & 0.64 \\
+L3 (pos+cube+robot) & 1 & 0.58 & 4 & 0.48 \\
+L4 (full) & 3 & 0.55 & 3 & 0.68 \\
+\hline
+\end{tabular}
+
+\vspace{2pt}
+\begin{minipage}{0.95\linewidth}
+\footnotesize Most configurations contribute only one to three baseline episodes, so the retention headline in Table~\ref{tab:retention} is dominated by the perturbed conditions.
+\end{minipage}
+\end{table}

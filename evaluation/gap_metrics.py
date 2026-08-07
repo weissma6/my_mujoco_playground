@@ -38,6 +38,7 @@ from all rows of those episodes.
 Local usage:
     python evaluation/gap_metrics.py --selftest
     python evaluation/gap_metrics.py --csv gap_metrics.csv --config L2_pos_cube
+    python evaluation/gap_metrics.py --build   # merge raw run folders -> gap_metrics.csv
 """
 
 import argparse
@@ -67,9 +68,30 @@ STAGE_MAP = {
 }
 STAGE_ORDER = ["approach", "grasp", "lift", "transport", "regularizer"]
 # Terms that are PROXIES on the real robot (no direct sensor -> supplied via a
-# proxy signal). Flagged for the diagnostic caption in F2; not treated
-# differently numerically.
-PROXY_TERMS = {"grasp", "no_floor_collision"}
+# proxy signal, or gated behind a latch that a proxy signal drives). Flagged
+# for the diagnostic caption in F2; not treated differently numerically.
+#
+# CORRECTED 2026-07-30 -- the original split ({"grasp",
+# "no_floor_collision"}) was wrong in both directions, found while tracing
+# RewardReplayer.step() in ur3_reward_replay.py against what it actually
+# reads from the real logs:
+#   * `grasp` = finger_closed * reached * alignment -- reached and alignment
+#     are both pure geometry (gripper_box_dist, box axes from mocap), and
+#     grasp_contact only ever appears in the SEPARATE `grasped` latch below.
+#     `grasp` itself never reads grasp_contact -- it is NOT a proxy term.
+#   * `no_floor_collision` genuinely has no real sensor (defaults to 1 on
+#     real) -- correctly a proxy.
+#   * The real proxy chain is: grasp_contact (Hand-E flag, <=10 Hz) ->
+#     `grasped` latch -> `lifted` latch, and `lifted` then GATES/MULTIPLIES
+#     three more terms: `box_target` (x lifted), `hold_target` (in_hold
+#     requires lifted), and `robot_target_qpos` (x (1-lifted)). All three
+#     inherit the proxy even though they read geometry too -- a false
+#     `grasped` (Hand-E never detects contact) forces all three to whatever
+#     value lifted=False implies, regardless of the true box/target
+#     geometry. `lift` itself is gated on `reached` only (pure geometry), so
+#     it stays proxy-free.
+PROXY_TERMS = {"no_floor_collision", "box_target", "hold_target",
+               "robot_target_qpos"}
 # D8: the "exact-parity" headline subset -- everything geometrically exact,
 # i.e. TERM_ORDER minus the proxies above. This is the subset the per-step
 # reward trace (plots_gap.f3_per_step_trace) is built from.
@@ -138,17 +160,42 @@ def _filter_cube_size(df: pd.DataFrame, cube_size, fn_name: str) -> pd.DataFrame
     return df
 
 
+def _filter_terms(df: pd.DataFrame, terms, fn_name: str) -> pd.DataFrame:
+    """Restrict to a specific set of `term` rows before summing.
+
+    `terms=None` (the default everywhere below) keeps every row -- i.e. the
+    FULL reward, proxy terms included. This is deliberately opt-in rather
+    than defaulted to `EXACT_PARITY_TERMS`, because term_retention()'s
+    per-term/per-stage breakdown (F2) needs every term present to report on.
+    Callers computing a HEADLINE cross-domain metric -- retention(),
+    noise_floor(), sim_selection_regret() -- must pass
+    `terms=EXACT_PARITY_TERMS` explicitly; nothing upstream filters for them.
+    (Found 2026-07-30: EXACT_PARITY_TERMS was defined but never actually
+    applied anywhere in this call chain, so every headline number silently
+    included the proxy-affected terms despite 3 Method.md's "the headline
+    result is defined on this exact-parity subset." This parameter, plus the
+    explicit `terms=` passed at every headline call site, is the fix.)
+    """
+    if terms is None or "term" not in df.columns:
+        return df
+    return df[df["term"].isin(terms)]
+
+
 def per_episode_returns(
-    df: pd.DataFrame, config: str, episodes=None, cube_size=None
+    df: pd.DataFrame, config: str, episodes=None, cube_size=None, terms=None
 ) -> pd.DataFrame:
     """Paired per-episode returns for one config (+ one cube_size, D17).
 
     Returns a DataFrame indexed by episode_id with columns ['sim','real'] --
     each the mean total return over that episode's seeds (sim) / repeats (real).
     Only episodes present in BOTH domains are kept (pairing requirement).
+    `terms`: optional iterable of term names to restrict to before summing
+    (e.g. EXACT_PARITY_TERMS) -- see `_filter_terms`. Default None = full
+    reward, all terms.
     """
     sub = _filter_cube_size(df[df["config_id"] == config], cube_size,
                              "per_episode_returns")
+    sub = _filter_terms(sub, terms, "per_episode_returns")
     tot = _run_totals(sub)
     if episodes is not None:
         tot = tot[tot["episode_id"].isin(episodes)]
@@ -175,6 +222,11 @@ def _boot_episode_indices(n_ep: int, n_boot: int, rng) -> np.ndarray:
 def _percentile_ci(samples, lo=2.5, hi=97.5):
     s = np.asarray(samples, dtype=float)
     s = s[np.isfinite(s)]
+    if s.size == 0:
+        # No finite bootstrap samples (e.g. 0 paired episodes fed in --
+        # np.percentile raises IndexError on an empty array otherwise).
+        # NaN is the honest "undefined" answer, not a crash.
+        return float("nan"), float("nan")
     return float(np.percentile(s, lo)), float(np.percentile(s, hi))
 
 
@@ -184,7 +236,7 @@ def _percentile_ci(samples, lo=2.5, hi=97.5):
 
 
 def retention(df, config, subset="exact", episodes=None, cube_size=None,
-              n_boot=10000, seed=0):
+              n_boot=10000, seed=0, terms=None):
     """Real/sim return retention for one config + paired-bootstrap 95% CI.
 
     ratio = mean_episode(real) / mean_episode(sim), on RAW returns (no
@@ -193,11 +245,32 @@ def retention(df, config, subset="exact", episodes=None, cube_size=None,
     matched episodes); pass `episodes` to restrict to a subset's episode_ids.
     `cube_size` (D17): pin to "3cm"/"4cm" when `df` mixes both -- see
     `_filter_cube_size`.
+    `terms`: optional iterable of term names to sum over instead of the
+    full reward (e.g. `EXACT_PARITY_TERMS`) -- see `_filter_terms`. THE
+    HEADLINE RETENTION NUMBER MUST PASS `terms=EXACT_PARITY_TERMS`: 3
+    Method.md's exact-parity paragraph promises the headline is computed on
+    that subset, and nothing does so unless the caller asks. Default None
+    (full reward) is kept only for callers that deliberately want it.
     """
-    piv = per_episode_returns(df, config, episodes=episodes, cube_size=cube_size)
+    piv = per_episode_returns(df, config, episodes=episodes,
+                               cube_size=cube_size, terms=terms)
     real = piv["real"].to_numpy()
     sim = piv["sim"].to_numpy()
     n = len(piv)
+    if n == 0:
+        # No episode has BOTH a sim and a real row for this (config,
+        # cube_size) -- e.g. the sim mirror (Commit 7) was never rolled out
+        # for this cube on this config. NaN everywhere is the honest
+        # "undefined, not measured" answer; the alternative (falling through
+        # to np.mean([])) would still be NaN for R_sim/R_real but crash later
+        # in the bootstrap (rng.integers(0, 0, ...) -> all-NaN ratios ->
+        # np.percentile on an empty finite-value array raises IndexError).
+        return {
+            "config_id": config, "subset": subset, "cube_size": cube_size,
+            "n_episodes": 0,
+            "R_sim": float("nan"), "R_real": float("nan"),
+            "retention": float("nan"), "ci95": (float("nan"), float("nan")),
+        }
     point = float(np.mean(real) / np.mean(sim))
 
     rng = np.random.default_rng(seed)
@@ -212,7 +285,7 @@ def retention(df, config, subset="exact", episodes=None, cube_size=None,
     }
 
 
-def noise_floor(df, config, episodes=None, cube_size=None):
+def noise_floor(df, config, episodes=None, cube_size=None, terms=None):
     """D9's measurement floor -- spread of the k repeats' PAIRED sim-real
     gaps (corrected 2026-07-22), NOT the spread of the k raw real returns.
 
@@ -249,16 +322,20 @@ def noise_floor(df, config, episodes=None, cube_size=None):
     per-repeat sim data, where the two floors provably differ.
 
     `cube_size` (D17): pin to "3cm"/"4cm" when `df` mixes both -- see
-    `_filter_cube_size`.
+    `_filter_cube_size`. `terms`: optional iterable of term names (e.g.
+    `EXACT_PARITY_TERMS`) to restrict to before summing -- see
+    `_filter_terms`. Pass the SAME `terms` used for the paired `retention()`
+    call, so the floor is measured on the same reward definition the gap is
+    checked against.
     """
-    real = _filter_cube_size(
+    real = _filter_terms(_filter_cube_size(
         df[(df["config_id"] == config) & (df["domain"] == "real")],
         cube_size, "noise_floor",
-    )
-    sim = _filter_cube_size(
+    ), terms, "noise_floor")
+    sim = _filter_terms(_filter_cube_size(
         df[(df["config_id"] == config) & (df["domain"] == "sim")],
         cube_size, "noise_floor",
-    )
+    ), terms, "noise_floor")
     real_tot = _run_totals(real)  # one row per (episode_id, repeat[, cube_size])
     if episodes is not None:
         real_tot = real_tot[real_tot["episode_id"].isin(episodes)]
@@ -384,9 +461,9 @@ def term_retention(df, config, episodes=None, cube_size=None):
     }
 
 
-def _config_returns_matrix(df, configs):
+def _config_returns_matrix(df, configs, terms=None):
     """(episode_ids, R_sim[config x ep], R_real[config x ep]) on a shared episode set."""
-    pivs = {c: per_episode_returns(df, c) for c in configs}
+    pivs = {c: per_episode_returns(df, c, terms=terms) for c in configs}
     common = None
     for p in pivs.values():
         s = set(p.index)
@@ -399,7 +476,8 @@ def _config_returns_matrix(df, configs):
     return np.array(common), sim, real
 
 
-def sim_selection_regret(df, configs=None, cube_size=None, n_boot=10000, seed=0):
+def sim_selection_regret(df, configs=None, cube_size=None, n_boot=10000,
+                          seed=0, terms=None):
     """Sim-selection regret R = R_real(c*) - R_real(argmax_c R_sim).
 
     c*      = argmax_c R_real (the config you WOULD have picked with real data)
@@ -416,12 +494,16 @@ def sim_selection_regret(df, configs=None, cube_size=None, n_boot=10000, seed=0)
     `_filter_cube_size`. The config *set* to select over is always the 4
     D14-surviving real-deployed rungs (or whatever `configs` names); cube_size
     only says which physical-cube dataset that selection is scored against.
+    `terms`: optional iterable of term names (e.g. `EXACT_PARITY_TERMS`) --
+    3 Method.md defines both R_sim/R_real here as "mean exact-parity return",
+    so the report-facing caller must pass `terms=EXACT_PARITY_TERMS`; see
+    `_filter_terms`.
     """
     df = _filter_cube_size(df, cube_size, "sim_selection_regret")
     if configs is None:
         configs = sorted(df["config_id"].unique())
     configs = list(configs)
-    eps, sim, real = _config_returns_matrix(df, configs)
+    eps, sim, real = _config_returns_matrix(df, configs, terms=terms)
 
     R_sim = sim.mean(axis=1)
     R_real = real.mean(axis=1)
@@ -486,6 +568,377 @@ def gate_against_noise_floor(value, ci, floor):
     if lo > floor or hi < -floor:
         return "reportable"
     return "within_noise_floor"
+
+
+# ===========================================================================
+# Build gap_metrics.csv from the raw per-run folders (the missing half of
+# Commit 8 -- run_gap_protocol_sim.py's own docstring calls this "a later
+# merge into evaluation/gap_metrics.csv [that] can walk both trees
+# symmetrically"). PLAIN MuJoCo FK only (via ur3_reward_replay) -- no MJX, no
+# robot, safe to run locally per CLAUDE.md.
+#
+# Real leaf dirs (robots/UR3e/real_robot_results/gap_protocol/<config>/
+# <protocol_id>/<leaf>/) carry RAW geometry only (ur3_pick_meta.json,
+# measured_init.json, ur3_pick_states.csv) -- no reward terms are logged on
+# the real robot. Sim leaf dirs (robots/UR3e/sim_results/gap_protocol/
+# <config>/<protocol_id>/<leaf>/, written by run_gap_protocol_sim.py) already
+# carry per-step scaled reward terms in sim_states.csv (sim_meta.json for
+# bookkeeping). So:
+#   * sim  rows: sum sim_states.csv's existing TERM_ORDER columns over steps.
+#   * real rows: replay ur3_pick_states.csv through
+#     ur3_reward_replay.replay_dataframe() (line-for-line port of
+#     ur3_pick.py's _get_reward, plain MuJoCo forward kinematics) to
+#     reconstruct the same per-step term columns, THEN sum over steps.
+# Both are then episode-summed scaled returns per term, matching the module
+# docstring's definition of scaled_return_H.
+#
+# Folder names are NOT parsed for episode_id/repeat/cube_size/config_id --
+# real leaf names are inconsistent (some carry a condition-letter prefix like
+# "A3_ep2_rep3_3cm", some don't, e.g. "ep1_rep1_3cm") and are easy to get
+# subtly wrong. Every field instead comes straight out of the run's own
+# meta json (ur3_pick_meta.json / sim_meta.json), which is unambiguous by
+# construction.
+#
+# Aborted real runs (stop_reason == "abort") ARE included: they still write
+# a meta json + a (truncated) states.csv, abort_rate() (D16/D17) needs their
+# stop_reason present in the long table, and per-episode pairing (D16)
+# already excludes them downstream where relevant -- silently dropping them
+# here would just make the abort rate itself unmeasurable.
+# ===========================================================================
+
+
+# CAMPAIGN FILTER (added 2026-07-30 after a contamination bug was found).
+#
+# robots/UR3e/real_robot_results/gap_protocol/ contains TWO campaigns:
+#   * 2026-07-22, git 1c624db3: policies `L*_s?_20260717_*` (novelocitymodel
+#     branch, 26-D obs, stale table geometry), leaf dirs named `ep0_rep1_3cm`
+#     (no condition prefix).
+#   * 2026-07-29, git 15426ef3: the D23 velocity ladder, policies
+#     `L*_vel_s1_20260729_*` (33-D obs, real 95mm table), leaf dirs named
+#     `A1_ep0_rep1_3cm` (condition-prefixed).
+# gap_protocol_policy_map.json marks the first set `_superseded_...`.
+#
+# Mixing them is not merely noisy, it is CORRUPTING: both campaigns reuse
+# episode_id 0/1/2 AND seed 1, so a legacy `ep0_rep1_3cm` and a D23
+# `A1_ep0_rep1_3cm` share an identical (config_id, domain, seed, episode_id,
+# repeat, cube_size) key. `_run_totals` groups on exactly that key and SUMS,
+# so the two runs silently merge into one fabricated run with ~double the
+# return. Measured on the unfiltered build: 290 colliding term-rows (29 runs).
+#
+# A sim/real pair is only meaningful if BOTH SIDES RAN THE SAME POLICY
+# CHECKPOINT, so the filter below is by policy_run_id against the map, plus
+# (sim side) a check that the mirrored real folder is itself a D23 folder --
+# 12 sim runs use a D23 policy but were initialized from a LEGACY real run's
+# measured_init.json, i.e. they mirror a run the robot executed with a
+# different policy entirely.
+POLICY_MAP_PATH = os.path.join(
+    os.path.dirname(_EVAL_DIR), "robots", "UR3e", "gap_protocol_policy_map.json")
+
+
+def load_policy_map(path: str = None):
+    """{config_id: policy_run_id} from gap_protocol_policy_map.json.
+    Underscore-prefixed keys (`_comment`, `_superseded_*`) are bookkeeping.
+    Returns {} if absent -- callers must then SKIP filtering loudly rather
+    than silently accepting a mixed-campaign table.
+    """
+    import json
+    path = path or POLICY_MAP_PATH
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    return {k: v for k, v in raw.items()
+            if not k.startswith("_") and isinstance(v, str)}
+
+
+def _is_legacy_leafname(name):
+    """D23 leaf dirs are condition-prefixed (`A1_ep0_rep1_3cm`); the
+    superseded 2026-07-22 campaign's are not (`ep0_rep1_3cm`)."""
+    return os.path.basename(str(name).rstrip("/")).startswith("ep")
+
+
+def _extract_seed(policy_run_id):
+    """Best-effort seed extraction from a policy_run_id like
+    'L1_pos_vel_s1_20260729_112044_2201' -> 1. Returns None if absent --
+    callers must tolerate a missing seed (LONG_COLUMNS' 'seed' is bookkeeping
+    only; no downstream function here groups by it).
+    """
+    if not policy_run_id:
+        return None
+    m = re.search(r"_s(\d+)_", policy_run_id)
+    return int(m.group(1)) if m else None
+
+
+def _iter_run_dirs(root, protocol_id):
+    """Yield (config_id, leaf_dir_path) for every run folder under
+    root/<config_id>/<protocol_id>/<leaf>/. Silently skips configs that don't
+    have a <protocol_id> subfolder (e.g. unrelated configs living next to
+    gap_protocol/ in the same real_robot_results tree).
+    """
+    if not os.path.isdir(root):
+        return
+    for config_id in sorted(os.listdir(root)):
+        proto_dir = os.path.join(root, config_id, protocol_id)
+        if not os.path.isdir(proto_dir):
+            continue
+        for leaf in sorted(os.listdir(proto_dir)):
+            leaf_dir = os.path.join(proto_dir, leaf)
+            if os.path.isdir(leaf_dir):
+                yield config_id, leaf_dir
+
+
+def _load_json(path):
+    import json
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _rows_from_sim_leaf(leaf_dir, policy_map=None, skips=None):
+    """One row per TERM_ORDER term for a single sim_results leaf dir."""
+    meta_path = os.path.join(leaf_dir, "sim_meta.json")
+    states_path = os.path.join(leaf_dir, "sim_states.csv")
+    if not (os.path.isfile(meta_path) and os.path.isfile(states_path)):
+        print(f"[build] skip (missing sim_meta.json/sim_states.csv): {leaf_dir}")
+        return []
+    meta = _load_json(meta_path)
+    if policy_map:
+        want = policy_map.get(meta["config_id"])
+        got = meta.get("policy_run_id")
+        if want and got != want:
+            if skips is not None:
+                skips["sim_wrong_policy"].append((leaf_dir, got))
+            return []
+        # A D23-policy rollout initialized from a LEGACY real run mirrors a
+        # run the robot executed under a DIFFERENT policy -- not a valid pair.
+        if _is_legacy_leafname(meta.get("measured_init_path") and
+                                os.path.dirname(meta["measured_init_path"])):
+            if skips is not None:
+                skips["sim_mirrors_legacy"].append((leaf_dir, got))
+            return []
+    try:
+        df = pd.read_csv(states_path)
+    except pd.errors.EmptyDataError:
+        df = pd.DataFrame()
+    if len(df) == 0:
+        # Sim never aborts (run_gap_protocol_sim.py's stop_reason is always
+        # "horizon_complete", D16) -- an empty sim_states.csv here would be
+        # an actual pipeline bug, not an expected outcome. Still don't crash
+        # the whole build over one bad folder: emit zero-return rows and
+        # print loudly so it gets noticed.
+        print(f"[build] WARNING: empty sim_states.csv (unexpected -- sim "
+              f"never aborts), emitting zero-return rows: {leaf_dir}")
+    seed = _extract_seed(meta.get("policy_run_id"))
+    rows = []
+    for term in TERM_ORDER:
+        total = float(df[term].sum()) if term in df.columns else 0.0
+        rows.append(dict(
+            config_id=meta["config_id"], seed=seed,
+            episode_id=meta["episode_id"], repeat=meta["repeat"],
+            cube_size=meta["cube_size"], term=term, domain="sim",
+            scaled_return_H=total,
+            policy_run_id=meta.get("policy_run_id"),
+            achieved_hz=meta.get("achieved_hz"),
+            overrun_count=meta.get("overrun_count"),
+            stop_reason=meta.get("stop_reason"),
+            protocol_hash=meta.get("poses_sha256"),
+        ))
+    return rows
+
+
+def _rows_from_real_leaf(leaf_dir, replay_dataframe, xml_path,
+                          policy_map=None, skips=None):
+    """One row per TERM_ORDER term for a single real_robot_results leaf dir.
+
+    `replay_dataframe` is passed in (not imported at module top) so that
+    gap_metrics.py's own import graph stays numpy/pandas-only unless --build
+    is actually used -- ur3_reward_replay additionally needs matplotlib and
+    mujoco (plain FK, not MJX; still heavier than this module normally
+    needs).
+    """
+    meta_path = os.path.join(leaf_dir, "ur3_pick_meta.json")
+    states_path = os.path.join(leaf_dir, "ur3_pick_states.csv")
+    if not (os.path.isfile(meta_path) and os.path.isfile(states_path)):
+        print(f"[build] skip (missing ur3_pick_meta.json/ur3_pick_states.csv): "
+              f"{leaf_dir}")
+        return []
+    meta = _load_json(meta_path)
+    if policy_map:
+        want = policy_map.get(meta["config_id"])
+        got = meta.get("policy_run_id")
+        if want and got != want:
+            if skips is not None:
+                skips["real_wrong_policy"].append((leaf_dir, got))
+            return []
+    # 0-step aborts (stop_step: 0, e.g. the hang watchdog fires before a
+    # single control loop iteration is logged) leave ur3_pick_states.csv
+    # empty or containing not even a header row -- pd.read_csv raises
+    # EmptyDataError in that case rather than returning a 0-row frame. These
+    # are NOT a data error to skip: they are a genuine (config, cube_size)
+    # abort that abort_rate() (D16/D17) needs to count, so still emit rows
+    # here, just with scaled_return_H=0.0 for every term (zero steps ->
+    # zero accrued reward) and stop_reason carried through from the meta.
+    try:
+        df = pd.read_csv(states_path)
+    except pd.errors.EmptyDataError:
+        df = pd.DataFrame()
+    if len(df) == 0:
+        print(f"[build] 0-step run (stop_reason={meta.get('stop_reason')}), "
+              f"emitting zero-return rows: {leaf_dir}")
+        reward_df = pd.DataFrame(columns=TERM_ORDER)
+    else:
+        # target=None -> replay_dataframe reads per-row target_x/y/z from the
+        # log itself (present in ur3_pick_states.csv), so this can never
+        # disagree with what the run was actually scored against.
+        #
+        # cfg / box_half: score each run with the reward THAT policy trained
+        # under, not with ur3_pick.default_config(). Before the v3 reward fix
+        # every deployed policy shared the defaults so this was a no-op, but a
+        # v3 policy trains with align_mode="axis_aware", a raised
+        # grasp_align_thresh, and reduced action_rate / robot_target_qpos --
+        # replaying it under v2 reward would change WHICH steps latch `grasped`
+        # and silently corrupt the grasp/lift/transport stages of every
+        # retention number. config_for_policy falls back to the defaults (with a
+        # warning) when the policy's metadata.json is absent, so the archived
+        # D23 campaign replays exactly as before.
+        from ur3_reward_replay import (  # local import, see docstring above
+            CUBE_HALF_EXTENTS, config_for_policy,
+        )
+        reward_df = replay_dataframe(
+            df, xml_path=xml_path, target=None, contact_col="grasped",
+            cfg=config_for_policy(meta.get("policy_run_id")),
+            box_half=CUBE_HALF_EXTENTS.get(meta.get("cube_size", "3cm")),
+        )
+    seed = _extract_seed(meta.get("policy_run_id"))
+    rows = []
+    for term in TERM_ORDER:
+        total = float(reward_df[term].sum()) if term in reward_df.columns \
+            else 0.0
+        rows.append(dict(
+            config_id=meta["config_id"], seed=seed,
+            episode_id=meta["episode_id"], repeat=meta["repeat"],
+            cube_size=meta["cube_size"], term=term, domain="real",
+            scaled_return_H=total,
+            policy_run_id=meta.get("policy_run_id"),
+            achieved_hz=meta.get("achieved_hz"),
+            overrun_count=meta.get("overrun_count"),
+            stop_reason=meta.get("stop_reason"),
+            protocol_hash=meta.get("poses_sha256"),
+        ))
+    return rows
+
+
+def build_long_csv(
+    real_root=os.path.join("robots", "UR3e", "real_robot_results", "gap_protocol"),
+    sim_root=os.path.join("robots", "UR3e", "sim_results", "gap_protocol"),
+    protocol_id="gap_v1",
+    xml_path=None,
+    out_csv=None,
+):
+    """Merge the raw real + sim run folders into one long-format DataFrame
+    matching LONG_COLUMNS, and (if out_csv is given) write it to disk.
+
+    `real_root`/`sim_root` are relative to the repo root by default (run this
+    from the repo root, e.g. `python evaluation/gap_metrics.py --build`).
+    Returns the merged DataFrame either way, so callers (e.g. a notebook)
+    can also just inspect it without writing a file.
+    """
+    from ur3_reward_replay import replay_dataframe  # local import, see above
+
+    policy_map = load_policy_map()
+    if policy_map:
+        print(f"[build] campaign filter ON -- keeping only runs whose "
+              f"policy_run_id matches gap_protocol_policy_map.json:")
+        for k, v in sorted(policy_map.items()):
+            print(f"         {k}: {v}")
+    else:
+        print(f"[build] WARNING: no policy map at {POLICY_MAP_PATH} -- campaign "
+              f"filter OFF. The output MAY MIX the superseded 2026-07-22 "
+              f"campaign with the D23 one; see the campaign-filter note above.")
+    skips = {"sim_wrong_policy": [], "sim_mirrors_legacy": [],
+             "real_wrong_policy": [], "real_superseded_rerun": []}
+
+    rows = []
+    n_sim_leaves = n_real_leaves = 0
+    for config_id, leaf_dir in _iter_run_dirs(sim_root, protocol_id):
+        n_sim_leaves += 1
+        rows.extend(_rows_from_sim_leaf(leaf_dir, policy_map, skips))
+
+    # Within-D23 re-runs: L0_none episodes 3-5 were executed twice on
+    # 2026-07-29 -- once before the condition-prefix naming convention
+    # (`ep3_rep1_3cm`, 17:04-17:10) and again after it (`B1_ep3_rep1_3cm`,
+    # 17:19-17:24). Same policy, same episode/repeat/cube, so they collide on
+    # the run-identity key exactly like the cross-campaign case. Keep the
+    # CONDITION-PREFIXED run: it is the canonical D23 board labelling every
+    # other config uses, it is the later execution, and the earlier batch has
+    # aborts where the re-run completed all 400 steps.
+    real_leaves = list(_iter_run_dirs(real_root, protocol_id))
+    _by_key = {}
+    for _cfg, leaf_dir in real_leaves:
+        mp = os.path.join(leaf_dir, "ur3_pick_meta.json")
+        if not os.path.isfile(mp):
+            continue
+        m = _load_json(mp)
+        if policy_map and policy_map.get(m["config_id"]) not in (
+                None, m.get("policy_run_id")):
+            continue  # dropped by the campaign filter anyway
+        _by_key.setdefault(
+            (m["config_id"], m["episode_id"], m["repeat"], m.get("cube_size")),
+            []).append((leaf_dir, m.get("timestamp") or ""))
+    superseded = set()
+    for key, cands in _by_key.items():
+        if len(cands) < 2:
+            continue
+        # prefer condition-prefixed, then latest timestamp
+        ranked = sorted(cands, key=lambda c: (
+            _is_legacy_leafname(c[0]), c[1]), reverse=False)
+        keep = ranked[0]
+        for leaf_dir, ts in ranked[1:]:
+            superseded.add(leaf_dir)
+            skips["real_superseded_rerun"].append((leaf_dir, f"kept {os.path.basename(keep[0])}"))
+
+    for config_id, leaf_dir in real_leaves:
+        n_real_leaves += 1
+        if leaf_dir in superseded:
+            continue
+        rows.extend(_rows_from_real_leaf(leaf_dir, replay_dataframe, xml_path,
+                                          policy_map, skips))
+
+    for reason, dropped in skips.items():
+        if dropped:
+            pols = sorted({p for _, p in dropped})
+            print(f"[build] DROPPED {len(dropped)} runs ({reason}); "
+                  f"policy_run_id(s): {pols}")
+
+    df = pd.DataFrame(rows, columns=LONG_COLUMNS + ["policy_run_id"])
+
+    # Hard guard: after filtering, no two runs may share a run-identity key.
+    # If they do, _run_totals would SUM them into one fabricated run (this is
+    # exactly the 2026-07-22/D23 collision the campaign filter exists to
+    # prevent) -- fail loudly rather than emit a corrupted table.
+    if len(df):
+        kcols = ["config_id", "domain", "seed", "episode_id", "repeat",
+                 "cube_size", "term"]
+        n_dup = int((df.groupby(kcols, dropna=False).size() > 1).sum())
+        if n_dup:
+            raise ValueError(
+                f"{n_dup} run-identity keys are duplicated after filtering -- "
+                f"_run_totals would sum them into fabricated runs. Inspect the "
+                f"policy_run_id column; this means two distinct runs still "
+                f"share (config, domain, seed, episode, repeat, cube, term)."
+            )
+    n_runs = len(rows) // max(len(TERM_ORDER), 1)
+    print(f"[build] {n_sim_leaves} sim leaf dirs, {n_real_leaves} real leaf "
+          f"dirs scanned -> {n_runs} runs, {len(df)} rows "
+          f"({df['config_id'].nunique()} configs, "
+          f"domains={sorted(df['domain'].unique().tolist()) if len(df) else []})")
+    if len(df):
+        print(df.groupby(["config_id", "domain"]).size()
+              .div(len(TERM_ORDER)).rename("n_runs").astype(int))
+
+    if out_csv:
+        df.to_csv(out_csv, index=False)
+        print(f"[build] wrote {out_csv}")
+    return df
 
 
 # ===========================================================================
@@ -893,6 +1346,17 @@ def _selftest():
 def _cli():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--build", action="store_true",
+                    help="Merge raw real_robot_results/gap_protocol + "
+                         "sim_results/gap_protocol run folders into a long-"
+                         "format CSV (default: evaluation/gap_metrics.csv). "
+                         "Plain MuJoCo FK replay only, no MJX -- safe to run "
+                         "locally.")
+    ap.add_argument("--real_root", default=os.path.join(
+        "robots", "UR3e", "real_robot_results", "gap_protocol"))
+    ap.add_argument("--sim_root", default=os.path.join(
+        "robots", "UR3e", "sim_results", "gap_protocol"))
+    ap.add_argument("--protocol_id", default="gap_v1")
     ap.add_argument("--csv", default=None)
     ap.add_argument("--config", default=None)
     ap.add_argument("--cube_size", default=None, choices=[None, "3cm", "4cm"],
@@ -900,6 +1364,12 @@ def _cli():
                          "CSV mixes 3cm and 4cm rows -- see _filter_cube_size.")
     ap.add_argument("--n_boot", type=int, default=10000)
     args = ap.parse_args()
+
+    if args.build:
+        out_csv = args.csv or os.path.join(_EVAL_DIR, "gap_metrics.csv")
+        build_long_csv(real_root=args.real_root, sim_root=args.sim_root,
+                        protocol_id=args.protocol_id, out_csv=out_csv)
+        return
 
     if args.selftest or not args.csv:
         _selftest()

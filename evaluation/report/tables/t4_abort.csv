@@ -1,0 +1,11 @@
+config,cube,n_runs,n_aborted,abort_rate
+L0_none,3cm,21,7,0.3333333333333333
+L0_none,4cm,6,0,0.0
+L1_pos,3cm,21,4,0.19047619047619047
+L1_pos,4cm,6,6,1.0
+L2_pos_cube,3cm,21,0,0.0
+L2_pos_cube,4cm,6,4,0.6666666666666666
+L3_pos_cube_robot,3cm,21,8,0.38095238095238093
+L3_pos_cube_robot,4cm,6,6,1.0
+L4_full,3cm,21,6,0.2857142857142857
+L4_full,4cm,6,3,0.5

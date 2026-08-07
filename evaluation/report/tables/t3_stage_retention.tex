@@ -1,0 +1,21 @@
+\begin{table}[h]
+\centering
+\caption{Per-stage return retention $R_{\mathrm{real}}/R_{\mathrm{sim}}$ on the 3~cm cube, reward terms grouped by task stage. A dash marks a stage whose simulated return is identically zero, so the ratio is undefined: $L0$ never grasps in either domain.}
+\label{tab:stage_retention}
+\begin{tabular}{lrrrrr}
+\hline
+\textbf{Stage} & \textbf{L0 (none)} & \textbf{L1 (pos)} & \textbf{L2 (pos+cube)} & \textbf{L3 (pos+cube+robot)} & \textbf{L4 (full)} \\
+\hline
+Approach & 1.26 & 0.61 & 0.81 & 0.60 & 0.81 \\
+Grasp & -- & 0.08 & 0.21 & 0.12 & 0.06 \\
+Lift & -- & 0.20 & 0.72 & 0.15 & 0.03 \\
+Transport & -- & 0.14 & 0.34 & 0.10 & 0.01 \\
+Regularizer & 1.42 & 1.28 & 1.54 & 1.38 & 1.38 \\
+\hline
+\end{tabular}
+
+\vspace{2pt}
+\begin{minipage}{0.95\linewidth}
+\footnotesize Terms per stage: approach = \texttt{gripper\_box}, \texttt{approach\_open}, \texttt{gripper\_align}; grasp = \texttt{grasp}; lift = \texttt{lift}; transport = \texttt{box\_target}, \texttt{hold\_target}; regularizer = \texttt{no\_floor\_collision}, \texttt{robot\_target\_qpos}, \texttt{action\_rate}.
+\end{minipage}
+\end{table}
