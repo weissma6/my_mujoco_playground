@@ -22,6 +22,15 @@
 # 16 cells x 1 seed(s) = 16 runs. Comment/blank lines are skipped by
 # run_one_ur3.py::load_config and do NOT consume a SLURM array index:
 # set --array=1-16%4.
+#
+# INIT-POSE LIBRARY: level='mid' n_poses=60 sha256=993d8e56cf2e
+# 'mid' is a level name selecting a set of hand-collected real UR3e
+# starting positions (init_poses/train/<level>.json), NOT a difficulty
+# scalar -- reset() draws one pose per episode from that file. It is a
+# DATA dependency and it has moved under a running experiment before
+# (train/mid.json: 30 -> 60 poses on 2026-07-29, bb35de8, with
+# byte-identical metadata). Tier A and Tier B must show the SAME
+# fingerprint here, or the 3-seed reproduction claim is void.
 {"env_name": "UR3Pick", "wandb_project": "UR3_pick_ppo", "render_every": 1, "episode_length": 400, "box_z_rot_range": 6.283185307179586, "obs_include_velocity": true, "action_scale": 0.04, "gripper_action_scale": 0.02, "domain_rand.enable": true, "domain_rand.cube_mass.enable": true, "domain_rand.cube_mass.min": 0.85, "domain_rand.cube_mass.max": 1.15, "seed": 0, "run_id": "SatSweep_a0b0c0d0_s0", "video_every_evals": 5, "num_timesteps": 24000000, "num_evals": 20, "num_resets_per_eval": 1, "entropy_cost": 0.02, "learning_rate": 0.0006, "reward_scaling": 0.05, "network_factory": {"policy_hidden_layer_sizes": [32, 32, 32, 32], "value_hidden_layer_sizes": [256, 256, 256, 256, 256]}, "wandb_tags": ["satsweep", "tierA", "a0b0c0d0", "pol32x32x32x32", "ent0.02", "lr0.0006", "rs0.05", "s0"]}
 {"env_name": "UR3Pick", "wandb_project": "UR3_pick_ppo", "render_every": 1, "episode_length": 400, "box_z_rot_range": 6.283185307179586, "obs_include_velocity": true, "action_scale": 0.04, "gripper_action_scale": 0.02, "domain_rand.enable": true, "domain_rand.cube_mass.enable": true, "domain_rand.cube_mass.min": 0.85, "domain_rand.cube_mass.max": 1.15, "seed": 0, "run_id": "SatSweep_a0b0c0d1_s0", "video_every_evals": 5, "num_timesteps": 24000000, "num_evals": 20, "num_resets_per_eval": 1, "entropy_cost": 0.02, "learning_rate": 0.0006, "reward_scaling": 0.03, "network_factory": {"policy_hidden_layer_sizes": [32, 32, 32, 32], "value_hidden_layer_sizes": [256, 256, 256, 256, 256]}, "wandb_tags": ["satsweep", "tierA", "a0b0c0d1", "pol32x32x32x32", "ent0.02", "lr0.0006", "rs0.03", "s0"]}
 {"env_name": "UR3Pick", "wandb_project": "UR3_pick_ppo", "render_every": 1, "episode_length": 400, "box_z_rot_range": 6.283185307179586, "obs_include_velocity": true, "action_scale": 0.04, "gripper_action_scale": 0.02, "domain_rand.enable": true, "domain_rand.cube_mass.enable": true, "domain_rand.cube_mass.min": 0.85, "domain_rand.cube_mass.max": 1.15, "seed": 0, "run_id": "SatSweep_a0b0c1d0_s0", "video_every_evals": 5, "num_timesteps": 24000000, "num_evals": 20, "num_resets_per_eval": 1, "entropy_cost": 0.02, "learning_rate": 0.0003, "reward_scaling": 0.05, "network_factory": {"policy_hidden_layer_sizes": [32, 32, 32, 32], "value_hidden_layer_sizes": [256, 256, 256, 256, 256]}, "wandb_tags": ["satsweep", "tierA", "a0b0c1d0", "pol32x32x32x32", "ent0.02", "lr0.0003", "rs0.05", "s0"]}

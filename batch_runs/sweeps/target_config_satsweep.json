@@ -4,7 +4,7 @@
     "wandb": "weissma6-zhaw-school-of-engineering/UR3_pick_ppo",
     "why": "Best DR-carrying UR3Pick run to date (eval/episode_success = 0.930). Every key below is copied from that run's recorded W&B config, NOT hand-written -- see the Planfile '20260814_Saturating reward - sweep exploration' WP1.",
     "inherited_env_defaults": {
-      "note": "The source run sets NO init/difficulty keys, so 'mid difficulty' is whatever ur3_pick.default_config() gives. Recorded here so the sweep is reproducible if a default ever moves; NOT re-specified above, because re-specifying would silently pin values the reference run never pinned.",
+      "note": "The source run sets NO init keys at all, so these are whatever ur3_pick.default_config() gives. Recorded here so the sweep is reproducible if a default ever moves; NOT re-specified above, because re-specifying would silently pin values the reference run never pinned.",
       "init_start_random": "mid",
       "init_qpos_noise": [0.1, 0.1, 0.1, 0.1, 0.1, 6.28319, 0.0],
       "box_xy_jitter": [0.17, 0.24],
@@ -13,6 +13,13 @@
       "align_mode": "axis_free",
       "grasp_align_thresh": 0.3,
       "success_tol": 0.005
+    },
+    "init_start_random_is_a_pose_LIBRARY_not_a_difficulty": {
+      "what": "'mid' is a LEVEL NAME selecting a set of starting positions, not a difficulty scalar. ur3_pick.py:870-873 does load_init_poses(level, 'train') -> init_poses/train/mid.json, and reset() draws ONE pose per episode out of that library. The levels are 'light'/'mid'/'hard' (plus 'none' = legacy keyframe start); each is its own file.",
+      "provenance_of_the_poses": "Hand-collected on the real UR3e via RTDE getActualQ (60 s freedrive capture, one sample every 2 s), per the file's own metadata. These are recorded real robot poses, not sampled numbers.",
+      "WARNING_the_library_changed_after_the_reference_run": "init_poses/train/mid.json was REPLACED on 2026-07-29 in commit bb35de8 ('new mid trainingset and eval Position set'), which is AFTER RealDR_vel_as04_gas02_s0 trained on 2026-07-27 (it used the 2026-07-01 version from 2f48588). Pose count went 30 -> 60. Verified purely ADDITIVE: all 30 original poses are retained inside the new 60, none dropped.",
+      "consequence_for_this_sweep": "Cell a0b0c0d0 reproduces the reference run's PPO HYPERPARAMETERS but NOT its init distribution -- it trains on a 2x wider pose library. So a0b0c0d0 landing below the reference's 0.930 is not by itself evidence of a regression. Rank the 16 cells AGAINST EACH OTHER; treat 0.930 as an external reference, not a directly comparable control.",
+      "why_metadata_cannot_save_you": "The two versions carry BYTE-IDENTICAL metadata -- same 'created': '2026-06-26T16:17:00', same seed, same capture block. Only len(poses) (30 vs 60) distinguishes them, so a policy's metadata cannot tell you which library it trained on."
     },
     "forced_deviations": {
       "episode_length": "400 -- already set by the source run; env default is 250, so it is pinned explicitly.",

@@ -43,6 +43,7 @@ num_envs/batch_size/unroll_length/num_updates_per_batch -- those four set
 comparability across cells.
 """
 import argparse
+import hashlib
 import itertools
 import json
 import math
@@ -127,6 +128,45 @@ def load_target_config():
     return {k: v for k, v in cfg.items() if not k.startswith("_")}
 
 
+def init_pose_library_fingerprint():
+    """(level, n_poses, sha256[:12]) of the init-pose library the runs will use.
+
+    `init_start_random` is NOT a difficulty scalar: it is a LEVEL NAME selecting
+    a set of starting positions. ur3_pick.py does load_init_poses(level, "train")
+    -> init_poses/train/<level>.json, and reset() draws one pose per episode out
+    of that file. The poses are hand-collected real UR3e poses (RTDE getActualQ).
+
+    The library is therefore a DATA dependency of this sweep, and it has already
+    moved once under a running experiment: train/mid.json went 30 -> 60 poses on
+    2026-07-29 (bb35de8), after the reference run trained on 2026-07-27. The two
+    versions carry byte-identical metadata (same `created`, same seed), so
+    nothing inside the file distinguishes them -- only the pose count and the
+    content hash do.
+
+    Tier A and Tier B are submitted weeks apart. Stamping this into each
+    generated JSONL header is what makes "the winner reproduced by 3 seeds"
+    checkable: if the fingerprints differ between tiers, the seeds did not train
+    on the same starting positions and the reproduction claim is void.
+
+    The level is read from the recorded provenance rather than assumed, because
+    the reference run inherits it from the env default instead of pinning it.
+    """
+    with open(TARGET_CONFIG, "r", encoding="utf-8") as f:
+        prov = json.load(f).get("_provenance", {})
+    level = prov.get("inherited_env_defaults", {}).get("init_start_random")
+    if not level or level == "none":
+        return level, None, None
+    path = os.path.join(
+        _HERE, os.pardir, os.pardir, "mujoco_playground", "_src",
+        "manipulation", "my_ur3", "init_poses", "train", f"{level}.json")
+    if not os.path.exists(path):
+        return level, None, None
+    with open(path, "rb") as f:
+        raw = f.read()
+    return (level, len(json.loads(raw)["poses"]),
+            hashlib.sha256(raw).hexdigest()[:12])
+
+
 def cell_id(levels):
     return "".join(f"{k}{levels[k]}" for k in "abcd")
 
@@ -173,6 +213,7 @@ def build_lines(tier, seeds, cells=None, num_timesteps=None):
 
     nts, total = solve_budget(num_timesteps, num_evals)
     shared = load_target_config()
+    pose_level, pose_n, pose_sha = init_pose_library_fingerprint()
 
     all_cells = ["".join(f"{k}{v}" for k, v in zip("abcd", combo))
                  for combo in itertools.product([0, 1], repeat=4)]
@@ -209,7 +250,17 @@ def build_lines(tier, seeds, cells=None, num_timesteps=None):
         f"# {len(wanted)} cells x {len(seeds)} seed(s) = "
         f"{len(wanted) * len(seeds)} runs. Comment/blank lines are skipped by\n"
         f"# run_one_ur3.py::load_config and do NOT consume a SLURM array index:\n"
-        f"# set --array=1-{len(wanted) * len(seeds)}%4."
+        f"# set --array=1-{len(wanted) * len(seeds)}%4.\n"
+        f"#\n"
+        f"# INIT-POSE LIBRARY: level={pose_level!r} n_poses={pose_n} "
+        f"sha256={pose_sha}\n"
+        f"# 'mid' is a level name selecting a set of hand-collected real UR3e\n"
+        f"# starting positions (init_poses/train/<level>.json), NOT a difficulty\n"
+        f"# scalar -- reset() draws one pose per episode from that file. It is a\n"
+        f"# DATA dependency and it has moved under a running experiment before\n"
+        f"# (train/mid.json: 30 -> 60 poses on 2026-07-29, bb35de8, with\n"
+        f"# byte-identical metadata). Tier A and Tier B must show the SAME\n"
+        f"# fingerprint here, or the 3-seed reproduction claim is void."
     )
 
     lines = [header]
