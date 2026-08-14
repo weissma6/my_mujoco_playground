@@ -1,0 +1,36 @@
+{
+  "_provenance": {
+    "extracted_from": "RealDR_vel_as04_gas02_s0_20260727_161152_6311",
+    "wandb": "weissma6-zhaw-school-of-engineering/UR3_pick_ppo",
+    "why": "Best DR-carrying UR3Pick run to date (eval/episode_success = 0.930). Every key below is copied from that run's recorded W&B config, NOT hand-written -- see the Planfile '20260814_Saturating reward - sweep exploration' WP1.",
+    "inherited_env_defaults": {
+      "note": "The source run sets NO init/difficulty keys, so 'mid difficulty' is whatever ur3_pick.default_config() gives. Recorded here so the sweep is reproducible if a default ever moves; NOT re-specified above, because re-specifying would silently pin values the reference run never pinned.",
+      "init_start_random": "mid",
+      "init_qpos_noise": [0.1, 0.1, 0.1, 0.1, 0.1, 6.28319, 0.0],
+      "box_xy_jitter": [0.17, 0.24],
+      "target_mode": "base_polar",
+      "sticky_latches": true,
+      "align_mode": "axis_free",
+      "grasp_align_thresh": 0.3,
+      "success_tol": 0.005
+    },
+    "forced_deviations": {
+      "episode_length": "400 -- already set by the source run; env default is 250, so it is pinned explicitly.",
+      "box_z_rot_range": "6.283185307179586 -- the source run did NOT set it and inherited the env default 6.28319. Pinned here at full 2*pi precision so the value lands in every run config and the regression guard can see it.",
+      "obs_include_velocity": "true -- already set by the source run; env default is false, so it is pinned explicitly."
+    },
+    "reward_weights": "Deliberately absent. No reward_config / reward-term key appears here or in any generated sweep line -- the value function is given and only PPO knobs move."
+  },
+  "env_name": "UR3Pick",
+  "wandb_project": "UR3_pick_ppo",
+  "render_every": 1,
+  "episode_length": 400,
+  "box_z_rot_range": 6.283185307179586,
+  "obs_include_velocity": true,
+  "action_scale": 0.04,
+  "gripper_action_scale": 0.02,
+  "domain_rand.enable": true,
+  "domain_rand.cube_mass.enable": true,
+  "domain_rand.cube_mass.min": 0.85,
+  "domain_rand.cube_mass.max": 1.15
+}
