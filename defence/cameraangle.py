@@ -45,15 +45,38 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
   sys.path.insert(0, _THIS_DIR)
 
+def _wrong_interpreter(exc):
+  """Turn a bare ModuleNotFoundError into an actionable message.
+
+  macOS's /usr/bin/python3 and conda's `base` env both lack numpy/mujoco/jax,
+  and an IDE 'Run' button commonly picks one of them. The default traceback
+  ("No module named 'numpy'") points at render_sim_rollout.py's import line and
+  reads like a bug in this repo, which it is not.
+  """
+  return SystemExit(
+      f"cameraangle.py: missing dependency {exc.name!r}.\n"
+      f"  interpreter in use : {sys.executable}\n"
+      "This script needs the project's conda env (numpy + mujoco + jax +\n"
+      "imageio), which is NOT macOS's /usr/bin/python3 and NOT conda 'base'.\n"
+      "Fix, either:\n"
+      "  conda activate mujoco && python defence/cameraangle.py\n"
+      "  <miniconda>/envs/mujoco/bin/python defence/cameraangle.py\n"
+      "If your editor runs this for you, point its interpreter at that env."
+  )
+
+
 # Import FIRST: render_sim_rollout's module body sets JAX_PLATFORM_NAME and
 # MUJOCO_GL via os.environ.setdefault before it imports mujoco, and those only
 # take effect if they are set before the GL backend is chosen. Importing it up
 # front means this script inherits that setup instead of duplicating it.
-import render_sim_rollout as R  # noqa: E402
+try:
+  import render_sim_rollout as R  # noqa: E402
 
-import numpy as np  # noqa: E402
-import mujoco  # noqa: E402
-import imageio.v2 as imageio  # noqa: E402
+  import numpy as np  # noqa: E402
+  import mujoco  # noqa: E402
+  import imageio.v2 as imageio  # noqa: E402
+except ModuleNotFoundError as _exc:  # pragma: no cover - environment guard
+  raise _wrong_interpreter(_exc) from None
 
 
 def _camera_basis(cam_dict):
