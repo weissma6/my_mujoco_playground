@@ -445,7 +445,39 @@ def default_config() -> config_dict.ConfigDict:
         # Keep < ~0.12 rad (~6.9 deg / ~9.7 deg combined) so the cube can't
         # slide/tip off the plate before the grasp.
         # D18 (2026-07-29): 0.08 -> 0.05 rad ("light tilt", Matthias).
-        lifter_tilt_max=0.05,  # mild ~2.9 deg tilt (NOT flat; flat is 0.0)
+        #
+        # 2026-08: 0.05 -> 0.12 rad. The D23 protocol's C1 condition is a
+        # physical wedge whose REALIZED tilt measured 5.47 deg on one axis,
+        # i.e. the eval sat almost 2x OUTSIDE the trained 2.86 deg/axis band --
+        # every ladder policy was tested on a tilt none of them had ever seen,
+        # which made C1 uninformative about DR dose-response (it was OOD for
+        # L0..L4 alike). 0.12 rad = 6.9 deg/axis covers 5.47 deg with ~26%
+        # margin and is exactly the ceiling this comment already documents.
+        #
+        # MEASURED COST (200 resets x 60 settle steps, zero action) -- the cube
+        # is NOT perfectly stable at this tilt, so budget for it:
+        #     tilt   slide p95   tip p95   episodes disturbed
+        #     0.00    0.00 mm     0.00 deg      1.0%
+        #     0.05    0.32 mm     3.43 deg      0.5%
+        #     0.12    2.90 mm     8.34 deg      3.0%
+        # ("disturbed" = slid >2 cm or tipped >30 deg.) So ~3% of episodes now
+        # start with the cube having shifted or toppled during the spawn
+        # transient, up from ~0.5%. It is NOT the arm knocking it: 0% of the
+        # disturbed episodes had the TCP within 10 cm of the cube at reset. Nor
+        # is it a statics failure -- at 6.9 deg, tan(theta)=0.12 against a
+        # friction coefficient of 1.0, and the 3x3x4 cm cube only tips past
+        # atan(0.015/0.020) = 36.9 deg. It is the drop-and-settle transient,
+        # which a steeper plate turns into a longer slide.
+        # Judged acceptable: the cube settles to a valid pose on the plate, its
+        # pose is fully observed, and axis_aware alignment reads the REALIZED
+        # box axes, so a toppled cube is scored correctly rather than silently
+        # mis-graded. Drop to 0.10 rad (5.7 deg/axis) if 3% proves too noisy --
+        # that still covers C1's 5.47 deg, but with only ~4% margin.
+        # NOTE the table HEIGHT range is deliberately left at its full
+        # 0.0..0.220 m span (Matthias, 2026-08) even though the real lab table
+        # is fixed at 0.095 m and the only other tested condition (D1) is
+        # 0.150 m.
+        lifter_tilt_max=0.12,  # ~6.9 deg/axis (~9.7 deg combined); covers D23 C1
         # Box spawn yaw about world Z (rad); yaw ~ uniform(-r, +r). pi/4 covers
         # all yaw thanks to the cube's 4-fold symmetry, so the policy must learn
         # to match the jaw axis to a face rather than getting a free alignment.
