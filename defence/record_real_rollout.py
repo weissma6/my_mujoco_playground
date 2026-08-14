@@ -585,9 +585,16 @@ def main():
   ap.add_argument("--camera-height", type=int, default=1080)
   ap.add_argument("--camera-fps", type=float, default=30.0)
   ap.add_argument("--preroll-s", type=float, default=1.5,
-                  help="seconds of webcam recorded before the loop starts; "
+                  help="seconds of camera roll before the loop starts; "
                        "these frames carry negative t_rel and give the "
-                       "compositor its alignment handle.")
+                       "compositor its alignment handle. The 1.5s default is "
+                       "sized for the webcam — an external camera (Sony "
+                       "Alpha) needs a human to hit record, so 5-10s suits "
+                       "it better.")
+  ap.add_argument("--no-video", action="store_true",
+                  help="record no video at all; an external camera (Sony "
+                       "Alpha) is filming. real_states.csv is still "
+                       "written.")
 
   ap.add_argument("--out-root", default=os.path.join(_THIS_DIR, "runs"))
   ap.add_argument("--yes", action="store_true",
@@ -778,12 +785,25 @@ def main():
           f"configured, or raise --force-limit-n deliberately.")
 
     # ---- webcam pre-roll -------------------------------------------------
-    webcam = _WebcamWorker(
-        device, args.camera_width, args.camera_height, args.camera_fps,
-        real_mp4)
-    webcam.start()
-    print(f"  webcam rolling; {args.preroll_s:.1f}s pre-roll…")
-    time.sleep(args.preroll_s)
+    if args.no_video:
+      print("!" * 70)
+      print("  external camera: START THE SONY NOW")
+      print("!" * 70)
+      remaining = args.preroll_s
+      whole_s = int(remaining)
+      for s in range(whole_s, 0, -1):
+        print(f"  {s}...")
+        time.sleep(1.0)
+      frac = remaining - whole_s
+      if frac > 0:
+        time.sleep(frac)
+    else:
+      webcam = _WebcamWorker(
+          device, args.camera_width, args.camera_height, args.camera_fps,
+          real_mp4)
+      webcam.start()
+      print(f"  webcam rolling; {args.preroll_s:.1f}s pre-roll…")
+      time.sleep(args.preroll_s)
 
     robot.arm_force_guard(
         limit_n=args.force_limit_n,
@@ -848,8 +868,12 @@ def main():
   # ---- artifacts --------------------------------------------------------
   states_csv = os.path.join(out_dir, "real_states.csv")
   out_df = _build_states_csv(df, robot.wrench_log, states_csv)
-  frame_csv = os.path.join(out_dir, "frame_index.csv")
-  n_frames = _write_frame_index(webcam, robot.t0_unix, frame_csv)
+  if args.no_video:
+    frame_csv = None
+    n_frames = 0
+  else:
+    frame_csv = os.path.join(out_dir, "frame_index.csv")
+    n_frames = _write_frame_index(webcam, robot.t0_unix, frame_csv)
   n_steps = int(len(out_df))
 
   manifest = {
@@ -913,10 +937,14 @@ def main():
           "branch": "addvelocity",
       },
       "video": {
-          "real_mp4": os.path.relpath(real_mp4, out_dir),
-          "webcam_fps_nominal": float(args.camera_fps),
+          "real_mp4": None if args.no_video
+                      else os.path.relpath(real_mp4, out_dir),
+          "webcam_fps_nominal": None if args.no_video
+                                else float(args.camera_fps),
           "n_webcam_frames": int(n_frames),
-          "frame_index_csv": os.path.relpath(frame_csv, out_dir),
+          "frame_index_csv": None if args.no_video
+                             else os.path.relpath(frame_csv, out_dir),
+          "source": "external" if args.no_video else "webcam",
       },
   }
   with open(os.path.join(out_dir, "manifest.json"), "w",
@@ -927,7 +955,17 @@ def main():
   print(f"stop_reason : {stopped_reason}")
   print(f"steps       : {n_steps}   peak |F-F_bias|: "
         f"{robot._fg_peak_n:.1f} N / {args.force_limit_n:.1f} N limit")
-  print(f"webcam      : {n_frames} frames -> {real_mp4}")
+  if args.no_video:
+    print("video       : none recorded (external camera)")
+    print("SYNC RULE: no automatic alignment was recorded. Between the "
+          "send_movej to the start pose and the first policy tick the arm "
+          "is completely still (cube-placement prompt -> gripper command "
+          "-> --settle-s -> force-bias sampling). The arm's FIRST MOVEMENT "
+          "in the Sony footage is therefore t0, to within one control "
+          "tick — the same instant as sim frame 0. Cut the footage there "
+          "by hand.")
+  else:
+    print(f"webcam      : {n_frames} frames -> {real_mp4}")
   print(f"artifacts   : {out_dir}")
   print("Next: git-sync, then on the MacBook run")
   print(f"  python defence/render_sim_rollout.py --run-dir "

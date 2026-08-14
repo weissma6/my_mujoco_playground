@@ -10,10 +10,12 @@ writes `sim.mp4` + `sim_states.csv` into the same run directory so the two
 clips/logs can be compared frame-for-frame.
 
 HARD RULES (see the task this file was written against / CLAUDE.md):
-  * plain `mujoco` (CPU) ONLY -- `mujoco.mjx` is NEVER imported. CPU MJX OOM-
-    kills the machine this runs on. `_assert_no_mjx()` below hard-fails if
-    mujoco.mjx ever ends up in sys.modules (e.g. via a transitive import),
-    so a silent MJX pull-in cannot pass unnoticed.
+  * plain `mujoco` (CPU) ONLY -- `mujoco.mjx` is NEVER *used*. It does land
+    in `sys.modules` anyway (brax's transitive import), so presence is not
+    the thing being checked. `_assert_no_mjx()` below instead re-verifies
+    that `_forbid_mjx_use()`'s raiser patches are still intact (and neuters
+    mjx if it only just appeared unpatched), so a call into a live MJX entry
+    point cannot pass unnoticed -- CPU MJX OOM-kills this machine.
   * `mujoco_playground._src.manipulation.my_ur3.ur3_pick` is NEVER imported
     (it pulls in mjx at module import time, and its reset_to_state/step/
     _get_obs are jax/mjx-typed -- they cannot be called from a CPU loop).
@@ -37,6 +39,9 @@ import os
 import sys
 
 os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+# CLAUDE.md: macOS has no osmesa, so mujoco.Renderer needs MUJOCO_GL=glfw or
+# it has no GL backend at all. setdefault so an explicit env var still wins.
+os.environ.setdefault("MUJOCO_GL", "glfw")
 
 import numpy as np
 import pandas as pd
@@ -92,6 +97,46 @@ def _forbid_mjx_use():
 _BLOCKED_MJX = _forbid_mjx_use()
 
 
+def _assert_no_mjx(when: str) -> None:
+  """Re-verify that `_forbid_mjx_use()`'s guard is still intact.
+
+  This does NOT assert that `mujoco.mjx` is absent from `sys.modules` --
+  brax's own transitive import puts it there in any environment that can
+  load a policy at all (see `_forbid_mjx_use`'s docstring), so a presence
+  check would abort every run. It only checks that the raiser patches are
+  still in place, covering two cases:
+    (i)  `_BLOCKED_MJX` is empty but `mujoco.mjx` is now in `sys.modules`
+         -- it arrived (or was reloaded) after `_forbid_mjx_use()` already
+         ran with nothing to patch. Neuter it now.
+    (ii) `_BLOCKED_MJX` is non-empty but one of those names no longer
+         resolves to the `_raiser`-built stub (importlib.reload, a
+         monkey-patch, a library re-import) -- hard-fail.
+  Even fully intact, this is a best-effort check: only five top-level
+  `mujoco.mjx` attributes are patched, so e.g.
+  `from mujoco.mjx._src.forward import step` bypasses it entirely.
+  """
+  global _BLOCKED_MJX
+  mjx = sys.modules.get("mujoco.mjx")
+  if mjx is None:
+    return
+  if not _BLOCKED_MJX:
+    _BLOCKED_MJX = _forbid_mjx_use()
+    print(
+        f"[_assert_no_mjx] mujoco.mjx appeared in sys.modules {when} -- "
+        f"neutered it now (blocked: {_BLOCKED_MJX})."
+    )
+    return
+  for name in _BLOCKED_MJX:
+    fn = getattr(mjx, name, None)
+    if getattr(fn, "__name__", None) != "_blocked":
+      raise SystemExit(
+          f"HARD RULE VIOLATION: mujoco.mjx.{name} no longer resolves to "
+          f"the _forbid_mjx_use() raiser stub {when} -- the MJX guard was "
+          "removed or replaced (reload/monkeypatch/re-import). Refusing to "
+          "continue."
+      )
+
+
 def _assert_cpu_physics(model, data):
   """Physics objects must be the plain CPU types, never MJX device structs."""
   if not isinstance(model, mujoco.MjModel):
@@ -135,6 +180,24 @@ _DEFAULT_OBS_INCLUDE_VELOCITY = False
 # own body pos/quat instead of being re-derived from these constants.
 _LIFTER_HALF_THICKNESS = 0.0025
 _LIFTER_HEIGHT_MIN = 0.003
+
+# evaluation/gap_metrics.py's drop-square target zone + tape-mark poses,
+# mirrored (not imported) for the table-marker overlay drawn in
+# draw_table_markers(). A pytest asserts the two TAPE_MARK_XY copies (this
+# one and gap_metrics.TAPE_MARK_XY) stay equal.
+DROP_SQUARE_CENTER = (0.212, 0.212)        # mirror of gap_metrics.py:963
+DROP_SQUARE_HALF_WIDTH = 0.075             # mirror of gap_metrics.py:964
+TAPE_MARK_XY = {"P1": (0.216, -0.185),
+                "P2": (0.355, -0.009),
+                "P3": (0.495, 0.188)}      # mirror of gap_metrics.TAPE_MARK_XY
+_MARK_RADIUS = 0.015
+_TAPE_HALF_WIDTH = 0.010
+_OVERLAY_HALF_THICKNESS = 0.0005
+_OVERLAY_Z_GAP = 0.0005
+_SQUARE_RGB = (1.00, 0.80, 0.10)
+_MARK_RGB = {"P1": (0.15, 0.85, 1.00),     # cyan
+             "P2": (1.00, 0.35, 0.85),     # magenta
+             "P3": (0.35, 1.00, 0.45)}     # green
 
 # record_real_rollout.py's manifest contract (never edited -- read only).
 SCHEMA_VERSION = "defence/1"
@@ -623,6 +686,126 @@ def build_free_camera(cam_dict, model):
 
 
 # ===========================================================================
+# Table markers (drop-square outline + P1/P2/P3 tape marks) overlay.
+# ===========================================================================
+
+
+def _append_decor_geom(scene, gtype, size, pos, mat, rgb):
+  """Append one non-interactive "decor" geom to `scene`. Returns True on
+  success, False (appending nothing) if the scene is already full.
+
+  There is no bounds check in the `ngeom` setter -- writing past capacity
+  makes `scene.geoms[i]` raise IndexError instead of failing cleanly, so
+  that check is done by hand here.
+  """
+  if scene.ngeom >= scene.maxgeom:
+    return False
+  g = scene.geoms[scene.ngeom]
+  mujoco.mjv_initGeom(
+      g, gtype,
+      np.asarray(size, dtype=float),
+      np.asarray(pos, dtype=float),
+      np.asarray(mat, dtype=float).reshape(9),
+      np.array([*rgb, 1.0], dtype=float),
+  )
+  # Flat tape lying on the table must not cast a shadow onto the very table
+  # it lies on.
+  g.category = mujoco.mjtCatBit.mjCAT_DECOR
+  g.objtype = mujoco.mjtObj.mjOBJ_UNKNOWN
+  g.objid = -1
+  # Default segid==0 ALIASES real geom 0 in Renderer's segmentation remap
+  # (mujoco/renderer.py:222); -1 opts these overlay geoms out entirely.
+  g.segid = -1
+  g.emission = 0.35
+  # g.label is deliberately left empty: labels DO render, but as a
+  # depth-ignoring 2D overlay, so e.g. a "P3" label would float on top of
+  # the arm regardless of real occlusion.
+  scene.ngeom = scene.ngeom + 1
+  return True
+
+
+def _drop_square_segments(cx, cy, h, w, t):
+  """4 box segments -- ((centre_x, centre_y), (half_x, half_y, half_z)) --
+  outlining a picture-frame-style square: half-width `h`, centred at
+  (cx, cy), drawn from tape strips of half-width `w` and half-thickness `t`.
+
+  Pure function, no MuJoCo objects, so the corner math is unit-testable
+  without a live mjvScene.
+
+  The verticals are SHORTENED by `w` (half-length h-w instead of h) so their
+  end faces butt exactly against the horizontals' inner faces (vertical
+  ends at cy +- (h-w); horizontal inner face at cy +- h -+ w -- the same
+  number). Extending both pairs to the full half-length `h` would leave two
+  overlapping coplanar boxes at each of the four corners, z-fighting in the
+  render.
+  """
+  return [
+      ((cx, cy - h), (h + w, w, t)),
+      ((cx, cy + h), (h + w, w, t)),
+      ((cx - h, cy), (w, h - w, t)),
+      ((cx + h, cy), (w, h - w, t)),
+  ]
+
+
+def draw_table_markers(scene, model, data, ids):
+  """Draw the drop-square outline + P1/P2/P3 tape marks as a scene overlay.
+
+  The markers are tape stuck to the REAL table, so they must ride with the
+  table body, not be pinned in the base frame: if init.lifter_top_height
+  raises the top to 0.150 m (D1) or init.lifter_tilt_rp tilts it (C1), the
+  tape moves with it -- pinning at base-frame z=0.095 would bury the tape
+  inside a raised slab.
+
+  Uses data.xpos/data.xmat, NOT mocap_pos/mocap_quat: xpos/xmat are already
+  populated by the mj_forward call in reset_state() and hand us the body's
+  rotation matrix for free.
+  """
+  bid = ids["lifter_body"]
+  offset_x, offset_y = model.body_pos[bid][:2]
+  # 0.0025 (lifter geom half-thickness -> its local top face) + a 0.5 mm
+  # gap + the overlay slab's own half-thickness, so its BOTTOM face clears
+  # the table top.
+  local_z = _LIFTER_HALF_THICKNESS + _OVERLAY_Z_GAP + _OVERLAY_HALF_THICKNESS
+
+  R = data.xmat[bid].reshape(3, 3)
+  mat = data.xmat[bid]  # already flat-9 float64 C-contiguous
+
+  def _world(local_xy):
+    local_pos = np.array([local_xy[0], local_xy[1], local_z])
+    return data.xpos[bid] + R @ local_pos
+
+  segments = _drop_square_segments(
+      DROP_SQUARE_CENTER[0] - offset_x,
+      DROP_SQUARE_CENTER[1] - offset_y,
+      DROP_SQUARE_HALF_WIDTH,
+      _TAPE_HALF_WIDTH,
+      _OVERLAY_HALF_THICKNESS,
+  )
+  for local_xy, half_size in segments:
+    if not _append_decor_geom(
+        scene, mujoco.mjtGeom.mjGEOM_BOX, half_size, _world(local_xy), mat,
+        _SQUARE_RGB,
+    ):
+      print("[draw_table_markers] scene is full -- stopped appending decor "
+            "geoms.")
+      return
+
+  # mjGEOM_LINE's width is specified in PIXELS, not world units, so it would
+  # not scale with camera distance/perspective -- cylinders are used
+  # instead so the marks read at a consistent physical size.
+  for name, (mx, my) in TAPE_MARK_XY.items():
+    local_xy = (mx - offset_x, my - offset_y)
+    size = (_MARK_RADIUS, _OVERLAY_HALF_THICKNESS, 0.0)
+    if not _append_decor_geom(
+        scene, mujoco.mjtGeom.mjGEOM_CYLINDER, size, _world(local_xy), mat,
+        _MARK_RGB[name],
+    ):
+      print("[draw_table_markers] scene is full -- stopped appending decor "
+            "geoms.")
+      return
+
+
+# ===========================================================================
 # Main.
 # ===========================================================================
 
@@ -642,6 +825,10 @@ def main():
   ap.add_argument("--height", type=int, default=1080)
   ap.add_argument("--out", default=None,
                    help="default: <run-dir>/sim.mp4")
+  ap.add_argument("--no-markers", dest="markers", action="store_false",
+                   help="disable the drop-square/tape-mark overlay drawn on "
+                        "the table (see draw_table_markers).")
+  ap.set_defaults(markers=True)
   args = ap.parse_args()
 
   run_dir = os.path.abspath(args.run_dir)
@@ -682,6 +869,24 @@ def main():
   model = load_model(xml_path, args.width, args.height)
   ids = resolve_ids(model)
   data, target_pos = reset_state(model, ids, init)
+
+  if args.markers:
+    # DROP_SQUARE_CENTER is the L0 deterministic fixed target (r=0.30,
+    # azim=45deg); for L1-L4 the target is drawn randomly per episode, so
+    # the cube may land off the taped square in the video. The tape is a
+    # fixed PHYSICAL feature on the real table and is drawn at its own
+    # location regardless -- this is just a heads-up, not an error.
+    off_dist = float(np.linalg.norm(
+        np.asarray(target_pos[:2]) - np.asarray(DROP_SQUARE_CENTER)))
+    if off_dist > 0.02:
+      print(
+          f"[warn] manifest init.target_pos xy = "
+          f"({target_pos[0]:.3f}, {target_pos[1]:.3f}) is {off_dist:.3f} m "
+          f"from DROP_SQUARE_CENTER = {DROP_SQUARE_CENTER} -- the taped "
+          "drop square is a fixed physical feature on the real table and "
+          "will be drawn there regardless; the cube may visibly miss it in "
+          "this render."
+      )
 
   obs_dim_expected = int(policy["obs_dim"])
   last_action = np.zeros(7, dtype=np.float32)
@@ -741,6 +946,10 @@ def main():
       apply_control(model, data, action, action_scale_vec, n_substeps, ids)
 
       renderer.update_scene(data, camera=camera_arg)
+      # mjv_updateScene REBUILDS scene.ngeom from the model on every call,
+      # so the decor overlay must be re-appended every single frame.
+      if args.markers:
+        draw_table_markers(renderer.scene, model, data, ids)
       writer.append_data(renderer.render())
 
       arm_q = data.qpos[ids["arm_qposadr"]]

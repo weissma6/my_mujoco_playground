@@ -69,6 +69,19 @@ def build_command(args):
   ctrl_dt = manifest["control"]["ctrl_dt"]
   episode_length = manifest["control"]["episode_length"]
 
+  # Must come BEFORE any _resolve of a video.* field: an external-camera run
+  # nulls real_mp4 as well as frame_index_csv, so resolving those first would
+  # die in pathlib (Path(None) -> TypeError) before ever reaching this guard.
+  if manifest["video"].get("frame_index_csv") is None:
+    sys.exit(
+        f"[composite] run source={manifest['video'].get('source')!r} has no "
+        "frame index CSV -- no webcam recorded this run, so automatic t0 "
+        "alignment is impossible.\n"
+        "[composite] cut the footage BY HAND against sim.mp4 instead. "
+        "Rule: sim frame 0 is t0 = the arm's FIRST MOVEMENT (the arm is "
+        "completely still before that)."
+    )
+
   sim_path = (
       _resolve(args.sim, _SCRIPT_DIR) if args.sim else run_dir / "sim.mp4"
   )
@@ -82,6 +95,7 @@ def build_command(args):
       if args.out
       else run_dir / "side_by_side.mp4"
   )
+
   frame_csv_path = _resolve(manifest["video"]["frame_index_csv"], run_dir)
 
   first_t_rel, last_t_rel = _read_real_bounds(frame_csv_path)

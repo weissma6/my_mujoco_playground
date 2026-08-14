@@ -963,6 +963,25 @@ def build_long_csv(
 DROP_SQUARE_CENTER = (0.212, 0.212)
 DROP_SQUARE_HALF_WIDTH = 0.075
 
+# The three physical tape marks the cube is placed on, base frame, metres.
+# Values are MEANS of calibrated mocap box_pos over the 135 D23 runs, grouped
+# by the marker field of run_gap_protocol.py:395-414's D23_BOARD
+# (P1 = {A1,B1,E1}, P2 = {A2,C1,D1}, P3 = {A3,B2,E2}); spread +-7 mm.
+# ABSENT FROM gap_protocol_v1.json BY DESIGN: that protocol pins the ARM pose
+# and only says "place the cube roughly on this mark" -- mocap measures the
+# truth per run (see evaluation/protocols/__init__.py).
+# Two operator misplacements were EXCLUDED from the means:
+# L1_pos/gap_v1/B1_ep3_rep1_3cm (cube left on P3) and
+# L0_none/gap_v1/A3_ep2_rep1_3cm (cube left on P2).
+# Recorded FOR RENDERING AND DOCUMENTATION ONLY -- no metric reads this; it is
+# mirrored in defence/render_sim_rollout.py and a pytest asserts the two
+# copies stay identical.
+TAPE_MARK_XY = {
+    "P1": (0.216, -0.185),
+    "P2": (0.355, -0.009),
+    "P3": (0.495, 0.188),
+}
+
 
 def place_error(landed_xy, square_center=DROP_SQUARE_CENTER,
                 half_width=DROP_SQUARE_HALF_WIDTH):
