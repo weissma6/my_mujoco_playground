@@ -1,0 +1,111 @@
+{
+  "schema_version": "defence/1",
+  "run_name": "20260814T120901Z_L3_pos_cube_robot",
+  "t0_unix": 1786709362.5550377,
+  "t0_iso": "2026-08-14T12:09:22.555+00:00",
+  "t0_monotonic": 9411.958129611,
+  "init": {
+    "arm_qpos": [
+      -9.361897603810121e-06,
+      -2.2000323734679164,
+      1.599964443837301,
+      -1.6000062427916468,
+      -1.499988857899801,
+      2.9337405067053623e-05
+    ],
+    "commanded_arm_qpos": [
+      0.0,
+      -2.2,
+      1.6,
+      -1.6,
+      -1.5,
+      0.0
+    ],
+    "finger": 0.0125,
+    "box_pos": [
+      0.5134975458566954,
+      0.1897495476646977,
+      0.11368299849281373
+    ],
+    "box_quat_wxyz": [
+      0.9996868171749324,
+      0.003965185445781897,
+      0.015617582710160708,
+      0.019149148096351452
+    ],
+    "target_pos": [
+      0.24394277497549174,
+      -0.08132813355582585,
+      0.1412884596437168
+    ],
+    "cube_half_extents": null,
+    "lifter_top_height": null,
+    "lifter_tilt_rp": null,
+    "settle_s": 1.0
+  },
+  "pose_ref": {
+    "source": "task_home",
+    "arm_pose_source": "task_home",
+    "protocol_id": "gap_v1",
+    "poses_sha256": "c7ad7014f7344e1527a0f032778d39a04fe430eeea7e30a8462ea55a73a75b99",
+    "episode_id": 0,
+    "level": null,
+    "split": null
+  },
+  "policy": {
+    "checkpoint_id": "L3_pos_cube_robot_vel_s1_20260729_115408_2201",
+    "checkpoint_sha256": "9d445805bcfa0710909136b0e2a785e37f1ade0dec9dad7403ea7f325e5fc145",
+    "obs_dim": 33,
+    "action_dim": 7,
+    "policy_hidden_layer_sizes": [
+      32,
+      32,
+      32,
+      32
+    ]
+  },
+  "control": {
+    "ctrl_dt": 0.02,
+    "action_scale": 0.04,
+    "gripper_action_scale": 0.01,
+    "scale_source": "checkpoint metadata.json env_overrides",
+    "gripper_convention": "0=open,0.025=closed",
+    "episode_length": 283,
+    "nominal_horizon": 400,
+    "control_hz_requested": 50.0,
+    "achieved_hz": 49.653513600289195,
+    "control_law": "rebase",
+    "box_z_offset": 0.0
+  },
+  "result": {
+    "stop_reason": "force_limit",
+    "stop_step": 283,
+    "n_steps": 283,
+    "force_limit_n": 30.0,
+    "force_bias_n": [
+      -6.004709726714866,
+      -0.2302542274001321,
+      1.0413248513147872
+    ],
+    "peak_force_n": 54.374698504647355,
+    "overrun_count": 0,
+    "drop_attempted": false,
+    "landed_box_xy": null,
+    "place_error_m": null,
+    "place_in_square": null,
+    "drop_settle_s": 1.5
+  },
+  "env": {
+    "env_name": "UR3Pick",
+    "xml_path": "mujoco_playground/_src/manipulation/my_ur3/xmls/mjx_single_cube_position_ur3.xml",
+    "git_sha": "47b2b90a66e8d0eb3919893afa9a442f97aeff61",
+    "branch": "addvelocity"
+  },
+  "video": {
+    "real_mp4": null,
+    "webcam_fps_nominal": null,
+    "n_webcam_frames": 0,
+    "frame_index_csv": null,
+    "source": "external"
+  }
+}
