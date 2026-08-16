@@ -662,6 +662,32 @@ def default_config() -> config_dict.ConfigDict:
         # flip per-run to test re-grasp pressure. CAUTION if enabling: watch
         # for stage-farming, the reward-hacking pattern from d24be6b/8ccfc67.
         sticky_latches=True,
+        # Post-lift annuity gating (2026-08). Multiply gripper_box /
+        # gripper_align by (1 - lifted) in _get_reward, exactly the treatment
+        # robot_target_qpos already gets and for the same reason: both terms are
+        # ~maximal and gradient-free once the box is in the hand (gripper_box_dist
+        # ~= 0, alignment fixed), so post-lift they pay a flat annuity -- measured
+        # at 4.00 + 3.75 per post-lift step, ~41% of post-lift return, of which
+        # 88% of gripper_box's raw sum is banked AFTER the lift -- that competes
+        # with the transport stage instead of feeding it.
+        #
+        # BOTH DEFAULT FALSE, AND THAT DEFAULT IS A PROVEN BIT-IDENTICAL NO-OP
+        # (the gate is a trace-time Python branch, so with the flag off the
+        # multiply never enters the graph at all). Do NOT flip a default here:
+        # evaluation/ur3_reward_replay.py reads this default_config() AT IMPORT
+        # TIME to score ARCHIVED real-robot runs, so a default-on gate would
+        # silently retroactively rescore the whole D23 campaign under a reward
+        # those policies never trained under -- the identical hazard already
+        # documented for robot_target_qpos / action_rate above. Set these PER
+        # SWEEP LINE, never here.
+        #
+        # Deliberately TOP-LEVEL and not under reward_config.scales: brax's
+        # EvalWrapper requires the reset and step metric key sets to match
+        # exactly and that dict is seeded from scales.keys(), so a new scales
+        # key would break the metric contract (and the WP5 decomposition's
+        # reconstruction check). These change GATING, not magnitude.
+        gate_gripper_box_on_lift=False,
+        gate_gripper_align_on_lift=False,
         # ------------------------------------------------------------------
         # Physics domain randomization (per-EPISODE, sampled fresh in reset()).
         # ------------------------------------------------------------------
@@ -2977,6 +3003,27 @@ class UR3Pick(ur3_base.UR3Base):
             + (1 - jp.tanh(5.0 * gripper_box_dist))
             + (1 - jp.tanh(30.0 * gripper_box_dist))
         ) / 3.0
+
+        # --- Post-lift annuity gating (BOTH DEFAULT OFF; see default_config) ---
+        # Same idiom and the SAME `lifted` variable as robot_target_qpos_penalty
+        # below -- i.e. lifted_eff, which respects sticky_latches -- read off that
+        # line rather than re-derived, because under sticky_latches lifted_eff and
+        # lifted_live differ exactly on the lift-then-drop case this targets.
+        #
+        # Applied HERE, not at each term's own definition, because
+        # gripper_align_Reward is computed further up (inside the alignment block)
+        # where `lifted` does not exist yet. Gating the REWARD TERM and not
+        # `alignment` itself is deliberate: `alignment` also feeds grasp_Reward
+        # and the `grasped` latch gate, neither of which this plan may touch.
+        #
+        # The `if` is a Python (trace-time) branch on a static config bool, the
+        # same pattern as _use_sticky above: with the flag off the multiply is
+        # never emitted into the jaxpr, so the default path is bit-identical to
+        # the pre-gating code rather than merely numerically close.
+        if self._config.gate_gripper_box_on_lift:
+            gripper_box_Reward = gripper_box_Reward * (1 - lifted)
+        if self._config.gate_gripper_align_on_lift:
+            gripper_align_Reward = gripper_align_Reward * (1 - lifted)
 
         # Stage 2 — grasp: close the fingers on the box once reached. No
         # near-target fade (unlike picknplace) — this task holds the box AT the

@@ -160,6 +160,13 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "seed",
         "domain_randomization",
         "sticky_latches",
+        # 2026-08 post-lift annuity gating. TOP-LEVEL env flags (not
+        # reward_config.scales keys), forwarded to the env below -- reserved so
+        # apply_validated_overrides(strict=True) does not reject them as
+        # "Unknown override keys". That rejection would raise only AFTER SLURM
+        # has already allocated the GPU, burning the whole array allocation.
+        "gate_gripper_box_on_lift",
+        "gate_gripper_align_on_lift",
         "target_mode",
         "target_r_min",
         "target_r_max",
@@ -1097,6 +1104,14 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             env_overrides["success_tol"] = float(cfg["success_tol"])
         if "sticky_latches" in cfg:
             env_overrides["sticky_latches"] = bool(cfg["sticky_latches"])
+        if "gate_gripper_box_on_lift" in cfg:
+            env_overrides["gate_gripper_box_on_lift"] = bool(
+                cfg["gate_gripper_box_on_lift"]
+            )
+        if "gate_gripper_align_on_lift" in cfg:
+            env_overrides["gate_gripper_align_on_lift"] = bool(
+                cfg["gate_gripper_align_on_lift"]
+            )
         if "target_mode" in cfg:
             env_overrides["target_mode"] = str(cfg["target_mode"])
         if "target_r_min" in cfg:
