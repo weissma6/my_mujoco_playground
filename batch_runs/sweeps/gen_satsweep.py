@@ -82,6 +82,13 @@ NUM_RESETS_PER_EVAL = 1
 TIERS = {
     # tier: (num_timesteps target, num_evals, video_every_evals)
     "A": (24_000_000, 20, 5),
+    # Tier A-ext: the entropy_cost extension (plan WP5b). Same budget and
+    # num_evals as Tier A ON PURPOSE -- it is only comparable to Tier A if the
+    # step budget and eval cadence are identical. It exists as its own tier
+    # solely so its runs carry `tierAext` rather than `tierA`: the WP5 analyzer
+    # selects on that tag, and reusing `tierA` would silently grow the 2^4
+    # factorial from 16 cells to 20 and corrupt every main effect it computes.
+    "Aext": (24_000_000, 20, 5),
     # Tier B's budget is NOT a constant: it is sized from measured Tier A
     # throughput in WP5 and must be passed with --num-timesteps. Refusing a
     # default here is the point -- see the plan's "Tier B budget is NOT yet
@@ -172,17 +179,29 @@ def cell_id(levels):
 
 
 def build_entry(levels, seed, tier, num_timesteps, num_evals,
-                video_every_evals, shared):
+                video_every_evals, shared, entropy=None):
+    """One sweep line.
+
+    `entropy` overrides the b-factor's value (plan WP5b). Tier A measured
+    entropy_cost as by far the largest main effect (-0.297 on
+    eval/episode_success for 2e-2 -> 5e-3) -- i.e. the optimum lies ABOVE the
+    swept range, which the 2^4 design never reached. The override keeps the
+    cell id (so the other three factors stay readable) but makes the entropy
+    value explicit in the run_id, because it is no longer recoverable from the
+    `b` digit.
+    """
     policy = FACTORS["a"][1][levels["a"]]
+    ent = FACTORS["b"][1][levels["b"]] if entropy is None else float(entropy)
+    suffix = "" if entropy is None else f"_ent{ent:g}"
     entry = dict(shared)
     entry.update({
         "seed": int(seed),
-        "run_id": f"SatSweep_{cell_id(levels)}_s{seed}",
+        "run_id": f"SatSweep_{cell_id(levels)}{suffix}_s{seed}",
         "video_every_evals": video_every_evals,
         "num_timesteps": num_timesteps,
         "num_evals": num_evals,
         "num_resets_per_eval": NUM_RESETS_PER_EVAL,
-        "entropy_cost": FACTORS["b"][1][levels["b"]],
+        "entropy_cost": ent,
         "learning_rate": FACTORS["c"][1][levels["c"]],
         "reward_scaling": FACTORS["d"][1][levels["d"]],
         "network_factory": {
@@ -192,16 +211,16 @@ def build_entry(levels, seed, tier, num_timesteps, num_evals,
         "wandb_tags": [
             "satsweep", f"tier{tier}", cell_id(levels),
             f"pol{'x'.join(str(n) for n in policy)}",
-            f"ent{FACTORS['b'][1][levels['b']]}",
+            f"ent{ent:g}",
             f"lr{FACTORS['c'][1][levels['c']]}",
             f"rs{FACTORS['d'][1][levels['d']]}",
             f"s{seed}",
-        ],
+        ] + ([] if entropy is None else ["entscan"]),
     })
     return entry
 
 
-def build_lines(tier, seeds, cells=None, num_timesteps=None):
+def build_lines(tier, seeds, cells=None, num_timesteps=None, entropy=None):
     target_default, num_evals, video_every_evals = TIERS[tier]
     if num_timesteps is None:
         num_timesteps = target_default
@@ -225,20 +244,43 @@ def build_lines(tier, seeds, cells=None, num_timesteps=None):
     else:
         wanted = all_cells
 
+    if entropy is None:
+        design = (
+            f"# Full 2^4 factorial over the four PPO factors below; level 0 is the\n"
+            f"# manipulation_params.py UR3Pick baseline, so cell a0b0c0d0 IS the\n"
+            f"# reference run. Shared env block comes from\n"
+            f"# target_config_satsweep.json (extracted from W&B run\n"
+            f"# RealDR_vel_as04_gas02_s0), NOT hand-written.\n"
+            f"#   a policy_hidden_layer_sizes (32,32,32,32) -> (256,256,256)\n"
+            f"#   b entropy_cost              2e-2          -> 5e-3\n"
+            f"#   c learning_rate             6e-4          -> 3e-4\n"
+            f"#   d reward_scaling            0.05          -> 0.03\n"
+        )
+    else:
+        design = (
+            f"# ENTROPY EXTENSION (plan WP5b) -- NOT a factorial. The b digit in\n"
+            f"# each cell id is OVERRIDDEN; read entropy_cost off the run_id.\n"
+            f"# Scanned entropy_cost: {', '.join(f'{e:g}' for e in entropy)}\n"
+            f"#\n"
+            f"# Why: Tier A measured entropy_cost as by far the largest main\n"
+            f"# effect, -0.297 on eval/episode_success for 2e-2 -> 5e-3. That is\n"
+            f"# the OPPOSITE of the plan's hypothesis B, and it means the optimum\n"
+            f"# lies ABOVE 2e-2 -- outside the range the 2^4 design ever tested,\n"
+            f"# since every one of its 16 cells sat at 2e-2 or below. This scan\n"
+            f"# bounds the other side. Budget and num_evals are identical to Tier\n"
+            f"# A so the results are directly comparable.\n"
+            f"#\n"
+            f"# The other three factors are held at the Tier A winner unless\n"
+            f"# --cells says otherwise. Shared env block comes from\n"
+            f"# target_config_satsweep.json, NOT hand-written.\n"
+        )
+
     header = (
         f"# Saturating-reward PPO sweep, tier {tier}. Generated by\n"
         f"# batch_runs/sweeps/gen_satsweep.py -- DO NOT hand-edit; regenerate.\n"
         f"# Plan: '20260814_Saturating reward - sweep exploration'.\n"
         f"#\n"
-        f"# Full 2^4 factorial over the four PPO factors below; level 0 is the\n"
-        f"# manipulation_params.py UR3Pick baseline, so cell a0b0c0d0 IS the\n"
-        f"# reference run. Shared env block comes from\n"
-        f"# target_config_satsweep.json (extracted from W&B run\n"
-        f"# RealDR_vel_as04_gas02_s0), NOT hand-written.\n"
-        f"#   a policy_hidden_layer_sizes (32,32,32,32) -> (256,256,256)\n"
-        f"#   b entropy_cost              2e-2          -> 5e-3\n"
-        f"#   c learning_rate             6e-4          -> 3e-4\n"
-        f"#   d reward_scaling            0.05          -> 0.03\n"
+        + design +
         f"#\n"
         f"# Budget: num_timesteps={num_timesteps}, num_evals={num_evals},\n"
         f"# env_step_per_training_step={env_step_per_training_step()},\n"
@@ -247,10 +289,22 @@ def build_lines(tier, seeds, cells=None, num_timesteps=None):
         f"# brax ceilings nts, so this number, not num_timesteps, is what W&B\n"
         f"# will show as training/num_steps).\n"
         f"#\n"
-        f"# {len(wanted)} cells x {len(seeds)} seed(s) = "
-        f"{len(wanted) * len(seeds)} runs. Comment/blank lines are skipped by\n"
+        # Phrased WITHOUT the entropy term when there is no entropy scan, so a
+        # plain `--tier A` regeneration still reproduces
+        # UR3Pick_satsweep_tierA.jsonl byte-for-byte -- that file is the record
+        # of what the 16 landed Tier A runs actually trained under, and a
+        # regenerate-diff is how a future session checks it was not tampered
+        # with. Do not "simplify" these two branches into one.
+        + (f"# {len(wanted)} cells x {len(seeds)} seed(s) = "
+           f"{len(wanted) * len(seeds)} runs. "
+           if entropy is None else
+           f"# {len(wanted)} cells x {len(entropy)} entropy value(s) x "
+           f"{len(seeds)} seed(s) = "
+           f"{len(wanted) * len(entropy) * len(seeds)} runs. ") +
+        f"Comment/blank lines are skipped by\n"
         f"# run_one_ur3.py::load_config and do NOT consume a SLURM array index:\n"
-        f"# set --array=1-{len(wanted) * len(seeds)}%4.\n"
+        f"# set --array=1-"
+        f"{len(wanted) * (len(entropy) if entropy else 1) * len(seeds)}%4.\n"
         f"#\n"
         f"# INIT-POSE LIBRARY: level={pose_level!r} n_poses={pose_n} "
         f"sha256={pose_sha}\n"
@@ -266,10 +320,11 @@ def build_lines(tier, seeds, cells=None, num_timesteps=None):
     lines = [header]
     for c in wanted:
         levels = {k: int(v) for k, v in zip("abcd", c[1::2])}
-        for seed in seeds:
-            lines.append(json.dumps(build_entry(
-                levels, seed, tier, num_timesteps, num_evals,
-                video_every_evals, shared)))
+        for ent in (entropy if entropy else [None]):
+            for seed in seeds:
+                lines.append(json.dumps(build_entry(
+                    levels, seed, tier, num_timesteps, num_evals,
+                    video_every_evals, shared, entropy=ent)))
     return lines, total
 
 
@@ -333,10 +388,28 @@ def main():
         help="override the tier's target budget. REQUIRED for tier B, which "
              "has no default on purpose -- its budget is sized from measured "
              "Tier A throughput.")
+    ap.add_argument(
+        "--entropy", type=float, nargs="+", default=None,
+        help="override entropy_cost with these values, one run per value "
+             "(plan WP5b). Requires --tier Aext so the runs carry `tierAext` "
+             "and cannot contaminate the 16-cell Tier A factorial.")
     ap.add_argument("--out", required=True)
     ap.add_argument("--force", action="store_true",
                     help="overwrite an existing file")
     args = ap.parse_args()
+
+    # Keep the tier tag and the design honest about each other. Tier A's
+    # analysis selects runs by the `tierA` tag and assumes exactly 16 cells; an
+    # entropy scan emitted under that tag would silently enlarge the factorial
+    # and corrupt every main effect computed from it.
+    if args.entropy and args.tier != "Aext":
+        raise SystemExit(
+            f"--entropy requires --tier Aext (got {args.tier!r}): an entropy "
+            f"scan is not part of the 2^4 factorial and must not be tagged as "
+            f"tier{args.tier}")
+    if args.tier == "Aext" and not args.entropy:
+        raise SystemExit(
+            "--tier Aext is the entropy extension and needs --entropy VALUES")
 
     if os.path.exists(args.out) and not args.force:
         raise SystemExit(
@@ -344,7 +417,8 @@ def main():
             f"is generated, not hand-edited)")
 
     lines, total = build_lines(args.tier, args.seeds, cells=args.cells,
-                               num_timesteps=args.num_timesteps)
+                               num_timesteps=args.num_timesteps,
+                               entropy=args.entropy)
     with open(args.out, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
