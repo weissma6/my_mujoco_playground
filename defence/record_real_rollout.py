@@ -99,7 +99,6 @@ from evaluation import gap_target  # noqa: E402
 from evaluation.gap_metrics import place_error  # noqa: E402 -- D22 drop metric
 from policy_downloader import (  # noqa: E402
     default_policy_dir,
-    download_policy,
     policy_exists_locally,
 )
 
@@ -689,12 +688,30 @@ def main():
     args.checkpoint = gap.resolve_policy_run_id(args.config_id, None)
     print(f"  [checkpoint] {args.config_id} -> {args.checkpoint} "
           f"(gap_protocol_policy_map.json)")
-    if not policy_exists_locally(args.checkpoint):
-      print(f"  [checkpoint] not cached locally; downloading from W&B ...")
-      download_policy(
-          args.checkpoint, out_dir=default_policy_dir(args.checkpoint),
-          entity=gap.WANDB_ENTITY, project=gap.WANDB_PROJECT,
-      )
+
+  # FETCH IT, however it was chosen. This used to sit inside the branch above,
+  # so a PINNED checkpoint (SELECT_CHECKPOINT / --checkpoint) was never
+  # downloaded -- it had to already be on disk, and if it wasn't the run died
+  # at the "checkpoint incomplete" guard below instead of just fetching it.
+  # That is backwards: the pinned path is the defence path.
+  #
+  # Routed through UR3RealRobotPick.download_policy_from_wandb (a staticmethod
+  # on the UR3e dependency) rather than calling policy_downloader directly, so
+  # the real-robot driver has ONE way to obtain a policy. That wrapper forwards
+  # to evaluation/downloaded_policies/policy_downloader.download_policy, which
+  # is a pure W&B file-fetch for self-describing runs -- no MJX env is built,
+  # so this is safe on any machine.
+  if not policy_exists_locally(args.checkpoint):
+    print(f"  [checkpoint] {args.checkpoint} not cached locally; "
+          f"downloading from W&B ({gap.WANDB_ENTITY}/{gap.WANDB_PROJECT}) ...")
+    UR3RealRobotPick.download_policy_from_wandb(
+        args.checkpoint, out_dir=default_policy_dir(args.checkpoint),
+        entity=gap.WANDB_ENTITY, project=gap.WANDB_PROJECT,
+    )
+  else:
+    print(f"  [checkpoint] {args.checkpoint} already cached "
+          f"({default_policy_dir(args.checkpoint)})")
+
   if args.name is None:
     args.name = _default_run_name(args.checkpoint)
 
@@ -703,7 +720,11 @@ def main():
   params_path = os.path.join(policy_path, "params.msgpack")
   for p in (meta_path, params_path):
     if not os.path.exists(p):
-      raise SystemExit(f"checkpoint incomplete: {p} not found.")
+      raise SystemExit(
+          f"checkpoint incomplete: {p} not found, and the W&B download above "
+          f"did not produce it. Check that run id {args.checkpoint!r} exists "
+          f"in {gap.WANDB_ENTITY}/{gap.WANDB_PROJECT} and that this machine "
+          f"is logged in to W&B (~/.netrc).")
   with open(meta_path, "r", encoding="utf-8") as f:
     ckpt_meta = json.load(f)
   checkpoint_sha256 = gap.sha256_file(params_path)

@@ -1115,3 +1115,75 @@ def test_run_name_default_comes_from_the_checkpoint_not_the_config_id():
         "args.name is still derived from config_id — a pinned checkpoint "
         "would write into a directory named after the wrong policy")
     assert _call_func_name(a.value) == "_default_run_name", ast.dump(a.value)
+
+
+# ===========================================================================
+# The checkpoint must be fetched however it was chosen.
+#
+# The download used to live INSIDE `if args.checkpoint is None:`, so a pinned
+# checkpoint (SELECT_CHECKPOINT / --checkpoint) was never downloaded -- it had
+# to already be on disk, and otherwise the run died at the "checkpoint
+# incomplete" guard. The pinned path is the defence path, so it must fetch.
+# ===========================================================================
+
+
+def _main_func(tree):
+  return next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "main")
+
+
+def _enclosing_if_tests(root, target):
+  """Source-ish dump of every `if` test that encloses `target` inside `root`."""
+  tests = []
+
+  def walk(node, stack):
+    if node is target:
+      tests.extend(stack)
+      return True
+    for child in ast.iter_child_nodes(node):
+      nxt = stack + [ast.dump(node.test)] if isinstance(node, ast.If) else stack
+      if walk(child, nxt if child in getattr(node, "body", []) else stack):
+        return True
+    return False
+
+  walk(root, [])
+  return tests
+
+
+def test_checkpoint_download_is_not_gated_on_an_unpinned_checkpoint():
+  """The fetch must not sit under `if args.checkpoint is None`."""
+  _, tree = _parse_record_real_rollout()
+  main = _main_func(tree)
+  calls = [n for n in ast.walk(main)
+           if _call_func_name(n) == "download_policy_from_wandb"]
+  assert calls, ("record_real_rollout.py no longer calls "
+                 "download_policy_from_wandb anywhere in main()")
+  for call in calls:
+    for test in _enclosing_if_tests(main, call):
+      assert "checkpoint" not in test or "None" not in test, (
+          "the W&B download is gated on the checkpoint being unpinned; a "
+          f"pinned SELECT_CHECKPOINT would never be fetched. Guard: {test}")
+
+
+def test_checkpoint_download_goes_through_the_ur3e_dependency():
+  """One way to obtain a policy: the UR3e driver's own staticmethod."""
+  src, tree = _parse_record_real_rollout()
+  main = _main_func(tree)
+  names = {_call_func_name(n) for n in ast.walk(main)}
+  assert "download_policy_from_wandb" in names
+  assert "download_policy" not in names, (
+      "main() calls policy_downloader.download_policy directly; route it "
+      "through UR3RealRobotPick.download_policy_from_wandb instead")
+  # And the direct import is gone, so there is no second route left open.
+  assert "    download_policy,\n" not in src
+
+
+def test_checkpoint_download_is_guarded_by_a_cache_check():
+  """Fetch only when missing -- a cached checkpoint must not re-download."""
+  _, tree = _parse_record_real_rollout()
+  main = _main_func(tree)
+  call = next(n for n in ast.walk(main)
+              if _call_func_name(n) == "download_policy_from_wandb")
+  tests = _enclosing_if_tests(main, call)
+  assert any("policy_exists_locally" in t for t in tests), (
+      f"download is unconditional -- it would refetch every run. Guards: {tests}")
