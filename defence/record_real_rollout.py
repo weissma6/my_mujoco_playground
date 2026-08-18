@@ -67,6 +67,7 @@ arm at the scene's task_home keyframe:
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -133,8 +134,36 @@ DROP_SQUARE_TARGET = (0.212, 0.212, 0.165)
 # ###                                                                     ###
 # ###########################################################################
 #
-# Pick ONE rung. This is the default for --config-id; the CLI still wins if
-# you pass --config-id explicitly.
+# THIS ONE LINE IS THE POLICY. When it is not None it wins outright: the rung
+# map below is never even opened. Set it to None to fall back to that map.
+
+SELECT_CHECKPOINT = "Snappy2_as04_ar70_g01_s1_20260817_202921_2201"
+
+# ^^^ The defence take runs the above and nothing else. Newest sweep
+# (snappy2, 2026-08-17), final eval/episode_success 0.656, and 1.7x smoother
+# than the RewardGate cell that edges it on success alone
+# (eval/episode_action_rate 779 vs 1344) -- smoothness being the property that
+# matters when 6 of the 8 real takes on 2026-08-14 died on the 30 N force
+# limit at 42-70 N peaks. Trained specs, from its own env_overrides:
+# action_scale 0.04, gripper_action_scale 0.02 (NOTE: double the 0.01 every
+# L-rung checkpoint deployed at), obs_include_velocity true (33-D),
+# episode_length 400.
+#
+# ---------------------------------------------------------------------------
+#
+# SELECT_CONFIG_ID is NOT the policy while SELECT_CHECKPOINT is pinned. It is
+# the DR-ladder rung used for two things the pinned path does not reach:
+#
+#   1. resolving a checkpoint from robots/UR3e/gap_protocol_policy_map.json,
+#      but only when SELECT_CHECKPOINT is None, and
+#   2. drawing a target profile, but only under --drop-target-from-protocol
+#      (the default target is the pinned DROP_SQUARE_TARGET).
+#
+# It also seeds --config-id, which is recorded as a label. It NO LONGER names
+# the run directory -- see _default_run_name() -- because that silently
+# produced a folder called "L1_pos" holding a snappy2 rollout.
+#
+# The rungs, for when SELECT_CHECKPOINT is None:
 #
 #   "L0_none"            -> L0_none_vel_s1_20260729_104930_2201
 #   "L1_pos"             -> L1_pos_vel_s1_20260729_112044_2201
@@ -142,33 +171,13 @@ DROP_SQUARE_TARGET = (0.212, 0.212, 0.165)
 #   "L3_pos_cube_robot"  -> L3_pos_cube_robot_vel_s1_20260729_115408_2201
 #   "L4_full"            -> L4_full_vel_s1_20260729_122736_2201
 #
-# All five are addvelocity checkpoints (33-D obs). The run_id is resolved from
-# robots/UR3e/gap_protocol_policy_map.json -- see _BEST_CONFIG_EVIDENCE below
-# for why L2 is the default (only config that actually lifts the cube: 81 mm
-# median rise, 85% completion, 116 mm final distance).
-#
-# For the defence film, L0/L1 never leave the table -- picking them records
-# the arm failing to grasp.
+# All five are addvelocity checkpoints (33-D obs) -- see _BEST_CONFIG_EVIDENCE
+# below for why L2 leads on real hardware (the only rung that actually lifts
+# the cube: 81 mm median rise, 85% completion, 116 mm final distance). For the
+# defence film, L0/L1 never leave the table -- picking them records the arm
+# failing to grasp.
 
-SELECT_CONFIG_ID = "L1_pos"
-
-# Pin an EXACT checkpoint, bypassing the policy map entirely.
-#   None = resolve from gap_protocol_policy_map.json via SELECT_CONFIG_ID
-#   "L2_pos_cube_vel_s1_20260729_112246_2201" = force this exact one
-# Note the target profile still comes from SELECT_CONFIG_ID, so if you pin a
-# checkpoint from a different rung, set SELECT_CONFIG_ID to match it.
-
-SELECT_CHECKPOINT = "Snappy2_as04_ar70_g01_s1_20260817_202921_2201"
-
-# NOTE the SELECT_CONFIG_ID above is COSMETIC on this pinned path, and the
-# snappy2/L1_pos mismatch is deliberate rather than an oversight:
-#   * with SELECT_CHECKPOINT set, `if args.checkpoint is None` below is False,
-#     so gap.resolve_policy_run_id() -- the only reader of
-#     gap_protocol_policy_map.json -- never runs, and
-#   * with an explicit drop target (now the default, DROP_SQUARE_TARGET),
-#     gap_target.target_for_episode() never runs either.
-# CONFIG_TO_PROFILE is therefore never consulted and cannot reject "snappy2"
-# as an unmapped rung. --config-id survives only as a manifest/label field.
+SELECT_CONFIG_ID = "L2_pos_cube"
 
 # ###########################################################################
 # ###   END OF THE EDIT-HERE BLOCK                                        ###
@@ -326,6 +335,28 @@ class _ForceGuardedUR3(UR3RealRobotPick):
 # ===========================================================================
 
 
+def _default_run_name(checkpoint):
+  """Run-directory name derived from the CHECKPOINT, not the rung.
+
+  It used to be `args.config_id`, which meant a pinned snappy2 checkpoint
+  still wrote its rollout into `defence/runs/<UTC>_L1_pos/` -- a run directory
+  naming a policy that never ran. The checkpoint is the only thing that is
+  always true about a take, so the take is named after it.
+
+  Strips the trailing `_<YYYYMMDD>_<HHMMSS>_<jobid>` that W&B run ids carry,
+  since the directory already leads with its own UTC stamp:
+
+      Snappy2_as04_ar70_g01_s1_20260817_202921_2201 -> Snappy2_as04_ar70_g01_s1
+      L2_pos_cube_vel_s1_20260729_112246_2201       -> L2_pos_cube_vel_s1
+
+  Anything not matching that shape is returned unchanged rather than guessed
+  at -- a surprising checkpoint name should show up in full, not be silently
+  truncated.
+  """
+  m = re.match(r"^(.*?)_\d{8}_\d{6}_\d+$", str(checkpoint))
+  return m.group(1) if m else str(checkpoint)
+
+
 def _resolve_scales(checkpoint_id, policy_path, override):
   """action_scale / gripper_action_scale for this checkpoint.
 
@@ -477,7 +508,9 @@ def main():
                   "is filmed externally; this script records no video.")
   ap.add_argument("--name", default=None,
                   help="short run name; output goes to "
-                       "defence/runs/<UTC>_<name>/. Default: --config-id.")
+                       "defence/runs/<UTC>_<name>/. Default: the checkpoint "
+                       "id with its trailing W&B timestamp stripped, so the "
+                       "directory always names the policy that actually ran.")
   ap.add_argument("--checkpoint", default=SELECT_CHECKPOINT,
                   help="dir name under evaluation/downloaded_policies/. "
                        "Default: SELECT_CHECKPOINT at the top of this file, or "
@@ -663,7 +696,7 @@ def main():
           entity=gap.WANDB_ENTITY, project=gap.WANDB_PROJECT,
       )
   if args.name is None:
-    args.name = args.config_id
+    args.name = _default_run_name(args.checkpoint)
 
   policy_path = os.path.join(POLICY_ROOT, args.checkpoint)
   meta_path = os.path.join(policy_path, "metadata.json")

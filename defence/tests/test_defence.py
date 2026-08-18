@@ -22,6 +22,7 @@ import ast
 import json
 import os
 import py_compile
+import re
 import sys
 import types
 
@@ -1045,3 +1046,72 @@ def test_render_sim_rollout_warns_off_the_trained_horizon():
         "2026-08-14 runs stop being re-renderable")
     found = True
   assert found, "no non-fatal episode_length != 400 warning found"
+
+
+# ===========================================================================
+# The run directory must name the policy that actually ran.
+#
+# `args.name = args.config_id` meant a pinned snappy2 checkpoint still wrote
+# into `defence/runs/<UTC>_L1_pos/`, i.e. a directory naming a rung whose
+# policy was never loaded. These pin the replacement.
+# ===========================================================================
+
+
+def _exec_default_run_name():
+  """`_default_run_name` executed in isolation, without importing the module.
+
+  record_real_rollout.py cannot be imported here (Linux-only vrpn/rtde), but
+  this helper is pure: lift its source out of the AST and exec it against a
+  namespace holding only `re`. That tests real behaviour rather than shape.
+  """
+  src, tree = _parse_record_real_rollout()
+  fn = next((n for n in tree.body
+             if isinstance(n, ast.FunctionDef) and n.name == "_default_run_name"),
+            None)
+  assert fn is not None, "_default_run_name is gone from record_real_rollout.py"
+  ns = {"re": re}
+  exec(compile(ast.Module(body=[fn], type_ignores=[]), "<lifted>", "exec"), ns)
+  return ns["_default_run_name"]
+
+
+@pytest.mark.parametrize("checkpoint,expected", [
+    # The pinned defence policy: W&B stamp stripped, cell identity kept.
+    ("Snappy2_as04_ar70_g01_s1_20260817_202921_2201", "Snappy2_as04_ar70_g01_s1"),
+    # An L-rung checkpoint, same shape.
+    ("L2_pos_cube_vel_s1_20260729_112246_2201", "L2_pos_cube_vel_s1"),
+    ("L0_none_vel_s1_20260729_104930_2201", "L0_none_vel_s1"),
+    # Not the W&B shape -> returned whole, never guessed at or truncated.
+    ("some_hand_made_checkpoint", "some_hand_made_checkpoint"),
+    ("trailing_20260817_202921", "trailing_20260817_202921"),
+])
+def test_default_run_name_strips_only_the_wandb_stamp(checkpoint, expected):
+  assert _exec_default_run_name()(checkpoint) == expected
+
+
+def test_default_run_name_never_returns_a_rung_for_the_pinned_checkpoint():
+  """The regression itself: the pinned take must not be named after a rung."""
+  _, tree = _parse_record_real_rollout()
+  ckpt = _module_constant(tree, "SELECT_CHECKPOINT")
+  config_id = _module_constant(tree, "SELECT_CONFIG_ID")
+  name = _exec_default_run_name()(ckpt)
+  assert name != config_id, (
+      f"default run name {name!r} equals SELECT_CONFIG_ID {config_id!r} — the "
+      "run directory would name a rung instead of the pinned policy")
+  assert name.startswith("Snappy2"), name
+
+
+def test_run_name_default_comes_from_the_checkpoint_not_the_config_id():
+  """`args.name = _default_run_name(args.checkpoint)`, not `args.config_id`."""
+  _, tree = _parse_record_real_rollout()
+  main = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "main")
+  assigns = [n for n in ast.walk(main)
+             if isinstance(n, ast.Assign)
+             and any(getattr(t, "attr", None) == "name" for t in n.targets)]
+  assert assigns, "nothing assigns args.name in main()"
+  for a in assigns:
+    rendered = ast.dump(a.value)
+    assert "config_id" not in rendered, (
+        "args.name is still derived from config_id — a pinned checkpoint "
+        "would write into a directory named after the wrong policy")
+    assert _call_func_name(a.value) == "_default_run_name", ast.dump(a.value)
