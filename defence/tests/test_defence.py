@@ -490,16 +490,53 @@ def _call_func_name(node):
   return getattr(node.func, "attr", None) or getattr(node.func, "id", None)
 
 
-def test_record_real_rollout_has_no_video_flag():
-  _src, tree = _parse_record_real_rollout()
-  found = False
+def _add_argument_flags(tree):
+  """Every flag string passed to an add_argument() call in the file."""
+  flags = set()
   for node in ast.walk(tree):
-    if _call_func_name(node) == "add_argument" and node.args:
-      first = node.args[0]
-      if isinstance(first, ast.Constant) and first.value == "--no-video":
-        found = True
-        break
-  assert found, "no add_argument(\"--no-video\", ...) call found"
+    if _call_func_name(node) != "add_argument" or not node.args:
+      continue
+    for a in node.args:
+      if isinstance(a, ast.Constant) and isinstance(a.value, str):
+        flags.add(a.value)
+  return flags
+
+
+def test_record_real_rollout_records_no_video():
+  """The webcam is gone: filming is external, this script only drives the arm.
+
+  Guards the whole removal, not just the flag: no capture library, no worker
+  class, no camera flags. A future edit that reintroduces any of them has to
+  update this test deliberately.
+  """
+  src, tree = _parse_record_real_rollout()
+
+  imported = set()
+  for node in ast.walk(tree):
+    if isinstance(node, ast.Import):
+      imported.update(a.name.split(".")[0] for a in node.names)
+    elif isinstance(node, ast.ImportFrom) and node.module:
+      imported.add(node.module.split(".")[0])
+  for mod in ("cv2", "imageio", "threading"):
+    assert mod not in imported, (
+        f"{mod!r} is imported again -- the webcam was removed from this "
+        "script; video is filmed externally")
+
+  assert "_WebcamWorker" not in src, "the _WebcamWorker class is back"
+
+  flags = _add_argument_flags(tree)
+  camera_flags = sorted(f for f in flags
+                        if f.startswith("--camera") or f == "--no-video")
+  assert not camera_flags, f"camera flags are back: {camera_flags}"
+
+  # The manifest's video block must still be EMITTED (all-null) -- dropping it
+  # would break render_sim_rollout.validate_manifest, which requires the keys
+  # to be present.
+  for key in ("real_mp4", "webcam_fps_nominal", "n_webcam_frames",
+              "frame_index_csv"):
+    assert f'"{key}"' in src, (
+        f"manifest video key {key!r} is missing -- render_sim_rollout's "
+        "validate_manifest requires it to be present even when null")
 
 
 def test_record_real_rollout_manifest_video_block_has_source_key():
@@ -529,30 +566,147 @@ def _contains_call_named(nodes, name):
   return any(_call_func_name(n) == name for n in nodes)
 
 
-def test_record_real_rollout_states_csv_never_gated_on_no_video():
-  src, tree = _parse_record_real_rollout()
+def test_record_real_rollout_always_writes_states_csv():
+  """real_states.csv is unconditional -- it is the run's only data artifact.
 
+  (Superseded the old no_video-gating test: with the webcam gone there is no
+  video branch left for it to be gated on, but the CSV must still be written
+  on every path.)
+  """
+  _src, tree = _parse_record_real_rollout()
   all_nodes = list(ast.walk(tree))
   assert _contains_string_literal(all_nodes, "real_states.csv")
   assert _contains_call_named(all_nodes, "_build_states_csv")
 
-  # Every `if` whose TEST mentions no_video / args.no_video: walk its body
-  # + orelse (NOT its test) and assert neither the "real_states.csv"
-  # literal nor a _build_states_csv() call is nested inside.
-  checked_any = False
-  for node in ast.walk(tree):
-    if not isinstance(node, ast.If):
-      continue
-    test_src = ast.get_source_segment(src, node.test) or ""
-    if "no_video" not in test_src:
-      continue
-    checked_any = True
-    sub_nodes = list(_walk_all(node.body + node.orelse))
-    assert not _contains_string_literal(sub_nodes, "real_states.csv"), (
-        f'"real_states.csv" literal found nested inside `if {test_src}:`')
-    assert not _contains_call_named(sub_nodes, "_build_states_csv"), (
-        f"_build_states_csv() call found nested inside `if {test_src}:`")
 
-  # At least one such `if` must exist -- otherwise the two asserts above
-  # never actually ran, and this test would be silently vacuous.
-  assert checked_any, "no `if ... no_video ...:` block found to check"
+def test_record_real_rollout_never_blocks_on_input():
+  """No hard stops: the run must go through unattended once Play is pressed.
+
+  Any input()/_confirm()/_press_enter() would strand the arm mid-sequence
+  waiting on a keypress, which is exactly what was removed.
+  """
+  _src, tree = _parse_record_real_rollout()
+  all_nodes = list(ast.walk(tree))
+  for name in ("input", "_confirm", "_press_enter"):
+    assert not _contains_call_named(all_nodes, name), (
+        f"{name}() is called again -- this script must run unattended; use "
+        "_countdown() for a timed window instead")
+  assert "--yes" not in _add_argument_flags(tree), (
+      "--yes is back, which only makes sense if something blocks on input")
+
+
+def test_record_real_rollout_starts_from_task_home_by_default():
+  """Default start pose is task_home, read from the XML rather than hardcoded."""
+  _src, tree = _parse_record_real_rollout()
+  for node in ast.walk(tree):
+    if _call_func_name(node) != "add_argument" or not node.args:
+      continue
+    first = node.args[0]
+    if not (isinstance(first, ast.Constant) and first.value == "--start-pose"):
+      continue
+    default = next(
+        (kw.value for kw in node.keywords if kw.arg == "default"), None)
+    assert isinstance(default, ast.Constant), "--start-pose has no default"
+    assert default.value == "task_home", (
+        f"--start-pose default is {default.value!r}, expected 'task_home'")
+    choices = next(
+        (kw.value for kw in node.keywords if kw.arg == "choices"), None)
+    got = {e.value for e in choices.elts} if choices is not None else set()
+    assert {"task_home", "nearest_home"} <= got, (
+        f"--start-pose choices {sorted(got)} must offer task_home and "
+        "nearest_home")
+    break
+  else:
+    raise AssertionError("no --start-pose argument found")
+
+  assert _contains_call_named(list(ast.walk(tree)), "_task_home_qpos"), (
+      "task_home is not read from the scene XML via _task_home_qpos()")
+
+
+def _required_add_arguments(tree):
+  """{flag: True} for every add_argument(..., required=True) in the file."""
+  out = {}
+  for node in ast.walk(tree):
+    if _call_func_name(node) != "add_argument" or not node.args:
+      continue
+    first = node.args[0]
+    if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+      continue
+    for kw in node.keywords:
+      if (kw.arg == "required" and isinstance(kw.value, ast.Constant)
+          and kw.value.value is True):
+        out[first.value] = True
+  return out
+
+
+def test_record_real_rollout_runs_without_required_flags():
+  """A bare `--config-id L0_none` must be a complete invocation.
+
+  The original failure this guards: running the script with no arguments
+  produced only an argparse usage dump, because --name and --checkpoint were
+  both required=True. The checkpoint is now resolved from the gap protocol's
+  policy map instead.
+  """
+  _src, tree = _parse_record_real_rollout()
+  required = _required_add_arguments(tree)
+  assert "--name" not in required, "--name is required=True again"
+  assert "--checkpoint" not in required, "--checkpoint is required=True again"
+  assert not required, (
+      f"record_real_rollout.py must be runnable with no flags, but these are "
+      f"required=True: {sorted(required)}")
+
+  # ...and the fallback that makes --checkpoint optional must be present.
+  all_nodes = list(ast.walk(tree))
+  assert _contains_call_named(all_nodes, "resolve_policy_run_id"), (
+      "no gap.resolve_policy_run_id() call -- --checkpoint is optional but "
+      "nothing resolves it from gap_protocol_policy_map.json")
+
+
+def test_record_real_rollout_drops_the_cube_at_the_end():
+  """The D22 drop must exist, and must NOT sit in the teardown.
+
+  A drop inside `finally` would fire after robot/mocap are torn down (and on
+  every failure path), so it could neither be scored nor filmed. It has to run
+  inside the try, right after run_policy_loop returns.
+  """
+  _src, tree = _parse_record_real_rollout()
+  all_nodes = list(ast.walk(tree))
+  assert _contains_call_named(all_nodes, "open_gripper"), (
+      "no open_gripper() call -- the D22 drop is missing")
+  assert _contains_call_named(all_nodes, "place_error"), (
+      "no place_error() call -- the drop is never scored")
+
+  for node in ast.walk(tree):
+    if not isinstance(node, ast.Try) or not node.finalbody:
+      continue
+    final_nodes = list(_walk_all(node.finalbody))
+    assert not _contains_call_named(final_nodes, "open_gripper"), (
+        "open_gripper() found inside a `finally:` block -- the drop must "
+        "happen in the try, before teardown, or it cannot be filmed or scored")
+    assert not _contains_call_named(final_nodes, "place_error"), (
+        "place_error() found inside a `finally:` block")
+
+
+def test_record_real_rollout_target_uses_base_frame_box():
+  """target_for_episode's box_xy must be the BASE-frame box, not raw mocap.
+
+  gap_target.target_for_episode documents box_xy as base frame and derives the
+  target bearing from it. The mocap calibration is a ~180 deg Z rotation plus a
+  ~0.37 m offset, so passing the raw mocap XY silently produces a target at an
+  unrelated azimuth -- and makes the manifest self-inconsistent, since
+  init.box_pos is logged in base frame.
+  """
+  src, tree = _parse_record_real_rollout()
+  found = False
+  for node in ast.walk(tree):
+    if _call_func_name(node) != "target_for_episode":
+      continue
+    box_xy = next(
+        (kw.value for kw in node.keywords if kw.arg == "box_xy"), None)
+    assert box_xy is not None, "target_for_episode called without box_xy="
+    seg = ast.get_source_segment(src, box_xy) or ""
+    assert "box_pos_base" in seg, (
+        f"target_for_episode(box_xy={seg!r}) is not the base-frame box; "
+        "pass box_pos_base[:2], not the raw mocap box_xyz")
+    found = True
+  assert found, "no target_for_episode() call found"

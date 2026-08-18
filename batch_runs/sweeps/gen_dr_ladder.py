@@ -104,6 +104,19 @@ WANDB_PROJECT = "UR3_pick_ppo"
 # horizons consistent.
 EPISODE_LENGTH = 400
 
+# Table tilt, stated EXPLICITLY on every non-L0 line for the same reason
+# EPISODE_LENGTH and ACTION_SCALE are: only a value that reaches the run config
+# -> env_overrides -> the policy's metadata.json is a real trained value that a
+# later replay or deploy check can trust.
+#
+# 2026-08: raised 0.05 -> 0.12 rad in ur3_pick.default_config(). The D23 C1
+# wedge measured 5.47 deg realized on one axis, so the eval tilt sat ~2x
+# OUTSIDE the trained 2.86 deg/axis band -- C1 was out-of-distribution for
+# L0..L4 alike and therefore said nothing about DR dose-response. 0.12 rad
+# (6.9 deg/axis) covers it with ~26% margin. L0_none is unaffected: it pins
+# lifter_tilt_max to 0.0 via _DETERMINISTIC_POSITION below and must stay flat.
+LIFTER_TILT_MAX = 0.12
+
 # The three literal values that collapse "position" to a single deterministic
 # point -- SAME numbers that used to be hardcoded in ur3_pick.reset() before
 # Commit 2 exposed them as config fields. target_z/r/azim use the MIDPOINT of
@@ -385,6 +398,9 @@ def build_lines(seeds, version=None):
                 "video_every_evals": 6,
                 "render_every": 1,
                 "episode_length": EPISODE_LENGTH,
+                # Placed BEFORE **overrides so L0_none's _DETERMINISTIC_POSITION
+                # (lifter_tilt_max: 0.0) still wins and L0 stays perfectly flat.
+                "lifter_tilt_max": LIFTER_TILT_MAX,
                 **overrides,
                 "wandb_tags": [*tags, f"s{seed}", *version_tag],
             }
