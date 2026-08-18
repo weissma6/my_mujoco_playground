@@ -185,6 +185,10 @@ _LIFTER_HEIGHT_MIN = 0.003
 # mirrored (not imported) for the table-marker overlay drawn in
 # draw_table_markers(). A pytest asserts the two TAPE_MARK_XY copies (this
 # one and gap_metrics.TAPE_MARK_XY) stay equal.
+# The horizon the checkpoints are trained at. Only used for the warning
+# below -- nothing here depends on the episode actually being this long.
+TRAINED_EPISODE_LENGTH = 400
+
 DROP_SQUARE_CENTER = (0.212, 0.212)        # mirror of gap_metrics.py:963
 DROP_SQUARE_HALF_WIDTH = 0.075             # mirror of gap_metrics.py:964
 TAPE_MARK_XY = {"P1": (0.216, -0.185),
@@ -828,7 +832,11 @@ def main():
   ap.add_argument("--no-markers", dest="markers", action="store_false",
                    help="disable the drop-square/tape-mark overlay drawn on "
                         "the table (see draw_table_markers).")
-  ap.set_defaults(markers=True)
+  ap.add_argument("--no-compare", dest="compare", action="store_false",
+                   help="skip the automatic compare_tcp run that would "
+                        "otherwise follow the rollout whenever the run dir "
+                        "also holds a real_states.csv.")
+  ap.set_defaults(markers=True, compare=True)
   args = ap.parse_args()
 
   run_dir = os.path.abspath(args.run_dir)
@@ -910,6 +918,15 @@ def main():
   fps = round(1.0 / ctrl_dt)
   episode_length = int(control["episode_length"])
 
+  # Non-fatal on purpose: the eight archived 2026-08-14 runs have episode
+  # lengths of 153-473 (they exited on force_limit or timeout, before
+  # max_steps existed) and must stay re-renderable. A warning is enough --
+  # what it costs is the frame-matched-to-training claim, not the render.
+  if episode_length != TRAINED_EPISODE_LENGTH:
+    print(f"[warn] manifest control.episode_length = {episode_length}, not "
+          f"the trained {TRAINED_EPISODE_LENGTH} — this render will not be "
+          "frame-matched to training.")
+
   if args.camera is not None:
     camera_arg = args.camera
   else:
@@ -983,6 +1000,23 @@ def main():
 
   print(f"wrote {len(rows)} frames @ {fps} fps -> {out_path}")
   print(f"wrote {len(rows)} rows -> {csv_path}")
+
+  # ---- the real-vs-sim TCP comparison ------------------------------------
+  # In-process import, never a subprocess: shelling out would lose the
+  # SystemExit on a length mismatch (it would become an exit code nobody
+  # reads) and would re-pay the interpreter start-up. The import is deferred
+  # to here rather than done at module scope so that importing
+  # render_sim_rollout stays free of matplotlib.
+  real_csv = os.path.join(run_dir, "real_states.csv")
+  if not args.compare:
+    print("[compare] skipped (--no-compare)")
+  elif not os.path.exists(real_csv):
+    print(f"[compare] skipped: no real_states.csv in {run_dir}")
+  else:
+    if _THIS_DIR not in sys.path:
+      sys.path.insert(0, _THIS_DIR)
+    import compare_tcp
+    compare_tcp.compare_run(run_dir)
 
 
 if __name__ == "__main__":

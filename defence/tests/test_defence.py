@@ -951,3 +951,97 @@ def test_record_real_rollout_drop_target_flags_are_exclusive():
   assert found, (
       "no `if args.drop_target_from_protocol:` branch raising SystemExit on a "
       "conflicting explicit --drop-target")
+
+
+# ===========================================================================
+# J. render_sim_rollout.py -> compare_tcp wiring + the 400-step horizon guard.
+# ===========================================================================
+
+_RENDER_SIM_ROLLOUT_PATH = os.path.join(_DEFENCE_DIR, "render_sim_rollout.py")
+
+
+def _parse_render_sim_rollout():
+  with open(_RENDER_SIM_ROLLOUT_PATH, "r", encoding="utf-8") as f:
+    src = f.read()
+  return src, ast.parse(src, filename=_RENDER_SIM_ROLLOUT_PATH)
+
+
+def test_render_sim_rollout_has_no_compare_flag():
+  """--no-compare must exist: the auto-run has to be switchable off."""
+  _src, tree = _parse_render_sim_rollout()
+  flags = _add_argument_flags(tree)
+  assert "--no-compare" in flags, (
+      f"--no-compare not among the declared flags: {sorted(flags)}")
+
+
+def test_render_sim_rollout_imports_compare_tcp_not_subprocess():
+  """compare_tcp runs IN-PROCESS.
+
+  Shelling out would turn compare_tcp's SystemExit on a real/sim length
+  mismatch into an exit code nobody reads -- the loudest failure in the
+  pipeline would become the quietest.
+  """
+  src, tree = _parse_render_sim_rollout()
+
+  imported = False
+  for node in ast.walk(tree):
+    if isinstance(node, ast.Import):
+      imported |= any(a.name == "compare_tcp" for a in node.names)
+    elif isinstance(node, ast.ImportFrom):
+      imported |= (node.module == "compare_tcp")
+  assert imported, "render_sim_rollout.py never imports compare_tcp"
+
+  called = any(
+      _call_func_name(n) == "compare_run" for n in ast.walk(tree))
+  assert called, "compare_tcp.compare_run() is never called"
+
+  for node in ast.walk(tree):
+    if isinstance(node, ast.Import):
+      assert not any(a.name == "subprocess" for a in node.names), (
+          "render_sim_rollout.py imports subprocess -- compare_tcp must be "
+          "called in-process, not shelled out")
+    elif isinstance(node, ast.ImportFrom):
+      assert node.module != "subprocess", (
+          "render_sim_rollout.py imports from subprocess")
+
+  # ...and no other way of shelling out either. Checked as CALLS rather than
+  # as a substring search, so the comment in the source explaining why we do
+  # not shell out is not itself a violation.
+  shell_outs = {"system", "popen", "spawnl", "spawnv", "execv"}
+  for node in ast.walk(tree):
+    name = _call_func_name(node)
+    if name in shell_outs:
+      seg = ast.get_source_segment(src, node) or name
+      raise AssertionError(
+          f"render_sim_rollout.py shells out: {seg!r}. compare_tcp must be "
+          "called in-process.")
+
+
+def test_render_sim_rollout_warns_off_the_trained_horizon():
+  """A non-400 episode_length warns; it must NOT raise.
+
+  The eight archived 2026-08-14 runs are 153-473 steps (they exited on
+  force_limit or timeout, before max_steps existed) and have to stay
+  re-renderable, so this guard is deliberately non-fatal.
+  """
+  src, tree = _parse_render_sim_rollout()
+
+  assert _module_constant(tree, "TRAINED_EPISODE_LENGTH") == 400
+
+  found = False
+  for node in ast.walk(tree):
+    if not isinstance(node, ast.If):
+      continue
+    test_seg = ast.get_source_segment(src, node.test) or ""
+    if "episode_length" not in test_seg:
+      continue
+    if "TRAINED_EPISODE_LENGTH" not in test_seg and "400" not in test_seg:
+      continue
+    body = list(_walk_all(node.body))
+    if not _contains_call_named(body, "print"):
+      continue
+    assert not any(isinstance(n, ast.Raise) for n in body), (
+        "the horizon guard raises; it must only warn, or the archived "
+        "2026-08-14 runs stop being re-renderable")
+    found = True
+  assert found, "no non-fatal episode_length != 400 warning found"
