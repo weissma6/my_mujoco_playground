@@ -1,0 +1,42 @@
+{
+  "env_name": "UR3Pick",
+  "obs_dim": 33,
+  "action_dim": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      256,
+      256,
+      256
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "wandb_run_id": "Snappy2_as04_ar70_g01_s1_20260817_202921_2201",
+  "wandb_entity": "weissma6-zhaw-school-of-engineering",
+  "wandb_project": "UR3_pick_ppo",
+  "action_scale": 0.04,
+  "ctrl_dt": 0.02,
+  "episode_length": 400,
+  "env_overrides": {
+    "box_z_rot_range": 6.283185307179586,
+    "action_scale": 0.04,
+    "gripper_action_scale": 0.02,
+    "obs_include_velocity": true,
+    "reward_config.scales.action_rate": -0.7,
+    "gate_gripper_box_on_lift": false,
+    "gate_gripper_align_on_lift": true,
+    "episode_length": 400,
+    "domain_rand.enable": true,
+    "domain_rand.cube_mass.enable": true,
+    "domain_rand.cube_mass.min": 0.85,
+    "domain_rand.cube_mass.max": 1.15
+  },
+  "git_commit": "a200d41a"
+}

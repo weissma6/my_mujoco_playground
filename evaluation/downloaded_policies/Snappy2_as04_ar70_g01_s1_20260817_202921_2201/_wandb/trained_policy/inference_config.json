@@ -1,0 +1,88 @@
+{
+  "env_name": "UR3Pick",
+  "episode_length": 400,
+  "observation_size": 33,
+  "action_size": 7,
+  "network_factory": {
+    "policy_hidden_layer_sizes": [
+      256,
+      256,
+      256
+    ],
+    "policy_obs_key": "state",
+    "value_hidden_layer_sizes": [
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "value_obs_key": "state"
+  },
+  "seed": 1,
+  "env_overrides": {
+    "box_z_rot_range": 6.283185307179586,
+    "action_scale": 0.04,
+    "gripper_action_scale": 0.02,
+    "obs_include_velocity": true,
+    "reward_config.scales.action_rate": -0.7,
+    "gate_gripper_box_on_lift": false,
+    "gate_gripper_align_on_lift": true,
+    "episode_length": 400,
+    "domain_rand.enable": true,
+    "domain_rand.cube_mass.enable": true,
+    "domain_rand.cube_mass.min": 0.85,
+    "domain_rand.cube_mass.max": 1.15
+  },
+  "domain_randomization": {},
+  "git_commit": "a200d41a",
+  "training_timestamp": "2026-08-17 20:51:34.937091",
+  "full_cfg": {
+    "env_name": "UR3Pick",
+    "wandb_project": "UR3_pick_ppo",
+    "render_every": 1,
+    "episode_length": 400,
+    "box_z_rot_range": 6.283185307179586,
+    "obs_include_velocity": true,
+    "action_scale": 0.04,
+    "gripper_action_scale": 0.02,
+    "domain_rand.enable": true,
+    "domain_rand.cube_mass.enable": true,
+    "domain_rand.cube_mass.min": 0.85,
+    "domain_rand.cube_mass.max": 1.15,
+    "seed": 1,
+    "run_id": "Snappy2_as04_ar70_g01_s1",
+    "video_every_evals": 5,
+    "num_timesteps": 24000000,
+    "num_evals": 20,
+    "num_resets_per_eval": 1,
+    "entropy_cost": 0.02,
+    "learning_rate": 0.0003,
+    "reward_scaling": 0.03,
+    "network_factory": {
+      "policy_hidden_layer_sizes": [
+        256,
+        256,
+        256
+      ],
+      "value_hidden_layer_sizes": [
+        256,
+        256,
+        256,
+        256,
+        256
+      ]
+    },
+    "gate_gripper_box_on_lift": false,
+    "gate_gripper_align_on_lift": true,
+    "action_rate": -0.7,
+    "wandb_tags": [
+      "snappy2",
+      "as04",
+      "ar70",
+      "g01",
+      "anchora1b0c1d1",
+      "s1"
+    ]
+  }
+}
