@@ -111,6 +111,21 @@ SCHEMA_VERSION = "defence/1"
 POLICY_ROOT = os.path.join(REPO_ROOT, "evaluation", "downloaded_policies")
 GRIPPER_CONVENTION = "0=open,0.025=closed"
 
+# D22 drop square, mirrored from evaluation/gap_metrics.py:963-964 -- the
+# 15x15 cm square taped on the table at base-frame (0.212, 0.212). The Z is
+# box_z_anchor (0.115, gap_target.scene_constants) + the 0.05 lift the
+# L0_deterministic profile draws, i.e. the same 0.165 the L0_none run
+# 20260814T114737Z targeted. Pinning it makes the target identical in every
+# take instead of redrawn per episode.
+#
+# Why pin at all: target_for_episode() routes L1-L5 through the "default"
+# profile, which for episode 0 draws base-frame (0.1967, -0.1656, 0.1413) --
+# 0.374 m from the L0 target and place_error 0.378 m OUTSIDE the taped
+# square. That is why 7 of the 8 runs on 2026-08-14 missed the tape. The
+# sampler itself is deliberately NOT changed here (see the plan's Out of
+# scope); the target is pinned instead.
+DROP_SQUARE_TARGET = (0.212, 0.212, 0.165)
+
 
 # ###########################################################################
 # ###                                                                     ###
@@ -143,7 +158,17 @@ SELECT_CONFIG_ID = "L1_pos"
 # Note the target profile still comes from SELECT_CONFIG_ID, so if you pin a
 # checkpoint from a different rung, set SELECT_CONFIG_ID to match it.
 
-SELECT_CHECKPOINT = None
+SELECT_CHECKPOINT = "Snappy2_as04_ar70_g01_s1_20260817_202921_2201"
+
+# NOTE the SELECT_CONFIG_ID above is COSMETIC on this pinned path, and the
+# snappy2/L1_pos mismatch is deliberate rather than an oversight:
+#   * with SELECT_CHECKPOINT set, `if args.checkpoint is None` below is False,
+#     so gap.resolve_policy_run_id() -- the only reader of
+#     gap_protocol_policy_map.json -- never runs, and
+#   * with an explicit drop target (now the default, DROP_SQUARE_TARGET),
+#     gap_target.target_for_episode() never runs either.
+# CONFIG_TO_PROFILE is therefore never consulted and cannot reject "snappy2"
+# as an unmapped rung. --config-id survives only as a manifest/label field.
 
 # ###########################################################################
 # ###   END OF THE EDIT-HERE BLOCK                                        ###
@@ -498,12 +523,21 @@ def main():
                   help="commanded per-finger position (m), 0=open. Default: "
                        "whatever the chosen start pose carries (the episode's "
                        "finger, or task_home's 0.0125).")
-  ap.add_argument("--drop-target", type=float, nargs=3, default=None,
+  ap.add_argument("--drop-target", type=float, nargs=3,
+                  default=DROP_SQUARE_TARGET,
                   help="explicit drop target in BASE (MuJoCo/sim) frame "
                        "metres -- NOT mocap world. It is handed straight to "
                        "run_policy_loop, which compares it against a "
-                       "base-converted box position. Default is the "
-                       "protocol's matched target for this episode.")
+                       "base-converted box position. Default is "
+                       f"DROP_SQUARE_TARGET {DROP_SQUARE_TARGET}, the centre "
+                       "of the taped square, so every take aims at the same "
+                       "physical point.")
+  ap.add_argument("--drop-target-from-protocol", action="store_true",
+                  help="restore the OLD behaviour: redraw the target per "
+                       "episode via gap_target.target_for_episode instead of "
+                       "using the pinned DROP_SQUARE_TARGET. Requires "
+                       "--episode-id. Mutually exclusive with an explicit "
+                       "--drop-target.")
 
   # Hardware.
   # Defaults mirror run_gap_protocol.py's, so a defence take lands on the
@@ -522,12 +556,15 @@ def main():
 
   # Loop.
   ap.add_argument("--control-hz", type=float, default=50.0)
-  ap.add_argument("--episode-length", type=int, default=None,
-                  help="nominal horizon; the hang watchdog is derived from "
-                       "it unless --hang-watchdog-s is given. Default: the "
-                       "protocol's own horizon (same as the gap protocol), "
-                       "or 400 on the --arm-qpos path where there is no "
-                       "protocol to read it from.")
+  ap.add_argument("--episode-length", type=int, default=400,
+                  help="HARD horizon: forwarded to run_policy_loop as "
+                       "max_steps, so the loop stops after exactly this many "
+                       "control steps with stop_reason 'horizon'. Also sizes "
+                       "the hang watchdog unless --hang-watchdog-s is given. "
+                       "Default 400 = the trained episode_length, which is "
+                       "what makes the sim replay frame-matched. Was "
+                       "previously None (= the protocol's own horizon), which "
+                       "capped nothing and let the loop run to timeout.")
   ap.add_argument("--hang-watchdog-s", type=float, default=None)
   ap.add_argument("--settle-s", type=float, default=1.0)
   ap.add_argument("--lookahead-time", type=float, default=0.1)
@@ -589,6 +626,18 @@ def main():
 
   ap.add_argument("--out-root", default=os.path.join(_THIS_DIR, "runs"))
   args = ap.parse_args()
+
+  # --drop-target now DEFAULTS to the pinned DROP_SQUARE_TARGET, so the
+  # protocol draw is opt-in. `is DROP_SQUARE_TARGET` is an identity test on
+  # the argparse default object: argparse hands back that very tuple when the
+  # flag is absent, and a fresh list when it is passed, so this distinguishes
+  # "not given" from "given, and happens to equal the default".
+  if args.drop_target_from_protocol:
+    if args.drop_target is not DROP_SQUARE_TARGET:
+      raise SystemExit(
+          "--drop-target and --drop-target-from-protocol are mutually "
+          "exclusive: the first pins a target, the second redraws one.")
+    args.drop_target = None   # fall through to the target_for_episode path
 
   # --episode-id is what fixes the DROP TARGET; an explicit --drop-target
   # replaces it. The arm pose is chosen separately (--start-pose/--arm-qpos),
@@ -906,6 +955,10 @@ def main():
         use_fk_tcp=True,
         reach_tol=None,  # never terminate early on reach
         dwell_time_s=0.0,
+        # The horizon is now ENFORCED, not just watchdog-sized: without this
+        # the loop ran to timeout_s and logged ~473 steps against a policy
+        # trained at 400, so the sim replay could never be frame-matched.
+        max_steps=int(episode_length),
         mocap_stale_s=args.mocap_stale_s,
         box_z_offset=args.box_z_offset,
         debug_print=True,
@@ -1027,6 +1080,12 @@ def main():
           # horizon (which is kept below for provenance).
           "episode_length": n_steps,
           "nominal_horizon": int(episode_length),
+          # The cap actually handed to run_policy_loop. With horizon_enforced
+          # True, a healthy take has n_steps == max_steps and
+          # result.stop_reason == "horizon"; anything else means the loop
+          # exited on force/mocap/timeout instead.
+          "max_steps": int(episode_length),
+          "horizon_enforced": True,
           "control_hz_requested": float(args.control_hz),
           "achieved_hz": float(
               stats.get("true_inferred_frequency_hz") or float("nan")),

@@ -833,3 +833,121 @@ def test_run_policy_loop_timeout_break_unchanged():
   seg = (ast.get_source_segment(src, guard.test) or "").strip()
   assert seg == "elapsed >= timeout_s", (
       f"timeout break guard is now {seg!r}, was `elapsed >= timeout_s`")
+
+
+# ===========================================================================
+# I. record_real_rollout.py 400-step contract -- SOURCE LEVEL ONLY.
+#    (pinned checkpoint, pinned drop square, enforced horizon)
+# ===========================================================================
+
+
+def _module_constant(tree, name):
+  """The literal value of a top-level `NAME = <literal>` assignment."""
+  for node in tree.body:
+    if not isinstance(node, ast.Assign):
+      continue
+    if any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+      return ast.literal_eval(node.value)
+  raise AssertionError(f"module constant {name} not found")
+
+
+def _add_argument_kwargs(tree, flag):
+  """The keyword arguments of the add_argument() call declaring `flag`."""
+  for node in ast.walk(tree):
+    if _call_func_name(node) != "add_argument":
+      continue
+    if not any(isinstance(a, ast.Constant) and a.value == flag
+               for a in node.args):
+      continue
+    return {kw.arg: kw.value for kw in node.keywords}
+  raise AssertionError(f"no add_argument() for {flag}")
+
+
+def test_record_real_rollout_drop_square_matches_gap_metrics():
+  """DROP_SQUARE_TARGET is the THIRD copy of the drop-square centre.
+
+  gap_metrics.py owns it, render_sim_rollout.py mirrors it (guarded by
+  test_render_sim_rollout_mirrors_gap_metrics_constants), and this is the
+  third. A drift between any two of them aims the real take and the sim
+  replay at different physical points.
+  """
+  _src, tree = _parse_record_real_rollout()
+  target = _module_constant(tree, "DROP_SQUARE_TARGET")
+
+  assert len(target) == 3, f"DROP_SQUARE_TARGET is not a 3-vector: {target}"
+  assert tuple(target[:2]) == tuple(gap_metrics.DROP_SQUARE_CENTER), (
+      f"DROP_SQUARE_TARGET[:2] = {tuple(target[:2])} but "
+      f"gap_metrics.DROP_SQUARE_CENTER = {gap_metrics.DROP_SQUARE_CENTER}")
+  # box_z_anchor 0.115 + the 0.05 lift the L0_deterministic profile draws.
+  assert target[2] == 0.165, f"DROP_SQUARE_TARGET[2] = {target[2]}, want 0.165"
+
+  # and it really is inside the taped square, not merely equal to a constant
+  dist, inside = gap_metrics.place_error(tuple(target[:2]))
+  assert inside and dist == 0.0, (dist, inside)
+
+
+def test_record_real_rollout_forwards_max_steps():
+  """The horizon must reach the loop, not just size the watchdog.
+
+  Without max_steps=, --episode-length only fed timeout_s, so the loop ran
+  400 * 0.02 * 1.12 + 0.5 = 9.46 s and logged ~473 steps at 50 Hz.
+  """
+  src, tree = _parse_record_real_rollout()
+  calls = [n for n in ast.walk(tree)
+           if _call_func_name(n) == "run_policy_loop"]
+  assert calls, "no run_policy_loop() call found"
+  for call in calls:
+    kw = next((k for k in call.keywords if k.arg == "max_steps"), None)
+    assert kw is not None, (
+        "run_policy_loop() called without max_steps= -- the horizon is not "
+        "enforced and the sim replay cannot be frame-matched")
+    seg = ast.get_source_segment(src, kw.value) or ""
+    assert "episode_length" in seg, (
+        f"max_steps={seg!r} is not derived from episode_length")
+
+
+def test_record_real_rollout_episode_length_defaults_to_400():
+  """400 is the trained episode_length; the default must not be None."""
+  _src, tree = _parse_record_real_rollout()
+  kwargs = _add_argument_kwargs(tree, "--episode-length")
+  default = kwargs.get("default")
+  assert default is not None, "--episode-length has no default= at all"
+  value = ast.literal_eval(default)
+  assert value == 400, f"--episode-length default is {value}, want 400"
+
+
+def test_record_real_rollout_pins_snappy2_checkpoint():
+  """SELECT_CHECKPOINT is pinned, so the policy map is never consulted."""
+  _src, tree = _parse_record_real_rollout()
+  ckpt = _module_constant(tree, "SELECT_CHECKPOINT")
+  assert ckpt == "Snappy2_as04_ar70_g01_s1_20260817_202921_2201", (
+      f"SELECT_CHECKPOINT is {ckpt!r}")
+
+
+def test_record_real_rollout_drop_target_flags_are_exclusive():
+  """--drop-target and --drop-target-from-protocol must not both apply.
+
+  The pinned target is now the default, so the protocol draw is opt-in.
+  Passing both is a contradiction (pin a point / redraw one) and must exit
+  rather than silently letting one win.
+  """
+  src, tree = _parse_record_real_rollout()
+  flags = _add_argument_flags(tree)
+  assert "--drop-target-from-protocol" in flags, (
+      "no --drop-target-from-protocol escape hatch -- pinning the target "
+      "removed the per-episode draw with no way back")
+
+  found = False
+  for node in ast.walk(tree):
+    if not isinstance(node, ast.If):
+      continue
+    test_seg = ast.get_source_segment(src, node.test) or ""
+    if "drop_target_from_protocol" not in test_seg:
+      continue
+    body_seg = "\n".join(
+        ast.get_source_segment(src, b) or "" for b in node.body)
+    if "SystemExit" in body_seg and "drop_target" in body_seg:
+      found = True
+  assert found, (
+      "no `if args.drop_target_from_protocol:` branch raising SystemExit on a "
+      "conflicting explicit --drop-target")
