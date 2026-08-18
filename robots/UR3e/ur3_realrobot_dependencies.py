@@ -262,31 +262,54 @@ class _GripperWorker:
                     self._gripper_fn(norm)
                     with self._lock:
                         self._last_sent_norm = norm
-                    if self._gripper_state_fn is not None:
-                        fb = self._gripper_state_fn()
-                        with self._lock:
-                            if isinstance(fb, dict):
-                                # Full read_state() dict: sim_finger metres +
-                                # raw native percent + the object-detection
-                                # grasp proxy (see the arm loop's original
-                                # comment on last_grasped/last_obj_flag).
-                                self._state["gripper_fb_pos"] = float(
-                                    fb.get("sim_finger", np.nan))
-                                self._state["gripper_fb_pct"] = float(
-                                    fb.get("pos_pct", np.nan))
-                                self._state["grasped"] = bool(
-                                    fb.get("grasped", False))
-                                self._state["obj_flag"] = int(
-                                    fb.get("obj_flag", 0))
-                            else:
-                                # Back-compat: a plain float is the
-                                # sim_finger value; percent/grasp unavailable.
-                                self._state["gripper_fb_pos"] = float(fb)
-                                self._state["gripper_fb_pct"] = float("nan")
                 except Exception as e:  # noqa: BLE001
                     if not self._warned and self._debug_print:
                         print(f"\n[warn] gripper command failed: {e}; "
                               "arm runs, gripper ignored.")
+                        self._warned = True
+            # Readback poll -- EVERY tick, whether or not a command went out.
+            #
+            # This used to sit inside the `if` above, so it only ran when the
+            # command CHANGED by more than 1e-3. That readback is not just a log
+            # column: build_obs_from_feedback feeds it to the policy as
+            # finger_pos_real, the obs gripper channel. So a constant
+            # gripper_norm froze the policy's own view of its gripper.
+            #
+            # 2026-08-18: in both defence rollouts the command never changed, so
+            # this fired exactly once (step 11, last_sent is None) and the policy
+            # flew on that single stale sample -- 0.0204 m, an ~82%-closed
+            # gripper -- for the remaining 389 steps. Same signature in 45 of
+            # the 177 committed gap-protocol runs.
+            #
+            # Cost: one XML-RPC round-trip per tick instead of zero. The worst
+            # case is unchanged (a commanding tick was always 2 round-trips),
+            # and the <=10 Hz budget is still enforced by the sleep below.
+            if self._gripper_state_fn is not None:
+                try:
+                    fb = self._gripper_state_fn()
+                    with self._lock:
+                        if isinstance(fb, dict):
+                            # Full read_state() dict: sim_finger metres +
+                            # raw native percent + the object-detection
+                            # grasp proxy (see the arm loop's original
+                            # comment on last_grasped/last_obj_flag).
+                            self._state["gripper_fb_pos"] = float(
+                                fb.get("sim_finger", np.nan))
+                            self._state["gripper_fb_pct"] = float(
+                                fb.get("pos_pct", np.nan))
+                            self._state["grasped"] = bool(
+                                fb.get("grasped", False))
+                            self._state["obj_flag"] = int(
+                                fb.get("obj_flag", 0))
+                        else:
+                            # Back-compat: a plain float is the
+                            # sim_finger value; percent/grasp unavailable.
+                            self._state["gripper_fb_pos"] = float(fb)
+                            self._state["gripper_fb_pct"] = float("nan")
+                except Exception as e:  # noqa: BLE001
+                    if not self._warned and self._debug_print:
+                        print(f"\n[warn] gripper readback failed: {e}; "
+                              "arm runs, obs falls back to the plant estimate.")
                         self._warned = True
             elapsed = time.perf_counter() - tick_start
             sleep_time = self._gripper_min_dt - elapsed
@@ -772,6 +795,38 @@ class UR3RealRobotPick:
               f"left/right touch sites={self._fk_left_touch}/"
               f"{self._fk_right_touch}, box body={self._fk_box_body}")
 
+    def _keyframe_gripper_seed(self, key_name: str) -> Tuple[float, float]:
+        """(gripper_ctrl, finger_pos_est) for the start of a rollout, read from
+        the named scene keyframe on the FK model.
+
+        Returns the tendon-actuator command (`key.ctrl[-1]`) and the PER-FINGER
+        joint position (`key.qpos[finger_qadr[0]]`) -- the two quantities
+        run_policy_loop's gripper block integrates and low-passes. For
+        `task_home` both are 0.0125, which is what makes the obs gripper
+        channel start at 2 * 0.0125 = 0.025, identical to sim.
+
+        Fails loudly rather than falling back to 0.0: a silent zero is exactly
+        the bug this replaced, and it is invisible in the logs until you notice
+        the policy never closes.
+        """
+        if getattr(self, "_fk_model", None) is None:
+            raise RuntimeError(
+                "run_policy_loop needs the FK model to seed the gripper from "
+                f"keyframe {key_name!r}; call init_fk_model(xml_path) first."
+            )
+        try:
+            key = self._fk_model.key(key_name)
+        except KeyError as e:
+            names = [self._fk_model.key(i).name for i in
+                     range(self._fk_model.nkey)]
+            raise RuntimeError(
+                f"keyframe {key_name!r} not in the FK scene (have: {names}). "
+                "Pass init_keyframe=<one of those> to run_policy_loop."
+            ) from e
+        gripper_ctrl = float(key.ctrl[-1])
+        finger_pos_est = float(key.qpos[int(self._fk_finger_qadr[0])])
+        return gripper_ctrl, finger_pos_est
+
     def compute_tcp_pos(self, q: np.ndarray) -> np.ndarray:
         """Compute MuJoCo tcp site position from the 6 arm joint angles via FK."""
         self._fk_data.qpos[:6] = np.asarray(q, dtype=float)
@@ -1234,6 +1289,7 @@ class UR3RealRobotPick:
         max_steps: Optional[int] = None,
         mocap_stale_s: float = None,
         box_z_offset: float = 0.0,
+        init_keyframe: str = "task_home",
         dtype=np.float32,
         debug_print: bool = True,
     ) -> Tuple[pd.DataFrame, dict]:
@@ -1295,11 +1351,25 @@ class UR3RealRobotPick:
 
         dt = 1.0 / float(control_hz)
         drop_target = np.asarray(drop_target, dtype=np.float32).reshape(3)
-        # Seed the internal gripper tracker from the keyframe ctrl if available, and
-        # start the finger-plant estimate open (the pickloop opens the gripper at
-        # the start of the run).
-        self._gripper_ctrl = float(getattr(self, "_gripper_ctrl", 0.0))
-        self._finger_pos_est = 0.0
+        # Seed the gripper integrator AND the finger-plant estimate from the
+        # scene keyframe this rollout resets to. Sim does exactly this
+        # (ur3_pick.reset: init_ctrl[-1] = noisy_finger_qpos.sum() * 0.5), so
+        # task_home starts every episode at ctrl 0.0125 / per-finger qpos
+        # 0.0125 -> obs gripper channel 0.025.
+        #
+        # The old line was `float(getattr(self, "_gripper_ctrl", 0.0))` -- a
+        # no-op that read its own attribute, so it (a) carried run N's last
+        # command into run N+1, and (b) in a FRESH process left the integrator
+        # pinned on its 0.0 clip floor. Neither matches sim, and 0.0 is a reset
+        # state the policy has never seen in training.
+        #
+        # 2026-08-18: that is what made both defence rollouts hover without
+        # ever closing. Across the gap campaign the same split shows up --
+        # 0 of 111 runs that started with _gripper_ctrl > 0 were affected,
+        # against 45 of 65 that started at 0.0.
+        self._gripper_ctrl, self._finger_pos_est = self._keyframe_gripper_seed(
+            init_keyframe
+        )
         # Arm command integrator: None => the first tick seeds it from measured
         # q (mirrors ur3_pick.reset()'s init_ctrl = the arm's start qpos). MUST
         # be cleared per rollout or run N+1 inherits run N's last command.
