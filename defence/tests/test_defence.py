@@ -1187,3 +1187,71 @@ def test_checkpoint_download_is_guarded_by_a_cache_check():
   tests = _enclosing_if_tests(main, call)
   assert any("policy_exists_locally" in t for t in tests), (
       f"download is unconditional -- it would refetch every run. Guards: {tests}")
+
+
+# ===========================================================================
+# Deploy timing must equal trained timing.
+#
+# _resolve_scales already enforced this for action_scale/gripper_action_scale.
+# --control-hz (50) and --episode-length (400) were plain CLI defaults that
+# merely HAPPENED to equal the pinned checkpoint's trained 0.02 s / 400.
+# ===========================================================================
+
+
+def _exec_assert_trained_timing():
+  """`_assert_trained_timing` lifted out of the AST and exec'd (pure)."""
+  _, tree = _parse_record_real_rollout()
+  fn = next((n for n in tree.body
+             if isinstance(n, ast.FunctionDef)
+             and n.name == "_assert_trained_timing"), None)
+  assert fn is not None, "_assert_trained_timing is gone"
+  ns = {"SystemExit": SystemExit}
+  exec(compile(ast.Module(body=[fn], type_ignores=[]), "<lifted>", "exec"), ns)
+  return ns["_assert_trained_timing"]
+
+
+_SNAPPY2_META = {
+    "ctrl_dt": 0.02,
+    "episode_length": 400,
+    "env_overrides": {"episode_length": 400},
+}
+
+
+def test_trained_timing_accepts_the_pinned_checkpoints_own_values():
+  """The real defence invocation must pass, not just not-crash."""
+  _exec_assert_trained_timing()(_SNAPPY2_META, "Snappy2", 0.02, 400)
+
+
+@pytest.mark.parametrize("ctrl_dt,ep_len,needle", [
+    (0.01, 400, "ctrl_dt mismatch"),        # 100 Hz against a 50 Hz policy
+    (0.02, 473, "episode_length mismatch"),  # the 2026-08-14 watchdog overrun
+    (0.02, 200, "episode_length mismatch"),
+])
+def test_trained_timing_rejects_a_mismatch(ctrl_dt, ep_len, needle):
+  with pytest.raises(SystemExit) as e:
+    _exec_assert_trained_timing()(_SNAPPY2_META, "Snappy2", ctrl_dt, ep_len)
+  assert needle in str(e.value), str(e.value)
+
+
+def test_trained_timing_reports_rather_than_silently_skips(capsys):
+  """A checkpoint recording neither value must SAY so, not look like a pass."""
+  _exec_assert_trained_timing()({}, "LegacyCkpt", 0.02, 400)
+  out = capsys.readouterr().out
+  assert "UNVERIFIED" in out, out
+
+
+def test_trained_timing_prefers_env_overrides_episode_length():
+  """env_overrides is the authoritative record, as it is for the scales."""
+  meta = {"ctrl_dt": 0.02, "episode_length": 999,
+          "env_overrides": {"episode_length": 400}}
+  _exec_assert_trained_timing()(meta, "Ckpt", 0.02, 400)
+  with pytest.raises(SystemExit):
+    _exec_assert_trained_timing()(meta, "Ckpt", 0.02, 999)
+
+
+def test_trained_timing_is_called_before_the_episode_runs():
+  _, tree = _parse_record_real_rollout()
+  main = _main_func(tree)
+  names = [_call_func_name(n) for n in ast.walk(main)]
+  assert "_assert_trained_timing" in names, (
+      "main() never cross-checks deploy timing against the checkpoint")

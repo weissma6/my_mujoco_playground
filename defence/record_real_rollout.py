@@ -356,6 +356,53 @@ def _default_run_name(checkpoint):
   return m.group(1) if m else str(checkpoint)
 
 
+def _assert_trained_timing(ckpt_meta, checkpoint_id, ctrl_dt, episode_length):
+  """Deploy ctrl_dt / episode_length must equal what this policy trained at.
+
+  `_resolve_scales` already enforces this for action_scale and
+  gripper_action_scale. The timing pair was the gap: --control-hz and
+  --episode-length are plain CLI defaults (50 Hz, 400), and for the pinned
+  snappy2 checkpoint they happen to equal its trained 0.02 s / 400 -- but
+  nothing read the checkpoint to check. Pin a policy trained at a different
+  horizon or rate and it would have deployed silently at the wrong one.
+
+  Same posture as _resolve_scales: hard-fail rather than guess, and name the
+  flag that overrides. A checkpoint whose metadata records neither value is
+  not an error -- older exports predate both keys -- but it IS reported, so a
+  silent skip never looks like a passed check.
+  """
+  trained_dt = ckpt_meta.get("ctrl_dt")
+  trained_len = (ckpt_meta.get("env_overrides", {}) or {}).get("episode_length")
+  if trained_len is None:
+    trained_len = ckpt_meta.get("episode_length")
+
+  if trained_dt is None and trained_len is None:
+    print(f"  [timing] {checkpoint_id} records neither ctrl_dt nor "
+          f"episode_length -- deploying at {1.0 / ctrl_dt:.1f} Hz x "
+          f"{episode_length} steps UNVERIFIED against training.")
+    return
+
+  if trained_dt is not None and abs(float(trained_dt) - ctrl_dt) > 1e-9:
+    raise SystemExit(
+        f"ctrl_dt mismatch: {checkpoint_id} trained at "
+        f"{float(trained_dt)} s ({1.0 / float(trained_dt):.1f} Hz), this run "
+        f"would drive at {ctrl_dt} s ({1.0 / ctrl_dt:.1f} Hz). Deploy rate "
+        f"must equal trained rate -- pass --control-hz "
+        f"{1.0 / float(trained_dt):.6g}, or override deliberately.")
+
+  if trained_len is not None and int(trained_len) != int(episode_length):
+    raise SystemExit(
+        f"episode_length mismatch: {checkpoint_id} trained with "
+        f"episode_length {int(trained_len)}, this run would drive "
+        f"{int(episode_length)} steps. The sim replay reproduces whatever the "
+        f"real take recorded, so a mismatch here is a mismatch against "
+        f"training -- pass --episode-length {int(trained_len)}, or override "
+        f"deliberately.")
+
+  print(f"  [timing] matches training: {1.0 / ctrl_dt:.1f} Hz "
+        f"(ctrl_dt {ctrl_dt}), {int(episode_length)} steps")
+
+
 def _resolve_scales(checkpoint_id, policy_path, override):
   """action_scale / gripper_action_scale for this checkpoint.
 
@@ -818,6 +865,9 @@ def main():
   episode_length = args.episode_length
   if episode_length is None:
     episode_length = int(protocol.horizon) if protocol is not None else 400
+  # Deploy timing must equal trained timing, same rule the scales follow.
+  _assert_trained_timing(ckpt_meta, args.checkpoint, ctrl_dt, episode_length)
+
   hang_watchdog_s = args.hang_watchdog_s
   if hang_watchdog_s is None:
     hang_watchdog_s = episode_length * ctrl_dt * 1.12 + 0.5
