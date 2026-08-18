@@ -1231,6 +1231,7 @@ class UR3RealRobotPick:
         use_fk_tcp: bool = False,
         reach_tol: float = None,
         dwell_time_s: float = 0.0,
+        max_steps: Optional[int] = None,
         mocap_stale_s: float = None,
         box_z_offset: float = 0.0,
         dtype=np.float32,
@@ -1277,6 +1278,13 @@ class UR3RealRobotPick:
                       staleness window is the only reliable loss signal — needs a
                       reader exposing `last_update_time` (VRPNRigidBodyReader does)
                       subscribed to ONLY the target body. None disables the check.
+          max_steps: hard cap on control steps. None (default) = the old
+                      behaviour, loop runs until timeout_s / reach_tol. Set to
+                      the trained episode_length for a frame-matched sim replay.
+                      The break fires at step_count + 1 >= max_steps, i.e. AFTER
+                      the row for step max_steps-1 is appended, so the log holds
+                      exactly max_steps rows (steps 0 .. max_steps-1) and
+                      stopped_reason == "horizon".
         Returns (per-step DataFrame, summary stats dict). On mocap loss the loop
         breaks early; stats["stopped_reason"] == "mocap_lost".
         """
@@ -1587,6 +1595,10 @@ class UR3RealRobotPick:
                         break
                 else:
                     in_tol_since = None
+
+                if max_steps is not None and step_count + 1 >= max_steps:
+                    stopped_reason = "horizon"
+                    break
 
                 if elapsed >= timeout_s:
                     stopped_reason = "timeout"

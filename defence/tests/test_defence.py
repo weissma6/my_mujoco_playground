@@ -710,3 +710,126 @@ def test_record_real_rollout_target_uses_base_frame_box():
         "pass box_pos_base[:2], not the raw mocap box_xyz")
     found = True
   assert found, "no target_for_episode() call found"
+
+
+# ===========================================================================
+# H. run_policy_loop max_steps horizon cap -- SOURCE LEVEL ONLY.
+#    robots/UR3e/ur3_realrobot_dependencies.py is not importable here (RTDE +
+#    vrpn), so this section uses ast only, exactly like section G.
+# ===========================================================================
+
+_REALROBOT_DEPS_PATH = os.path.join(
+    REPO_ROOT, "robots", "UR3e", "ur3_realrobot_dependencies.py")
+
+
+def _parse_realrobot_deps():
+  with open(_REALROBOT_DEPS_PATH, "r", encoding="utf-8") as f:
+    src = f.read()
+  return src, ast.parse(src, filename=_REALROBOT_DEPS_PATH)
+
+
+def _run_policy_loop_def(tree):
+  for node in ast.walk(tree):
+    if isinstance(node, ast.FunctionDef) and node.name == "run_policy_loop":
+      return node
+  raise AssertionError("run_policy_loop not found")
+
+
+def _parent_map(root):
+  """child id -> parent node, over the subtree rooted at `root`."""
+  parents = {}
+  for parent in ast.walk(root):
+    for child in ast.iter_child_nodes(parent):
+      parents[id(child)] = parent
+  return parents
+
+
+def _guarding_if(node, parents):
+  """The nearest enclosing ast.If of `node`, or None."""
+  cur = parents.get(id(node))
+  while cur is not None:
+    if isinstance(cur, ast.If):
+      return cur
+    cur = parents.get(id(cur))
+  return None
+
+
+def _stopped_reason_assigns(fn, value):
+  """Every `stopped_reason = <value>` Assign inside run_policy_loop."""
+  out = []
+  for node in ast.walk(fn):
+    if not isinstance(node, ast.Assign):
+      continue
+    if not (len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "stopped_reason"):
+      continue
+    if isinstance(node.value, ast.Constant) and node.value.value == value:
+      out.append(node)
+  return out
+
+
+def test_run_policy_loop_max_steps_defaults_to_none():
+  """max_steps must exist AND default to None.
+
+  None is the load-bearing default: run_policy_loop is shared with
+  evaluation/run_gap_protocol.py, which must keep running to timeout_s /
+  reach_tol exactly as before. A non-None default would silently truncate
+  every gap-protocol episode.
+  """
+  _src, tree = _parse_realrobot_deps()
+  fn = _run_policy_loop_def(tree)
+
+  names = [a.arg for a in fn.args.args] + [a.arg for a in fn.args.kwonlyargs]
+  assert "max_steps" in names, f"max_steps not in run_policy_loop args: {names}"
+
+  if "max_steps" in [a.arg for a in fn.args.args]:
+    idx = [a.arg for a in fn.args.args].index("max_steps")
+    # defaults align to the TAIL of args
+    offset = len(fn.args.args) - len(fn.args.defaults)
+    assert idx >= offset, "max_steps has no default at all"
+    default = fn.args.defaults[idx - offset]
+  else:
+    idx = [a.arg for a in fn.args.kwonlyargs].index("max_steps")
+    default = fn.args.kw_defaults[idx]
+
+  assert isinstance(default, ast.Constant) and default.value is None, (
+      f"max_steps default is {ast.dump(default)}, must be the None constant")
+
+
+def test_run_policy_loop_horizon_break_is_guarded():
+  """Exactly one `stopped_reason = "horizon"`, and it is unreachable unless
+  the caller opted in with max_steps."""
+  src, tree = _parse_realrobot_deps()
+  fn = _run_policy_loop_def(tree)
+  parents = _parent_map(fn)
+
+  assigns = _stopped_reason_assigns(fn, "horizon")
+  assert len(assigns) == 1, (
+      f"expected exactly 1 stopped_reason = 'horizon' assignment, "
+      f"found {len(assigns)}")
+
+  guard = _guarding_if(assigns[0], parents)
+  assert guard is not None, "the horizon assignment sits outside any `if`"
+  seg = ast.get_source_segment(src, guard.test) or ""
+  assert "max_steps is not None" in seg, (
+      f"horizon break guarded by {seg!r}, which does not test "
+      "`max_steps is not None` -- with max_steps=None the old code path must "
+      "be provably unreachable")
+
+
+def test_run_policy_loop_timeout_break_unchanged():
+  """The pre-existing timeout exit is untouched by the max_steps addition."""
+  src, tree = _parse_realrobot_deps()
+  fn = _run_policy_loop_def(tree)
+  parents = _parent_map(fn)
+
+  assigns = _stopped_reason_assigns(fn, "timeout")
+  assert len(assigns) == 1, (
+      f"expected exactly 1 stopped_reason = 'timeout' assignment, "
+      f"found {len(assigns)}")
+
+  guard = _guarding_if(assigns[0], parents)
+  assert guard is not None, "the timeout assignment sits outside any `if`"
+  seg = (ast.get_source_segment(src, guard.test) or "").strip()
+  assert seg == "elapsed >= timeout_s", (
+      f"timeout break guard is now {seg!r}, was `elapsed >= timeout_s`")
