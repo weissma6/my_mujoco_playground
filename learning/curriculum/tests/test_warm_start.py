@@ -4,7 +4,7 @@ CPU only -- no MJX, no env is ever built or stepped. Exercises brax's real
 `restore_params` semantics against real archived checkpoints.
 
 Run:
-    python -m pytest batch_runs/curriculum/tests/test_warm_start.py -q
+    python -m pytest learning/curriculum/tests/test_warm_start.py -q
 """
 
 import os
@@ -307,10 +307,19 @@ def _tiny_train(restore_params=None):
         policy_hidden_layer_sizes=(32, 32, 32, 32),
         value_hidden_layer_sizes=(256,) * 5,
     )
+    # brax asserts `num_envs % device_count == 0` (ppo/train.py:374) and
+    # `batch_size * num_minibatches % num_envs == 0` (:323). Hardcoding 2 makes
+    # this test hardware-dependent: it passes on the HPC (one GPU -> one device)
+    # and fails on a Mac running with XLA_FLAGS=--xla_force_host_platform_
+    # device_count=N. Derive the sizes instead. At one device these are exactly
+    # the original 2 / 2 / 2 / 64.
+    n_dev = jax.local_device_count()
+    num_envs = 2 * n_dev
     kw = dict(
-        environment=_ShapeEnv(), num_envs=2, batch_size=2, num_minibatches=1,
-        unroll_length=2, episode_length=4, num_evals=2, num_eval_envs=2,
-        num_timesteps=64, network_factory=nf, normalize_observations=True,
+        environment=_ShapeEnv(), num_envs=num_envs, batch_size=num_envs,
+        num_minibatches=1, unroll_length=2, episode_length=4, num_evals=2,
+        num_eval_envs=num_envs, num_timesteps=32 * num_envs,
+        network_factory=nf, normalize_observations=True,
         policy_params_fn=ppf, seed=0,
     )
     if restore_params is not None:
