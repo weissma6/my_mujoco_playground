@@ -34,6 +34,8 @@ from datetime import datetime
 from flax import serialization
 import mujoco
 from learning.curriculum.best_params import BestParamsRecorder
+from learning.curriculum.early_stop import ConvergedSignal, PatienceTracker
+from learning.curriculum.warm_start import params_sha256, rescale_normalizer_count
 
 
 
@@ -188,6 +190,16 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "align_mode",
         "align_pref_floor",
         "grasp_align_thresh",
+        # Curriculum keys (WP4). These are consumed by run_experiment itself and
+        # are NEVER PPO params, so they must be reserved: otherwise
+        # apply_validated_overrides(strict=True) raises "Unknown override keys"
+        # at :1239 -- which happens AFTER SLURM has already allocated the GPU,
+        # burning the allocation on a config typo.
+        "warm_start_params",
+        "warm_start_from",
+        "early_stop",
+        "normalizer_count_reset",
+        "curriculum_rung",
     }
     overrides: Dict[str, Any] = {}
     for k, v in cfg.items():
@@ -933,6 +945,19 @@ def print_dict_pairs(d, prefix=""):
 def run_experiment(cfg: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
     _setup_mujoco_backend()
 
+    # --- curriculum warm start -------------------------------------------
+    # `warm_start_params` is a live brax 3-tuple handed over in-process by the
+    # curriculum driver, not JSON. It must come OUT of cfg before cfg reaches
+    # wandb.init(config=cfg) and inference_cfg["full_cfg"], both of which would
+    # otherwise try to serialise ~1.1 MB of network weights into run metadata.
+    # A new dict is built rather than popping in place, so the caller's cfg is
+    # left untouched.
+    warm_start_params = cfg.get("warm_start_params")
+    if warm_start_params is not None:
+        cfg = {k: v for k, v in cfg.items() if k != "warm_start_params"}
+    warm_start_from = cfg.get("warm_start_from")
+    curriculum_rung = cfg.get("curriculum_rung")
+
     if not cfg.get("env_name"):
         raise ValueError(
             "cfg['env_name'] is required (robot-independent runner has no default). "
@@ -1329,24 +1354,89 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
             dr_kwargs["randomization_fn"] = domain_randomize_fn
             print("[DR] randomization_fn passed to ppo.train ✓", flush=True)
 
+        # -----------------------------
+        # Curriculum: warm start + early stop (both default OFF)
+        # -----------------------------
+        # restore_params is passed to ppo.train ONLY when a warm start is
+        # configured. It is deliberately absent -- not present-and-None -- from
+        # the kwargs otherwise, so a no-curriculum run hands brax exactly the
+        # kwarg set it got before this change.
+        warm_kwargs = {}
+        warm_sha = None
+        if warm_start_params is not None:
+            restore = tuple(warm_start_params)
+            ncr = cfg.get("normalizer_count_reset")
+            if ncr is not None:
+                # Keeps mean/std, rewinds only the Welford count so a frozen
+                # normaliser can track a shifted observation distribution again
+                # (the L4 obs_noise case). Off by default.
+                restore = (rescale_normalizer_count(restore[0], float(ncr)),
+                           restore[1], restore[2])
+                print(f"[curriculum] normalizer count rescaled to {float(ncr):,.0f}",
+                      flush=True)
+            warm_kwargs["restore_params"] = restore
+            warm_sha = params_sha256(restore)
+            # The checksum at init is what makes "rung N+1 really started from
+            # rung N" checkable after the fact (WP8) instead of merely claimed.
+            wandb.run.summary["curriculum/params_sha256_at_init"] = warm_sha
+            wandb.run.summary["curriculum/warm_start_from"] = str(warm_start_from)
+            print(f"[curriculum] warm start from {warm_start_from} "
+                  f"sha256={warm_sha[:16]}...", flush=True)
+        else:
+            wandb.run.summary["curriculum/params_sha256_at_init"] = "cold"
+            print("[curriculum] cold start (no warm_start_params)", flush=True)
+        if curriculum_rung is not None:
+            wandb.run.summary["curriculum/rung"] = str(curriculum_rung)
+
+        es_cfg = cfg.get("early_stop") or None
+        tracker = PatienceTracker(**es_cfg) if isinstance(es_cfg, dict) else None
+        last_eval = {"metrics": None}
+
+        def _on_eval(step, metrics):
+            # Order matters: record the params/reward pairing FIRST, so the very
+            # eval that triggers the stop is still in the recorder when the
+            # exception unwinds the training loop.
+            recorder.on_progress(step, metrics.get("eval/episode_reward"))
+            last_eval["metrics"] = dict(metrics)
+            if tracker is not None and tracker.update(step, metrics):
+                raise tracker.signal(step)
+
         train_fn = functools.partial(
             ppo.train,
             **ppo_params_overwrite,
             **dr_kwargs,
             network_factory=network_factory,
-            progress_fn=_make_progress_wandb(
-                on_eval=lambda _s, _m: recorder.on_progress(
-                    _s, _m.get("eval/episode_reward")
-                )
-            ),
+            progress_fn=_make_progress_wandb(on_eval=_on_eval),
             policy_params_fn=policy_params_fn,
             seed=seed,
+            **warm_kwargs,
         )
 
-
-        make_inference_fn, params, final_metrics = train_fn(
-            environment=env, wrap_env_fn=wrapper.wrap_for_brax_training
-        )
+        stopped_early = False
+        converged = None
+        try:
+            _make_inference_fn, params, final_metrics = train_fn(
+                environment=env, wrap_env_fn=wrapper.wrap_for_brax_training
+            )
+        except ConvergedSignal as sig:
+            # brax has no "return True to stop" hook and asserts the budget was
+            # consumed (ppo/train.py:750-755), so escaping by exception is the
+            # only way out. The params that earned the triggering score are
+            # already in the recorder: brax fires policy_params_fn(s_k) before
+            # progress_fn(s_k) (:727 vs :748).
+            converged, stopped_early = sig, True
+            params = recorder.best.get("params")
+            if params is None:
+                raise RuntimeError(
+                    "early stop fired but the recorder holds no params -- "
+                    "cannot publish a policy for this rung"
+                ) from sig
+            final_metrics = last_eval["metrics"] or {}
+            print(f"[curriculum] EARLY STOP at step {sig.step:,}: {sig.reason} "
+                  f"(best {sig.best_reward:.1f} @ {sig.best_step:,})", flush=True)
+            wandb.run.summary["curriculum/stopped_early"] = True
+            wandb.run.summary["curriculum/stop_step"] = int(sig.step)
+            wandb.run.summary["curriculum/stop_reason"] = str(sig.reason)
         # Log final config once
         print("\n ppo_params_overwrite before training", flush=True)
         print_dict_pairs(ppo_params_overwrite)
@@ -1418,6 +1508,18 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
                 flush=True,
             )
 
+        # The checksum of the params the NEXT rung warm-starts from. WP8 chains
+        # this against the successor's params_sha256_at_init; without it the
+        # transfer is unfalsifiable after the run.
+        _handoff = recorder.best.get("params") or params
+        _published_sha = params_sha256(_handoff)
+        wandb.run.summary["curriculum/published_sha256"] = _published_sha
+        if tracker is not None:
+            wandb.run.summary["curriculum/early_stop_summary"] = json.dumps(
+                tracker.summary()
+            )
+        print(f"[curriculum] published sha256={_published_sha[:16]}...", flush=True)
+
         result = {
             "params": params,
             "best_params": recorder.best.get("params"),
@@ -1425,8 +1527,16 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
             "best_step": recorder.best.get("step"),
             "final_metrics": final_metrics,
             "best_info": recorder.best_info(),
-            "steps_completed": int(total_timesteps) if total_timesteps else None,
-            "stopped_early": False,
+            "steps_completed": (
+                int(converged.step) if converged is not None
+                else (int(total_timesteps) if total_timesteps else None)
+            ),
+            "stopped_early": stopped_early,
+            "warm_start_from": warm_start_from,
+            "curriculum_rung": curriculum_rung,
+            "params_sha256_at_init": warm_sha,
+            "published_sha256": _published_sha,
+            "early_stop": tracker.summary() if tracker is not None else None,
             "wandb_run_id": run_id_tag,
             "out_dir": out_dir,
             "observation_size": int(inference_cfg["observation_size"]),
