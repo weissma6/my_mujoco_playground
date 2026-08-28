@@ -33,6 +33,7 @@ import jax.numpy as jnp
 from datetime import datetime
 from flax import serialization
 import mujoco
+from learning.curriculum.best_params import BestParamsRecorder
 
 
 
@@ -200,7 +201,20 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return overrides
 
 
-def _make_progress_wandb(prog_state=None):
+def _make_progress_wandb(prog_state=None, on_eval=None):
+    """Build brax's progress_fn.
+
+    `on_eval(step, metrics)` is invoked AFTER the wandb.log so that the eval
+    which triggers a curriculum early stop is still recorded before any
+    exception unwinds the training loop.
+
+    `prog_state` is retained only for backwards compatibility with external
+    callers; the best-checkpoint pairing no longer uses it. It used to carry
+    "last_eval_reward" into policy_params_fn, which is precisely the off-by-one
+    that BestParamsRecorder fixes -- brax fires policy_params_fn(s_k) BEFORE
+    progress_fn(s_k) (ppo/train.py:727 vs :748), so that read returned eval
+    k-1's reward. See learning/curriculum/best_params.py.
+    """
     def progress_wandb(num_steps, metrics):
         log_dict = {"training/num_steps": int(num_steps)}
         for k, v in metrics.items():
@@ -208,8 +222,6 @@ def _make_progress_wandb(prog_state=None):
                 log_dict[k] = float(v)
             except Exception:
                 pass
-        # Stash the latest eval reward so policy_params_fn (called right after
-        # progress_fn at each eval) can tag the checkpoint it saves as best/not.
         if prog_state is not None and "eval/episode_reward" in metrics:
             try:
                 prog_state["last_eval_reward"] = float(metrics["eval/episode_reward"])
@@ -217,6 +229,8 @@ def _make_progress_wandb(prog_state=None):
             except Exception:
                 pass
         wandb.log(log_dict, step=int(num_steps))
+        if on_eval is not None:
+            on_eval(int(num_steps), metrics)
 
     return progress_wandb
 
@@ -916,7 +930,7 @@ def print_dict_pairs(d, prefix=""):
         print(f"{prefix}{k}: {v}")
 
 
-def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
+def run_experiment(cfg: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
     _setup_mujoco_backend()
 
     if not cfg.get("env_name"):
@@ -1254,28 +1268,25 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         # in memory to publish alongside the final policy.
         ckpt_dir = os.path.join(out_dir, "checkpoints")
         os.makedirs(ckpt_dir, exist_ok=True)
-        prog_state = {}
-        best_ckpt = {"reward": float("-inf"), "step": -1, "params": None}
+        # The recorder pairs each eval's params with the reward measured on
+        # THOSE params, matching on step rather than on callback arrival order.
+        # The previous code read progress_fn's stashed reward from inside
+        # policy_params_fn, but brax calls policy_params_fn FIRST within an
+        # iteration (ppo/train.py:727 before :748), so every params tree was
+        # scored with its predecessor's number and best_params.msgpack held the
+        # params one eval PAST the peak.
+        recorder = BestParamsRecorder(
+            ckpt_dir=ckpt_dir,
+            serialize=serialization.to_bytes,
+        )
 
         def policy_params_fn(num_steps, make_policy, params):
             video_state["eval_idx"] += 1
             eval_idx = video_state["eval_idx"]
 
-            # Save this eval's params, and remember them if they are the best
-            # eval reward so far (reward stashed by progress_fn just before this).
-            try:
-                ckpt_path = os.path.join(
-                    ckpt_dir, f"params_step{int(num_steps):09d}.msgpack"
-                )
-                with open(ckpt_path, "wb") as _cf:
-                    _cf.write(serialization.to_bytes(params))
-                _r = prog_state.get("last_eval_reward")
-                if _r is not None and _r > best_ckpt["reward"]:
-                    best_ckpt.update(
-                        reward=float(_r), step=int(num_steps), params=params
-                    )
-            except Exception as _e:
-                print(f"[ckpt] save failed at step {num_steps}: {_e}", flush=True)
+            # Snapshot this eval to disk and register the params for pairing.
+            # The reward half arrives from progress_fn for the same step.
+            recorder.on_policy_params(int(num_steps), params)
 
             is_last_eval = (total_timesteps is not None) and (int(num_steps) >= int(total_timesteps))
             should_record = (eval_idx % video_every_evals == 0) or is_last_eval
@@ -1323,7 +1334,11 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
             **ppo_params_overwrite,
             **dr_kwargs,
             network_factory=network_factory,
-            progress_fn=_make_progress_wandb(prog_state),
+            progress_fn=_make_progress_wandb(
+                on_eval=lambda _s, _m: recorder.on_progress(
+                    _s, _m.get("eval/episode_reward")
+                )
+            ),
             policy_params_fn=policy_params_fn,
             seed=seed,
         )
@@ -1390,22 +1405,39 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> None:
         # Guards against a post-peak collapse (the final params.msgpack can be
         # worse than a mid-run policy). The deploy loader still defaults to
         # params.msgpack; point it at best_params.msgpack to deploy the peak.
-        if best_ckpt.get("params") is not None:
+        if recorder.best.get("params") is not None:
             with open(os.path.join(tp_dir, "best_params.msgpack"), "wb") as f:
-                f.write(serialization.to_bytes(best_ckpt["params"]))
+                f.write(serialization.to_bytes(recorder.best["params"]))
             with open(os.path.join(tp_dir, "best_info.json"), "w", encoding="utf-8") as f:
-                json.dump(
-                    {"best_eval_reward": best_ckpt["reward"], "best_step": best_ckpt["step"]},
-                    f,
-                    indent=2,
-                )
+                json.dump(recorder.best_info(), f, indent=2)
             for name in ("best_params.msgpack", "best_info.json"):
                 wandb.save(os.path.join(tp_dir, name), base_path=out_dir)
             print(
-                f"[ckpt] best policy: step={best_ckpt['step']} "
-                f"eval_reward={best_ckpt['reward']:.1f} -> trained_policy/best_params.msgpack",
+                f"[ckpt] best policy: step={recorder.best['step']} "
+                f"eval_reward={recorder.best['reward']:.1f} -> trained_policy/best_params.msgpack",
                 flush=True,
             )
 
+        result = {
+            "params": params,
+            "best_params": recorder.best.get("params"),
+            "best_reward": recorder.best.get("reward"),
+            "best_step": recorder.best.get("step"),
+            "final_metrics": final_metrics,
+            "best_info": recorder.best_info(),
+            "steps_completed": int(total_timesteps) if total_timesteps else None,
+            "stopped_early": False,
+            "wandb_run_id": run_id_tag,
+            "out_dir": out_dir,
+            "observation_size": int(inference_cfg["observation_size"]),
+            "action_size": int(inference_cfg["action_size"]),
+            "network_factory": inference_cfg["network_factory"],
+        }
+
     finally:
         run.finish()
+
+    # Returned AFTER the finally block so the wandb run is closed first.
+    # Additive: every existing caller (batch_runs/scripts/run_one_*.py,
+    # robots/UR10e/UR10_ppo.py) ignores the return value.
+    return result

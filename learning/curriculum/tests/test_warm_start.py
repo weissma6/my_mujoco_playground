@@ -22,7 +22,7 @@ from flax import serialization
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, REPO)
 
-from batch_runs.curriculum.warm_start import (  # noqa: E402
+from learning.curriculum.warm_start import (  # noqa: E402
     ArchitectureMismatch,
     build_template,
     load_metadata,

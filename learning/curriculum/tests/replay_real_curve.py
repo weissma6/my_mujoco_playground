@@ -24,7 +24,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
-from batch_runs.curriculum.early_stop import PatienceTracker  # noqa: E402
+from learning.curriculum.early_stop import PatienceTracker  # noqa: E402
 
 ENTITY = "weissma6-zhaw-school-of-engineering"
 PROJECT = "UR3_pick_ppo"

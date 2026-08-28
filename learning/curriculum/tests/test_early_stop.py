@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
-from batch_runs.curriculum.early_stop import ConvergedSignal, PatienceTracker  # noqa: E402
+from learning.curriculum.early_stop import ConvergedSignal, PatienceTracker  # noqa: E402
 
 
 EVAL = "eval/episode_reward"
