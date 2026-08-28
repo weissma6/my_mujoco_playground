@@ -1,0 +1,108 @@
+{
+  "wandb_group": null,
+  "wandb_group_prefix": "curriculum",
+  "wandb_project": "UR3_pick_ppo",
+  "seed": 0,
+  "defaults": {
+    "env_name": "UR3Pick",
+    "episode_length": 400,
+    "obs_include_velocity": true,
+    "num_timesteps": 24000000,
+    "num_evals": 30,
+    "num_resets_per_eval": 1,
+    "early_stop": {
+      "patience": 5,
+      "min_delta": 0.02,
+      "min_steps": 6000000
+    },
+    "normalizer_count_reset": null
+  },
+  "rungs": [
+    {
+      "config_id": "L0_none",
+      "run_id": "Curr_L0_none_s0",
+      "warm_start_from": null,
+      "overrides": {
+        "box_xy_jitter": [
+          0.0,
+          0.0
+        ],
+        "target_z_jitter": [
+          0.05,
+          0.05
+        ],
+        "finger_random_init": false,
+        "box_z_rot_range": 0.0,
+        "lifter_height_abs_min": 0.095,
+        "lifter_height_abs_max": 0.095,
+        "lifter_tilt_max": 0.0,
+        "init_qpos_noise": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "init_start_random": "none",
+        "target_r_min": 0.3,
+        "target_r_max": 0.3,
+        "target_azim_min": 0.7854,
+        "target_azim_max": 0.7854
+      }
+    },
+    {
+      "config_id": "L1_pos",
+      "run_id": "Curr_L1_pos_s0",
+      "warm_start_from": "L0_none",
+      "overrides": {}
+    },
+    {
+      "config_id": "L2_pos_cube",
+      "run_id": "Curr_L2_pos_cube_s0",
+      "warm_start_from": "L1_pos",
+      "overrides": {
+        "domain_rand.enable": true,
+        "domain_rand.cube_mass.enable": true,
+        "domain_rand.cube_friction.enable": true,
+        "domain_rand.cube_size_xy.enable": true,
+        "domain_rand.cube_size_z.enable": true
+      }
+    },
+    {
+      "config_id": "L3_pos_cube_robot",
+      "run_id": "Curr_L3_pos_cube_robot_s0",
+      "warm_start_from": "L2_pos_cube",
+      "overrides": {
+        "domain_rand.enable": true,
+        "domain_rand.cube_mass.enable": true,
+        "domain_rand.cube_friction.enable": true,
+        "domain_rand.cube_size_xy.enable": true,
+        "domain_rand.cube_size_z.enable": true,
+        "domain_rand.arm_stiffness.enable": true,
+        "domain_rand.arm_damping.enable": true,
+        "domain_rand.action_delay.enable": true
+      }
+    },
+    {
+      "config_id": "L4_full",
+      "run_id": "Curr_L4_full_s0",
+      "warm_start_from": "L3_pos_cube_robot",
+      "overrides": {
+        "domain_rand.enable": true,
+        "domain_rand.cube_mass.enable": true,
+        "domain_rand.cube_friction.enable": true,
+        "domain_rand.cube_size_xy.enable": true,
+        "domain_rand.cube_size_z.enable": true,
+        "domain_rand.arm_stiffness.enable": true,
+        "domain_rand.arm_damping.enable": true,
+        "domain_rand.action_delay.enable": true,
+        "domain_rand.gravity.enable": true,
+        "domain_rand.cube_force.enable": true,
+        "domain_rand.joint_torque.enable": true,
+        "domain_rand.obs_noise.enable": true
+      }
+    }
+  ]
+}
