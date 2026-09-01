@@ -161,6 +161,13 @@ def brax_ppo_config(
         rl_config.learning_rate = 6e-4
         rl_config.entropy_cost = 2e-2
         rl_config.num_envs = 2048
+        # Curriculum v2 (2026-09): stated explicitly, not left to the config
+        # framework's own default, so num_eval_envs becomes a real,
+        # overridable PPO param instead of a reserved-and-dropped sweep key
+        # (see run_experiment.py's _extract_ppo_overrides reserved-set note).
+        # 128 == brax's own default, so this moves nothing for any run that
+        # does not override it.
+        rl_config.num_eval_envs = 128
         rl_config.batch_size = 512
         # v_loss dominated total_loss and grew unbounded across the 20260708
         # LR sweep (6e-4 stable but v_loss still climbing at 20M; 8e-4 spiked

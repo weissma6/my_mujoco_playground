@@ -34,7 +34,7 @@ from datetime import datetime
 from flax import serialization
 import mujoco
 from learning.curriculum.best_params import BestParamsRecorder
-from learning.curriculum.early_stop import ConvergedSignal, PatienceTracker
+from learning.curriculum.early_stop import ConvergedSignal, build_tracker
 from learning.curriculum.warm_start import params_sha256, rescale_normalizer_count
 
 
@@ -159,7 +159,13 @@ def _extract_ppo_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "robot_target_qpos",
         "gripper_box",
         "success_tol",
-        "num_eval_envs",
+        # MOVED (2026-09, curriculum v2): num_eval_envs is no longer reserved
+        # here -- it is a real PPO param now, forwarded through and validated
+        # by apply_validated_overrides(strict=True) like any other. It must
+        # therefore have an explicit default in manipulation_params.py's
+        # UR3Pick branch (128, brax's own default) or a sweep line that
+        # doesn't override it hits "Unknown override keys" only AFTER SLURM
+        # has allocated the GPU.
         "seed",
         "domain_randomization",
         "sticky_latches",
@@ -1389,7 +1395,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
             wandb.run.summary["curriculum/rung"] = str(curriculum_rung)
 
         es_cfg = cfg.get("early_stop") or None
-        tracker = PatienceTracker(**es_cfg) if isinstance(es_cfg, dict) else None
+        tracker = build_tracker(es_cfg) if isinstance(es_cfg, dict) else None
         last_eval = {"metrics": None}
 
         def _on_eval(step, metrics):
@@ -1398,7 +1404,20 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
             # exception unwinds the training loop.
             recorder.on_progress(step, metrics.get("eval/episode_reward"))
             last_eval["metrics"] = dict(metrics)
-            if tracker is not None and tracker.update(step, metrics):
+            stopped = tracker is not None and tracker.update(step, metrics)
+            if tracker is not None:
+                # Logged every eval (not just at the end) so a rung's
+                # convergence trend is visible in wandb while it is still
+                # running. Placed after update() and before the raise so the
+                # very eval that triggers the stop still gets its diagnostics
+                # logged.
+                diag_log = {
+                    f"curriculum/early_stop_diag/{k}": _wb_jsonify(v)
+                    for k, v in tracker.diagnostics().items()
+                }
+                if diag_log:
+                    wandb.log(diag_log, step=int(step))
+            if stopped:
                 raise tracker.signal(step)
 
         train_fn = functools.partial(
