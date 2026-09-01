@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(REPO, "batch_runs", "scripts"))
 
 from batch_runs.curriculum.gen_curriculum import (  # noqa: E402
     EXPECTED_ORDER,
+    L0_5_LIGHT_OVERRIDES,
     PHYSICS_AXES,
     build_spec,
     dumps,
@@ -54,21 +55,51 @@ def ladder():
 
 # --- the spec matches the ladder -------------------------------------------
 
-def test_exactly_five_rungs_in_ladder_order(spec):
+def test_exactly_six_rungs_in_curriculum_order(spec):
     assert [r["config_id"] for r in spec["rungs"]] == list(EXPECTED_ORDER)
 
 
-def test_each_rungs_overrides_equal_the_ladder_entry_exactly(spec, ladder):
+def test_each_ladder_rungs_overrides_equal_the_ladder_entry_exactly(spec, ladder):
     """No drift from gen_dr_ladder._CONFIGS, which is the source of truth.
 
     Exact dict equality, not a subset check: an extra key here would mean the
     curriculum trains a rung the DR study never measured.
+
+    L0_5_light has no entry in _CONFIGS (it is curriculum-internal, injected
+    by gen_curriculum.py) -- it is checked separately below, against the
+    generator's own L0_5_LIGHT_OVERRIDES constant.
     """
     by_id = {c[0]: c[1] for c in ladder}
     for rung in spec["rungs"]:
+        if rung["config_id"] == "L0_5_light":
+            continue
         assert rung["overrides"] == by_id[rung["config_id"]], (
             f"{rung['config_id']} drifted from _CONFIGS"
         )
+
+
+def test_l0_5_overrides_equal_the_generators_own_constant(spec):
+    """Load-bearing: catches a sparse/hand-retyped L0_5_LIGHT_OVERRIDES.
+
+    The highest-consequence trap in this change is an L0.5 overrides dict
+    that omits keys -- an omitted key falls back to the baked env default,
+    not to L0, silently training L0.5 WIDER than L1. This test pins the
+    on-disk spec's L0.5 overrides to the generator's own module constant by
+    exact dict equality, so a mutation that sparsifies
+    L0_5_LIGHT_OVERRIDES flips this test red.
+    """
+    r = {x["config_id"]: x for x in spec["rungs"]}
+    assert r["L0_5_light"]["overrides"] == L0_5_LIGHT_OVERRIDES
+
+
+def test_l0_5_key_set_matches_l0_and_differs_in_exactly_two_keys(spec):
+    r = {x["config_id"]: x for x in spec["rungs"]}
+    l0 = r["L0_none"]["overrides"]
+    l0_5 = r["L0_5_light"]["overrides"]
+    assert len(l0) == 13
+    assert set(l0_5) == set(l0)
+    diff_keys = {k for k in l0 if l0[k] != l0_5[k]}
+    assert diff_keys == {"init_start_random", "box_xy_jitter"}, diff_keys
 
 
 def test_every_rung_carries_episode_length_400(spec):
@@ -90,7 +121,8 @@ def test_physics_rungs_also_set_the_master_switch(spec):
     # count of matched axes catches a single renamed axis too, which a mere
     # "some rung matched" liveness check does not.
     EXPECTED_HITS = {
-        "L0_none": 0, "L1_pos": 0,
+        "L0_none": 0, "L0_5_light": 0,  # L0.5 touches no PHYSICS_AXES
+        "L1_pos": 0,
         "L2_pos_cube": 4,            # cube mass/friction/size_xy/size_z
         "L3_pos_cube_robot": 6,      # + arm stiffness/damping (action_delay is
                                      #   gated independently, not a physics axis)
@@ -132,7 +164,43 @@ def test_defaults_carry_the_curriculum_keys(spec):
     assert d["num_evals"] >= 15                   # sweep rule
     assert d["obs_include_velocity"] is True      # obs stays 33D
     assert d["normalizer_count_reset"] is None    # documented, off by default
-    assert set(d["early_stop"]) == {"patience", "min_delta", "min_steps"}
+    assert set(d["early_stop"]) == {
+        "strategy", "window", "patience", "min_delta", "min_steps",
+    }
+    assert d["early_stop"]["strategy"] == "windowed"
+
+
+def test_defaults_carry_the_defence_hyperparameters_and_v2_budget(spec):
+    """L0 peaked at eval/episode_success 0.016 in v1 (env-default
+    action_scale=0.015) against the archived L0_none_vel_s1's 1.000 -- see
+    gen_curriculum.py's _DEFENCE_* block. These must be in `defaults`, not
+    left to the per-rung overrides or the env default."""
+    d = spec["defaults"]
+    assert d["num_timesteps"] == 40_000_000
+    assert d["num_evals"] == 42
+    assert d["action_scale"] == 0.04
+    assert d["gripper_action_scale"] == 0.02
+    assert d["action_rate"] == -0.7
+    assert d["entropy_cost"] == 0.02
+    assert d["learning_rate"] == 3e-4
+    assert d["reward_scaling"] == 0.03
+    assert d["network_factory"] == {
+        "policy_hidden_layer_sizes": [256, 256, 256],
+        "value_hidden_layer_sizes": [256, 256, 256, 256, 256],
+    }
+    assert d["gate_gripper_align_on_lift"] is True
+    assert d["gate_gripper_box_on_lift"] is False
+    assert d["num_eval_envs"] == 256
+
+
+def test_defaults_own_no_dr_or_position_keys(spec):
+    """DR and position keys stay owned by the per-rung overrides. A
+    domain_rand.* or box_z_rot_range key in `defaults` would apply to every
+    rung including L0/L0.5, which must stay deterministic."""
+    d = spec["defaults"]
+    assert not any(k.startswith("domain_rand.") for k in d)
+    assert "box_z_rot_range" not in d
+    assert "cube_mass" not in d
 
 
 # --- the generator is reproducible -----------------------------------------
@@ -196,13 +264,13 @@ def make_runner(record, best=True):
     return runner
 
 
-def test_driver_runs_all_five_rungs_in_order(spec, drv, tmp_path):
+def test_driver_runs_all_six_rungs_in_order(spec, drv, tmp_path):
     rec = []
     s = drv.run_curriculum(spec, str(tmp_path), wall_budget_s=1e9,
                            runner=make_runner(rec), clock=FakeClock(),
                            group="g")
     assert [r["cfg"]["curriculum_rung"] for r in rec] == list(EXPECTED_ORDER)
-    assert s["n_completed"] == 5
+    assert s["n_completed"] == 6
     assert s["stopped_reason"] is None
 
 
@@ -213,7 +281,7 @@ def test_driver_hands_the_exact_object_forward(spec, drv, tmp_path):
     drv.run_curriculum(spec, str(tmp_path), wall_budget_s=1e9,
                        runner=make_runner(rec), clock=FakeClock(), group="g")
     assert rec[0]["warm"] is None, "L0 must be a cold start"
-    for i in range(1, 5):
+    for i in range(1, 6):
         assert rec[i]["warm"] is not None
 
     # The chain itself: rung i's warm params ARE the object rung i-1 returned.
@@ -230,7 +298,7 @@ def test_driver_hands_the_exact_object_forward(spec, drv, tmp_path):
 
     drv.run_curriculum(spec, str(tmp_path / "b"), wall_budget_s=1e9,
                        runner=runner, clock=FakeClock(), group="g")
-    for i in range(1, 5):
+    for i in range(1, 6):
         assert rec2[i] is seen[i - 1], f"rung {i} did not get rung {i-1}'s object"
 
 
@@ -239,7 +307,7 @@ def test_driver_falls_back_to_final_params_when_there_is_no_best(spec, drv, tmp_
     s = drv.run_curriculum(spec, str(tmp_path), wall_budget_s=1e9,
                            runner=make_runner(rec, best=False),
                            clock=FakeClock(), group="g")
-    assert s["n_completed"] == 5
+    assert s["n_completed"] == 6
     assert rec[1]["warm"] is not None
 
 
@@ -288,7 +356,7 @@ def test_driver_stops_before_rung_one_on_a_zero_wall_budget(spec, drv, tmp_path)
     marker = tmp_path / "g" / "_resume.json"
     assert marker.exists()
     m = json.loads(marker.read_text())
-    assert m["next_index"] == 1 and m["next_config_id"] == "L1_pos"
+    assert m["next_index"] == 1 and m["next_config_id"] == "L0_5_light"
 
 
 def test_driver_exits_zero_when_the_budget_stops_it(spec, drv, tmp_path, monkeypatch):
@@ -307,7 +375,9 @@ def test_group_is_stamped_when_the_spec_leaves_it_null(spec, drv):
 
 
 def test_rung_cfg_carries_what_run_experiment_needs(spec, drv):
-    rung = spec["rungs"][2]
+    # Looked up by config_id, not positionally -- inserting L0.5 at index 1
+    # is exactly the kind of change a positional spec["rungs"][2] would break.
+    rung = next(r for r in spec["rungs"] if r["config_id"] == "L2_pos_cube")
     cfg = drv.build_rung_cfg(spec, rung, "grp", warm_params=("a", "b", "c"))
     assert cfg["curriculum_rung"] == rung["config_id"]
     assert cfg["warm_start_from"] == rung["warm_start_from"]

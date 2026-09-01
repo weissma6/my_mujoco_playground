@@ -7,11 +7,36 @@
     "env_name": "UR3Pick",
     "episode_length": 400,
     "obs_include_velocity": true,
-    "num_timesteps": 24000000,
-    "num_evals": 30,
+    "num_timesteps": 40000000,
+    "num_evals": 42,
     "num_resets_per_eval": 1,
+    "action_scale": 0.04,
+    "gripper_action_scale": 0.02,
+    "action_rate": -0.7,
+    "entropy_cost": 0.02,
+    "learning_rate": 0.0003,
+    "reward_scaling": 0.03,
+    "network_factory": {
+      "policy_hidden_layer_sizes": [
+        256,
+        256,
+        256
+      ],
+      "value_hidden_layer_sizes": [
+        256,
+        256,
+        256,
+        256,
+        256
+      ]
+    },
+    "gate_gripper_align_on_lift": true,
+    "gate_gripper_box_on_lift": false,
+    "num_eval_envs": 256,
     "early_stop": {
-      "patience": 5,
+      "strategy": "windowed",
+      "window": 4,
+      "patience": 3,
       "min_delta": 0.02,
       "min_steps": 6000000
     },
@@ -53,9 +78,43 @@
       }
     },
     {
+      "config_id": "L0_5_light",
+      "run_id": "Curr_L0_5_light_s0",
+      "warm_start_from": "L0_none",
+      "overrides": {
+        "box_xy_jitter": [
+          0.085,
+          0.12
+        ],
+        "target_z_jitter": [
+          0.05,
+          0.05
+        ],
+        "finger_random_init": false,
+        "box_z_rot_range": 0.0,
+        "lifter_height_abs_min": 0.095,
+        "lifter_height_abs_max": 0.095,
+        "lifter_tilt_max": 0.0,
+        "init_qpos_noise": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "init_start_random": "light",
+        "target_r_min": 0.3,
+        "target_r_max": 0.3,
+        "target_azim_min": 0.7854,
+        "target_azim_max": 0.7854
+      }
+    },
+    {
       "config_id": "L1_pos",
       "run_id": "Curr_L1_pos_s0",
-      "warm_start_from": "L0_none",
+      "warm_start_from": "L0_5_light",
       "overrides": {}
     },
     {
