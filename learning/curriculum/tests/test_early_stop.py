@@ -98,18 +98,67 @@ def test_stop_is_deferred_by_a_full_patience_window_past_the_floor():
     assert t.stopped is True
 
 
+def brax_eval_interval(
+    num_timesteps,
+    num_evals,
+    batch_size=512,
+    unroll_length=10,
+    num_minibatches=32,
+    action_repeat=1,
+    num_resets_per_eval=1,
+):
+    """The real brax cadence -- naive `num_timesteps // (num_evals - 1)` is WRONG.
+
+    brax 0.13.0's PPO trainer does NOT divide the budget evenly across evals.
+    It quantizes to whole *training steps*, each of which advances the env by
+    a fixed chunk, then rounds the requested per-eval budget UP to the nearest
+    whole number of those chunks (`brax/training/agents/ppo/train.py`, the
+    `training_epoch`/`WrapPolicy` accounting around `num_training_steps_per_epoch`):
+
+        env_step_per_training_step = batch_size * unroll_length * num_minibatches * action_repeat
+        num_training_steps_per_epoch = ceil(
+            num_timesteps / ((num_evals - 1) * env_step_per_training_step * max(num_resets_per_eval, 1))
+        )
+        eval_interval = num_training_steps_per_epoch * env_step_per_training_step
+
+    The naive `num_timesteps // (num_evals - 1)` this test used to hardcode
+    (827,586 for 24M/30) assumes the budget divides evenly across evals; it
+    does not, because brax always rounds UP to a whole training-step chunk.
+    The real interval at 24M/30 is 983,040, not 827,586 -- confirmed
+    empirically: W&B `_step` for L0-L2 of SLURM job 50874 showed exactly
+    28,508,160 (= 29 * 983,040), not 24,000,000.
+    """
+    env_step_per_training_step = batch_size * unroll_length * num_minibatches * action_repeat
+    denom = (num_evals - 1) * env_step_per_training_step * max(num_resets_per_eval, 1)
+    num_training_steps_per_epoch = -(-num_timesteps // denom)  # ceil
+    return num_training_steps_per_epoch * env_step_per_training_step
+
+
 def test_production_cadence_guarantees_a_real_training_budget():
     """At the planned num_evals=30 over 24M, a fully flat rung must still get
     well past the floor before it is allowed to stop.
 
-    Worked through: brax runs num_evals-1 = 29 iterations after init, so one
-    eval is 24M/29 = 827,586 steps. The floor at 6M falls between evals 7
-    (5.79M) and 8 (6.62M), so eval 8 takes the first strike and the fifth lands
-    at eval 12 = 9,931,032 steps -- 41% of the budget, not the 25% the floor
-    alone would allow. The floor does NOT coincide with an eval boundary, which
-    is why this is 9.93M and not 6M + 5*827,586 = 10.14M.
+    A previous version of this test hardcoded a NAIVE `24_000_000 // 29 =
+    827,586` per-eval step size. That is wrong: brax quantizes the eval
+    cadence (see `brax_eval_interval` above), rounding the per-eval budget UP
+    to a whole multiple of `env_step_per_training_step = 512*10*32*1 =
+    163,840`. The real interval at 24M/30 is 983,040 (num_training_steps_per_epoch
+    = ceil(24_000_000 / (29*163_840)) = ceil(5.0512) = 6, so 6*163,840 =
+    983,040), giving a real total of 29*983,040 = 28,508,160 -- exactly what
+    W&B's `_step` showed for L0-L2 of SLURM job 50874, not 24,000,000.
+
+    Worked through at the real interval: the floor at 6M falls between eval 6
+    (5,898,240) and eval 7 (6,881,280), so eval 7 takes the first strike and
+    the fifth lands at eval 11 = 6,881,280 + 4*983,040 = 10,813,440 steps --
+    45% of the real 28,508,160 total, not the 25% the floor alone would allow.
+    The floor does NOT coincide with an eval boundary, which is why this is
+    10,813,440 and not 6M + 5*983,040 = 10.92M.
     """
-    per_eval = 24_000_000 // 29
+    per_eval = brax_eval_interval(num_timesteps=24_000_000, num_evals=30)
+    assert per_eval == 983_040
+    total = 29 * per_eval
+    assert total == 28_508_160
+
     floor, patience = 6_000_000, 5
     t = PatienceTracker(patience=patience, min_delta=0.02, min_steps=floor)
     stop = feed(t, [100.0] * 30, step0=0, dstep=per_eval)
@@ -117,8 +166,23 @@ def test_production_cadence_guarantees_a_real_training_budget():
 
     first_at_floor = -(-floor // per_eval) * per_eval      # ceil to the eval grid
     assert stop == first_at_floor + (patience - 1) * per_eval
-    assert stop == 9_931_032
+    assert stop == 10_813_440
     assert stop > 1.5 * floor, f"stopped too close to the floor at {stop:,}"
+
+
+def test_v2_production_cadence_40m_42_evals():
+    """Pin the new curriculum-v2 budget: num_timesteps=40M, num_evals=42.
+
+    This keeps `env_step_per_training_step`'s quotient identical to the old
+    24M/30 cadence (both round up to num_training_steps_per_epoch=6), so the
+    per-eval interval is unchanged at 983,040 -- the noise characterization
+    done at the old cadence still applies -- while the total grows to
+    41*983,040 = 40,304,640, a 0.76% overshoot of the nominal 40M.
+    """
+    per_eval = brax_eval_interval(num_timesteps=40_000_000, num_evals=42)
+    assert per_eval == 983_040
+    total = 41 * per_eval
+    assert total == 40_304_640
 
 
 # --- 4. noise tolerance -----------------------------------------------------
