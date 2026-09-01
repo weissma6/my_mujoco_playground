@@ -1,13 +1,13 @@
-"""Drive the L0 -> L4 curriculum ladder inside ONE SLURM job.
+"""Drive the L0 -> L4 curriculum ladder (six rungs incl. L0_5_light) inside ONE SLURM job.
 
 Each rung is a separate `run_experiment` call, and therefore a separate
 `wandb.init`. That is deliberate, not incidental: run_experiment logs with
 `wandb.log(log_dict, step=num_steps)`, and brax always restarts `env_steps` at 0
-for a warm-started run, so five rungs inside one W&B run would log a
+for a warm-started run, so six rungs inside one W&B run would log a
 non-monotonic step axis and W&B would silently drop the later points. The rungs
 are joined by a shared `wandb_group` instead.
 
-Two guards exist because the job runs under `--time=04:00:00`:
+Two guards exist because the job runs under `--time=12:00:00`:
 
   1. The params handed to the next rung are written to disk BEFORE that rung
      starts, so a timeout costs one rung rather than the whole ladder.
@@ -22,7 +22,7 @@ and there is no measured per-rung estimate before one has finished.
 Run:
     python batch_runs/scripts/run_curriculum_ur3.py \
         --spec batch_runs/curriculum/UR3Pick_curriculum.json \
-        --out-root results --wall-budget-s 13800
+        --out-root results --wall-budget-s 42600
 """
 
 import argparse
@@ -189,7 +189,12 @@ def main(argv=None):
         REPO, "batch_runs", "curriculum", "UR3Pick_curriculum.json"))
     ap.add_argument("--out-root", default="results")
     ap.add_argument("--wall-budget-s", type=float, default=13800.0,
-                    help="usable wall clock; default 3h50m of a 4h --time")
+                    help="usable wall clock in seconds. The submit file always "
+                         "passes this explicitly (42600 = 11h50m of a 12h "
+                         "--time), so the default below is only a fallback for "
+                         "a hand-run invocation and is deliberately left at the "
+                         "conservative 3h50m rather than tracking the submit "
+                         "file, which would silently over-promise if run bare.")
     ap.add_argument("--group", default=None)
     args = ap.parse_args(argv)
 
