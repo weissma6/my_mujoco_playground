@@ -7,7 +7,7 @@ programmatically. See WP7 in the Planfile:
 warm-start DR ladder.md.
 
 Pass criteria (all four required):
-  1. All five runs present in W&B. A missing run is a hard failure, not
+  1. All six runs present in W&B. A missing run is a hard failure, not
      missing data -- anything dying before wandb.init leaves no trace there.
   2. The checksum chain holds: each rung's curriculum/params_sha256_at_init
      equals its predecessor's curriculum/published_sha256.
@@ -24,7 +24,16 @@ import argparse
 import json
 import sys
 
-RUNG_ORDER = ["L0_none", "L1_pos", "L2_pos_cube", "L3_pos_cube_robot", "L4_full"]
+# Order matters: check()'s checksum-chain walk is ADJACENCY-BASED -- it
+# compares each rung's curriculum/params_sha256_at_init against the PREVIOUS
+# entry's curriculum/published_sha256. L0_5_light must sit at index 1 because
+# L1_pos now warm-starts from L0_5_light, not from L0_none. Reordering or
+# dropping an entry here does not raise an error -- it silently pairs the
+# wrong two rungs and reports a FALSE broken chain (or misses that a rung
+# never reached W&B at all, which criterion 1 treats as a hard failure, not
+# missing data). Do not "tidy" this list without re-deriving it from the
+# spec's actual warm_start_from chain.
+RUNG_ORDER = ["L0_none", "L0_5_light", "L1_pos", "L2_pos_cube", "L3_pos_cube_robot", "L4_full"]
 ENTITY = "weissma6-zhaw-school-of-engineering"
 PROJECT = "UR3_pick_ppo"
 
