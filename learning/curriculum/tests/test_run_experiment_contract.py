@@ -486,3 +486,142 @@ def test_warm_start_params_never_reaches_wandb_config():
     assert 'k != "warm_start_params"' in src[i:j], (
         "warm_start_params is still in cfg when wandb.init(config=cfg) runs"
     )
+
+
+
+# --- v3: a rung cfg with no `early_stop` key at all -------------------------
+#
+# v3 drops `early_stop` from `defaults` entirely (see test_curriculum_spec.py),
+# so every rung cfg the driver builds now lacks the key outright, rather than
+# carrying it with a falsy value. _on_eval is a closure inside run_experiment()
+# and can never be called directly without wandb.init/MJX/a GPU, so the
+# contract is pinned in two halves: the recording/peak-selection behaviour
+# behaviourally, replaying brax's real callback order (ppo/train.py:727
+# policy_params_fn(s_k) before :748 progress_fn(s_k), same as
+# test_best_params.py) against the real BestParamsRecorder; and the "a stop
+# can never fire" half structurally, against the AST -- not by re-simulating
+# tracker=None in Python, which cannot fail for any input (see WP1's second
+# amendment: `stopped_early is False` and `progress_calls == tracker_calls`
+# were both unconditionally true by construction and pinned nothing).
+
+def test_rung_cfg_without_early_stop_key_builds_no_tracker_and_keeps_the_peak(tree):
+    src = _src()
+    assert 'es_cfg = cfg.get("early_stop") or None' in src, (
+        "a missing early_stop key must collapse to the same es_cfg=None as "
+        "an explicit falsy one -- no separate 'if present' branch to drift"
+    )
+    assert (
+        'tracker = build_tracker(es_cfg) if isinstance(es_cfg, dict) else None'
+        in src
+    ), (
+        "build_tracker must only run on a real dict -- cfg.get(...) on a "
+        "missing key returns None, and isinstance(None, dict) is False, "
+        "which is what keeps the tracker unbuilt for a keyless rung cfg"
+    )
+
+    from learning.curriculum.best_params import BestParamsRecorder
+
+    rewards = [10.0, 40.0, 90.0, 250.0, 120.0, 60.0, 30.0]   # peak at index 3
+    recorder = BestParamsRecorder()
+    for k, r in enumerate(rewards):
+        recorder.on_policy_params(k, f"p{k}")   # policy_params_fn fires first
+        recorder.on_progress(k, r)
+    assert recorder.best["params"] == "p3", (
+        "best_params must be the params that earned the PEAK reward, not "
+        "the final eval's"
+    )
+    assert recorder.best["params"] != f"p{len(rewards) - 1}"
+
+    # 'stopped' must be gated on `tracker is not None`, and the raise must sit
+    # inside `if stopped:` -- together these are what make tracker=None imply
+    # the raise is unreachable, not merely a variable nobody reassigns.
+    eval_fn = find_func(tree, "_on_eval")
+    stopped_assigns = [
+        n for n in ast.walk(eval_fn)
+        if isinstance(n, ast.Assign) and len(n.targets) == 1
+        and getattr(n.targets[0], "id", None) == "stopped"
+    ]
+    assert len(stopped_assigns) == 1
+    guard = stopped_assigns[0].value
+    assert isinstance(guard, ast.BoolOp) and isinstance(guard.op, ast.And)
+    left = guard.values[0]
+    assert (
+        isinstance(left, ast.Compare)
+        and getattr(left.left, "id", None) == "tracker"
+        and isinstance(left.ops[0], ast.IsNot)
+        and isinstance(left.comparators[0], ast.Constant)
+        and left.comparators[0].value is None
+    ), "'stopped' must be gated on `tracker is not None`, or tracker=None cannot block the raise"
+
+    raise_ifs = [
+        n for n in ast.walk(eval_fn)
+        if isinstance(n, ast.If) and getattr(n.test, "id", None) == "stopped"
+        and any(isinstance(s, ast.Raise) for s in n.body)
+    ]
+    assert raise_ifs, "the raise must sit inside `if stopped:`, or it fires unconditionally"
+
+    # stopped_early can only become True, and only get published to wandb,
+    # inside the except ConvergedSignal handler -- which tracker.signal()
+    # is the only thing that raises into, and tracker is None here.
+    run_fn = find_func(tree, "run_experiment")
+    tries = [
+        n for n in ast.walk(run_fn) if isinstance(n, ast.Try)
+        if any("train_fn" == getattr(c.func, "id", None)
+               for c in ast.walk(n) if isinstance(c, ast.Call))
+    ]
+    handlers = [
+        h for t in tries for h in t.handlers
+        if getattr(h.type, "id", None) == "ConvergedSignal"
+    ]
+    assert handlers, "no `except ConvergedSignal` around the training call"
+    inside = {id(n) for h in handlers for n in ast.walk(h)}
+
+    def _true_assigns(name):
+        hits = []
+        for node in ast.walk(run_fn):
+            if not isinstance(node, ast.Assign):
+                continue
+            targets, value = node.targets[0], node.value
+            pairs = (
+                list(zip(targets.elts, value.elts))
+                if isinstance(targets, ast.Tuple) and isinstance(value, ast.Tuple)
+                else [(targets, value)]
+            )
+            for tgt, val in pairs:
+                if (getattr(tgt, "id", None) == name
+                        and isinstance(val, ast.Constant) and val.value is True):
+                    hits.append(node)
+        return hits
+
+    stopped_early_hits = _true_assigns("stopped_early")
+    assert len(stopped_early_hits) == 1, (
+        "stopped_early must become True in exactly one place, or a second "
+        "assignment could flip it True outside the handler"
+    )
+    assert id(stopped_early_hits[0]) in inside, (
+        "stopped_early=True sits outside the ConvergedSignal handler -- a "
+        "keyless rung could then report stopped_early=True with no "
+        "ConvergedSignal ever raised"
+    )
+
+    summary_hits = [
+        n for n in ast.walk(run_fn)
+        if isinstance(n, ast.Assign) and len(n.targets) == 1
+        and isinstance(n.targets[0], ast.Subscript)
+        and isinstance(n.targets[0].value, ast.Attribute)
+        and n.targets[0].value.attr == "summary"
+        and isinstance(n.targets[0].value.value, ast.Attribute)
+        and n.targets[0].value.value.attr == "run"
+        and getattr(n.targets[0].value.value.value, "id", None) == "wandb"
+        and isinstance(n.targets[0].slice, ast.Constant)
+        and n.targets[0].slice.value == "curriculum/stopped_early"
+        and isinstance(n.value, ast.Constant) and n.value.value is True
+    ]
+    assert len(summary_hits) == 1, (
+        "wandb.run.summary['curriculum/stopped_early'] = True must be "
+        "written in exactly one place"
+    )
+    assert id(summary_hits[0]) in inside, (
+        "the summary write sits outside the ConvergedSignal handler -- it "
+        "could then fire for a keyless rung with no early stop possible"
+    )

@@ -53,6 +53,17 @@ def ladder():
     return mod._CONFIGS
 
 
+@pytest.fixture(scope="module")
+def built_spec(spec):
+    """The generator's in-memory output, checked alongside the on-disk file.
+
+    test_regenerating_is_byte_identical already pins the two together, but
+    the v3 budget/id assertions below check both sources directly so a
+    generator/file mismatch is not masked by that single guard.
+    """
+    return build_spec(seed=spec["seed"])
+
+
 # --- the spec matches the ladder -------------------------------------------
 
 def test_exactly_six_rungs_in_curriculum_order(spec):
@@ -152,45 +163,59 @@ def test_warm_start_chain_has_no_gaps_and_no_self_reference(spec):
         assert rung["warm_start_from"] != rung["config_id"]
 
 
-def test_run_ids_match_the_names_wp7_expects(spec):
-    assert [r["run_id"] for r in spec["rungs"]] == [
-        f"Curr_{c}_s{spec['seed']}" for c in EXPECTED_ORDER
-    ]
+def test_run_ids_match_the_names_wp7_expects(spec, built_spec):
+    """v3 run_ids carry an explicit version tag: Curr_v3_<config_id>_s<seed>.
+
+    A bare Curr_<config_id>_s<seed> (the v2 form) collides in W&B with the
+    archived v2 runs once the ladder reruns at the new budget.
+    """
+    for s in (spec, built_spec):
+        ids = [r["run_id"] for r in s["rungs"]]
+        assert ids == [f"Curr_v3_{c}_s{s['seed']}" for c in EXPECTED_ORDER]
+        for run_id, config_id in zip(ids, EXPECTED_ORDER):
+            assert run_id == f"Curr_v3_{config_id}_s{s['seed']}"
+            assert run_id.startswith("Curr_v3_")
 
 
-def test_defaults_carry_the_curriculum_keys(spec):
-    d = spec["defaults"]
-    assert d["num_resets_per_eval"] == 1          # sweep rule
-    assert d["num_evals"] >= 15                   # sweep rule
-    assert d["obs_include_velocity"] is True      # obs stays 33D
-    assert d["normalizer_count_reset"] is None    # documented, off by default
-    assert set(d["early_stop"]) == {
-        "strategy", "window", "patience", "min_delta", "min_steps",
-    }
-    assert d["early_stop"]["strategy"] == "windowed"
+def test_defaults_carry_the_curriculum_keys(spec, built_spec):
+    for d in (spec["defaults"], built_spec["defaults"]):
+        assert d["num_resets_per_eval"] == 1          # sweep rule
+        assert d["num_evals"] >= 15                   # sweep rule
+        assert d["obs_include_velocity"] is True      # obs stays 33D
+        assert d["normalizer_count_reset"] is None    # documented, off by default
+        assert "early_stop" not in d, (
+            "v3 trains every rung to the full budget -- the windowed-trend "
+            "tracker and its config are gone from defaults entirely, not "
+            "merely disabled"
+        )
 
 
-def test_defaults_carry_the_defence_hyperparameters_and_v2_budget(spec):
+def test_defaults_carry_the_defence_hyperparameters_and_v3_budget(spec, built_spec):
     """L0 peaked at eval/episode_success 0.016 in v1 (env-default
     action_scale=0.015) against the archived L0_none_vel_s1's 1.000 -- see
     gen_curriculum.py's _DEFENCE_* block. These must be in `defaults`, not
-    left to the per-rung overrides or the env default."""
-    d = spec["defaults"]
-    assert d["num_timesteps"] == 40_000_000
-    assert d["num_evals"] == 42
-    assert d["action_scale"] == 0.04
-    assert d["gripper_action_scale"] == 0.02
-    assert d["action_rate"] == -0.7
-    assert d["entropy_cost"] == 0.02
-    assert d["learning_rate"] == 3e-4
-    assert d["reward_scaling"] == 0.03
-    assert d["network_factory"] == {
-        "policy_hidden_layer_sizes": [256, 256, 256],
-        "value_hidden_layer_sizes": [256, 256, 256, 256, 256],
-    }
-    assert d["gate_gripper_align_on_lift"] is True
-    assert d["gate_gripper_box_on_lift"] is False
-    assert d["num_eval_envs"] == 256
+    left to the per-rung overrides or the env default.
+
+    num_timesteps/num_evals moved to the v3 budget (30M/32): the windowed
+    early-stop tracker this replaced was cutting most rungs well short of
+    the v2 40M cap anyway, so v3 trains a smaller fixed budget instead of a
+    tracker-gated one."""
+    for d in (spec["defaults"], built_spec["defaults"]):
+        assert d["num_timesteps"] == 30_000_000
+        assert d["num_evals"] == 32
+        assert d["action_scale"] == 0.04
+        assert d["gripper_action_scale"] == 0.02
+        assert d["action_rate"] == -0.7
+        assert d["entropy_cost"] == 0.02
+        assert d["learning_rate"] == 3e-4
+        assert d["reward_scaling"] == 0.03
+        assert d["network_factory"] == {
+            "policy_hidden_layer_sizes": [256, 256, 256],
+            "value_hidden_layer_sizes": [256, 256, 256, 256, 256],
+        }
+        assert d["gate_gripper_align_on_lift"] is True
+        assert d["gate_gripper_box_on_lift"] is False
+        assert d["num_eval_envs"] == 256
 
 
 def test_defaults_own_no_dr_or_position_keys(spec):
