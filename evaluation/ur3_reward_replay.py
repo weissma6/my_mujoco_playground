@@ -234,6 +234,34 @@ class SimFK:
         }
 
 
+def frame_alignment_np(jaw_axis, app_axis, box_axes, cos_bound=0.5):
+    """Numpy port of alignment.frame_alignment (same math, no jax import --
+    this module runs inside the real-robot 50 Hz loop).
+
+    jaw_axis, app_axis: (3,) vectors in world frame (renormalised inside).
+    box_axes: (3, 3) rotation matrix, columns = box body axes in world frame.
+    Returns {"jaw", "app", "third", "face"}: floats in [0, 1].
+    """
+    jaw_axis = np.asarray(jaw_axis, dtype=float)
+    app_axis = np.asarray(app_axis, dtype=float)
+    box_axes = np.asarray(box_axes, dtype=float)
+
+    jaw_axis = jaw_axis / np.maximum(np.linalg.norm(jaw_axis), 1e-6)
+    app_axis = app_axis / np.maximum(np.linalg.norm(app_axis), 1e-6)
+    third_axis = np.cross(jaw_axis, app_axis)
+    third_axis = third_axis / np.maximum(np.linalg.norm(third_axis), 1e-6)
+
+    def _score(axis):
+        a = float(np.max(np.abs(axis @ box_axes)))
+        return float(np.clip((a - cos_bound) / (1.0 - cos_bound), 0.0, 1.0))
+
+    jaw = _score(jaw_axis)
+    app = _score(app_axis)
+    third = _score(third_axis)
+    face = jaw * app * third
+    return {"jaw": jaw, "app": app, "third": third, "face": face}
+
+
 # ===========================================================================
 # RewardReplayer -- numpy port of ur3_pick.py's _get_reward. Sticky-latch
 # semantics (sticky_latches=True, the default) -- mirrors info["reached"],
@@ -335,39 +363,29 @@ class RewardReplayer:
         box_target_dist = float(np.linalg.norm(target_pos - box_pos_fk))
         self.dist_min = min(self.dist_min, box_target_dist)
 
-        # --- Grasp-frame alignment (2 of 3 axes) -- mirrors ur3_pick.py's
-        # moved-up alignment block (post grasp_align_thresh commit). ---
+        # --- Grasp-frame alignment (3 axes: jaw, app, third = jaw x app) --
+        # mirrors ur3_pick.py's moved-up alignment block. ---
         jaw_axis = rgt - lft
-        jaw_axis = jaw_axis / (np.linalg.norm(jaw_axis) + 1e-6)
+        jaw_axis = jaw_axis / np.maximum(np.linalg.norm(jaw_axis), 1e-6)
         app_axis = 0.5 * (lft + rgt) - tcp
-        app_axis = app_axis / (np.linalg.norm(app_axis) + 1e-6)
-        a_jaw = float(np.max(np.abs(jaw_axis @ box_axes)))
-        a_app = float(np.max(np.abs(app_axis @ box_axes)))
+        app_axis = app_axis / np.maximum(np.linalg.norm(app_axis), 1e-6)
         _cos_bound = float(ur3_pick._COS_BOUND)
-        jaw_score = float(np.clip((a_jaw - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0))
-        app_score = float(np.clip((a_app - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0))
-        align_face = jaw_score * app_score
+        _scores = frame_alignment_np(jaw_axis, app_axis, box_axes, _cos_bound)
+        a_jaw, a_app, align_face = _scores["jaw"], _scores["app"], _scores["face"]
         # Box support width along the jaw axis (see ur3_pick._get_reward).
         span_jaw = float(2.0 * (self.box_half @ np.abs(jaw_axis @ box_axes)))
         if self.align_axis_aware:
             # Line-for-line mirror of ur3_pick._get_reward's axis_aware branch.
-            # NOTE the top-down term uses +app_axis[2], NOT -app_axis[2]: the
-            # `tcp` site sits 6 mm PAST the finger pads, so app_axis points back
-            # toward the palm and a top-down grasp gives app_axis[2] ~ +1.
             clear_now = self.jaw_opening - span_jaw
             clear_best = self.jaw_opening - 2.0 * float(np.min(self.box_half))
             jaw_pref = float(np.clip(clear_now / (clear_best + 1e-9), 0.0, 1.0))
-            app_down = float(
-                np.clip((app_axis[2] - _cos_bound) / (1.0 - _cos_bound), 0.0, 1.0)
-            )
             f = self.align_pref_floor
-            pref = (f + (1.0 - f) * jaw_pref) * (f + (1.0 - f) * app_down)
+            pref = f + (1.0 - f) * jaw_pref
             # Gated on the PREVIOUS step's sticky lifted latch, matching the env
             # (which reads info["lifted"] before the latch block updates it).
             alignment = align_face * (1.0 if self.lifted > 0.5 else pref)
         else:
             jaw_pref = 1.0
-            app_down = 1.0
             alignment = align_face
         # Proximity gate WIDENED tanh(5d)->tanh(3d), matching ur3_pick.py.
         gripper_align_Reward = alignment * (1.0 - np.tanh(3.0 * gripper_box_dist))
@@ -480,12 +498,11 @@ class RewardReplayer:
                 "a_jaw": a_jaw,
                 "a_app": a_app,
                 # Mirrors ur3_pick._get_reward's raw_signals; align_face /
-                # jaw_pref / app_down / span_jaw exist in BOTH modes (the
-                # preferences are 1.0 under axis_free) so the parity test
-                # against the env's metrics can compare them unconditionally.
+                # jaw_pref / span_jaw exist in BOTH modes (the preference is
+                # 1.0 under axis_free) so the parity test against the env's
+                # metrics can compare them unconditionally.
                 "align_face": align_face,
                 "jaw_pref": jaw_pref,
-                "app_down": app_down,
                 "span_jaw": span_jaw,
                 "alignment": alignment,
                 "gripper_box_dist": gripper_box_dist,

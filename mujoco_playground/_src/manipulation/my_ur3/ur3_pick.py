@@ -37,6 +37,7 @@ from mujoco import mjx
 
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.manipulation.my_ur3 import ur3_base
+from mujoco_playground._src.manipulation.my_ur3.alignment import frame_alignment
 from mujoco_playground._src.manipulation.my_ur3.init_poses import load_init_poses
 from mujoco_playground._src.mjx_env import State  # pylint: disable=g-importing-member
 
@@ -617,16 +618,20 @@ def default_config() -> config_dict.ConfigDict:
         # the REST of the episode.
         #
         # UNITS DEPEND ON align_mode -- never carry a value across modes:
-        #   axis_free : 0.30 == sqrt(0.30)=0.548 per axis -> a_jaw=a_app=0.774
-        #               -> 39.3 deg of misalignment allowed on EACH axis. Far
-        #               too loose: measured D23 grasp-stage sim->real retention
-        #               was 0.06-0.21, i.e. the grasp is the stage that does not
-        #               transfer, and this is why. Sim contact tolerates a 39 deg
-        #               grab; the Hand-E does not.
-        #   axis_aware: the same 39 deg pose now scores 0.091, because the two
-        #               physical preference factors multiply in. Measured
-        #               calibration ladder (jaw misaligned in-plane by the same
-        #               angle as the approach, nominal 3x3x4 cm box):
+        #   axis_free : THREE factors (jaw, app, third), so 0.30 means
+        #               per-axis s = 0.30**(1/3) = 0.669 -> cosine
+        #               0.5 + 0.5*0.669 = 0.835 -> 33.4 deg of misalignment
+        #               allowed on EACH axis. Measured D23 grasp-stage
+        #               sim->real retention was 0.06-0.21,
+        #               i.e. the grasp is the stage that does not transfer,
+        #               and this is why. Sim contact tolerates a wide grab;
+        #               the Hand-E does not.
+        #   axis_aware: the same pose now scores lower, because the physical
+        #               preference factor multiplies in. Measured calibration
+        #               ladder below is NOT VALID for the current three-factor
+        #               score with a jaw-span-only preference; not re-measured.
+        #               (jaw misaligned in-plane by the same angle as the
+        #               approach, nominal 3x3x4 cm box):
         #                 10 deg -> 0.730   15 deg -> 0.582
         #                 20 deg -> 0.443   25 deg -> 0.321
         #                 30 deg -> 0.220   39 deg -> 0.091
@@ -648,25 +653,25 @@ def default_config() -> config_dict.ConfigDict:
         # ------------------------------------------------------------------
         # Grasp-frame alignment mode (STATIC; resolved at trace time in __init__)
         # ------------------------------------------------------------------
-        # "axis_free"  = legacy: jaw_score * app_score with max|axis . box_axis|
-        #                over ALL THREE box axes. Symmetry-invariant, and that
-        #                is exactly the defect. The box is a 3x3x4 cm PRISM
-        #                (geom size 0.015 0.015 0.020), not a cube, and the jaw
-        #                opening is 49.9 mm. So the legacy score rates a jaw
-        #                spanning the 4 cm axis (9.9 mm total clearance)
-        #                IDENTICALLY to one spanning a 3 cm axis (19.9 mm), and
-        #                rates a horizontal approach identically to top-down.
+        # "axis_free"  = legacy: frame_alignment's jaw * app * third face score,
+        #                each factor max|axis . box_axis| over ALL THREE box
+        #                axes. Symmetry-invariant, and that is exactly the
+        #                defect. The box is a 3x3x4 cm PRISM (geom size 0.015
+        #                0.015 0.020), not a cube, and the jaw opening is
+        #                49.9 mm. So the legacy score rates a jaw spanning the
+        #                4 cm axis (9.9 mm total clearance) IDENTICALLY to one
+        #                spanning a 3 cm axis (19.9 mm), and rates a
+        #                horizontal approach identically to top-down.
         #                The in-code claim that max|.| buys invariance to the
         #                "cube's 24-fold octahedral symmetry" does not hold: a
         #                3x3x4 prism has only D4h (16-element) symmetry -- the z
         #                axis is NOT interchangeable with x/y.
-        # "axis_aware" = the legacy face score TIMES two physically-grounded
-        #                preference factors: (a) jaw span measured in real
-        #                finger clearance, (b) top-down approach. Both are
-        #                floored by align_pref_floor so there is never a dead
-        #                zone, and both switch OFF once the box is lifted so
-        #                they shape approach/grasp only and never fight
-        #                transport. DR-SAFE by construction: it consumes the
+        # "axis_aware" = the legacy face score TIMES one physically-grounded
+        #                preference factor: jaw span measured in real finger
+        #                clearance. Floored by align_pref_floor so there is
+        #                never a dead zone, and switches OFF once the box is
+        #                lifted so it shapes approach/grasp only and never
+        #                fights transport. DR-SAFE by construction: it consumes the
         #                REALIZED per-episode half-extents (info["box_half"]),
         #                so a cube_size draw anywhere in 2x2x3 .. 4x4x4 cm is
         #                handled without a hardcoded "local z is the long axis"
@@ -2554,10 +2559,10 @@ class UR3Pick(ur3_base.UR3Base):
             # --- 2026-08 approach/grasp/speed diagnostics ---
             # PER-STEP (brax sums; divide the logged eval/episode_* by
             # episode_length to read a mean). Note align_jaw/align_app above are
-            # the PRE-cone raw cosines, so `alignment` here is not reconstructible
-            # from them -- it is the post-cone, post-preference value that
-            # actually gates the `grasped` latch, which is why it is logged
-            # separately.
+            # the post-cone per-axis scores (frame_alignment), not the third-axis
+            # or preference factors, so `alignment` here is not reconstructible
+            # from them -- it is the post-preference value that actually gates
+            # the `grasped` latch, which is why it is logged separately.
             grip_box_dist=raw_signals["grip_box_dist"],
             finger_touch_dist=raw_signals["finger_touch_dist"],
             alignment=raw_signals["alignment"],
@@ -2835,21 +2840,13 @@ class UR3Pick(ur3_base.UR3Base):
         )
         app_axis = app_axis / (jp.linalg.norm(app_axis) + 1e-6)
         box_axes = data.xmat[self._obj_body].reshape(3, 3)  # columns = box axes
-        a_jaw = jp.max(jp.abs(jaw_axis @ box_axes))
-        a_app = jp.max(jp.abs(app_axis @ box_axes))
-        # Soft alignment cone (60 deg, cos 60 = 0.5), linear ramp to 1 at perfect
-        # alignment. WIDENED from the old hard 30-deg cone (0.866): with a 3-axis
-        # max, |axis . nearest box axis| is >= 1/sqrt(3) ~ 0.577, so a 0.5 bound
-        # keeps the score STRICTLY POSITIVE everywhere -> there is always a
-        # gradient pulling the hand toward alignment, no dead zone. The old 0.866
-        # cone gave zero reward AND zero gradient until BOTH axes were already
-        # inside 30 deg at once (product of two clipped ramps), a chicken-and-egg
-        # trap: the policy had to luck into near-perfect alignment before the
-        # reward ever turned on. Still a PRODUCT so both axes must improve ("2 of
-        # 3 axes aligned"), still proximity-gated below so it can't be farmed.
-        jaw_score = jp.clip((a_jaw - _COS_BOUND) / (1.0 - _COS_BOUND), 0.0, 1.0)
-        app_score = jp.clip((a_app - _COS_BOUND) / (1.0 - _COS_BOUND), 0.0, 1.0)
-        align_face = jaw_score * app_score
+        # All three gripper axes (jaw, approach, third = jaw x app) are scored
+        # against their nearest box axis (90-deg symmetric, box frame, so a
+        # plate tilt is followed). The 0.5 cosine bound keeps every factor
+        # strictly positive (max|dot| over three orthonormal axes is
+        # >= 1/sqrt(3) > 0.5), so there is no dead zone.
+        _scores = frame_alignment(jaw_axis, app_axis, box_axes, _COS_BOUND)
+        align_face = _scores["face"]
 
         # Box support width along the jaw axis. For a box this is EXACTLY
         # 2 * sum_i h_i * |u . b_i| (the support function of a rectangular
@@ -2875,37 +2872,11 @@ class UR3Pick(ur3_base.UR3Base):
             clear_now = self._jaw_opening - span_jaw
             clear_best = self._jaw_opening - 2.0 * jp.min(info["box_half"])
             jaw_pref = jp.clip(clear_now / (clear_best + 1e-9), 0.0, 1.0)
-            # (b) TOP-DOWN approach preference.
-            #     SIGN IS LOAD-BEARING AND VERIFIED: the `tcp` site sits 6 mm
-            #     PAST the finger pads (mount-local z 0.145 vs 0.139), so
-            #     app_axis = fingertip_midpoint - tcp points BACK toward the
-            #     palm -- the opposite of what _get_obs's docstring calls
-            #     "palm -> fingertips". A top-down grasp therefore has
-            #     app_axis[2] ~ +1 (measured +0.807 at the task_home keyframe);
-            #     reaching UPWARD gives -1. Do NOT negate this term. The
-            #     axis_free scores above are unaffected either way because they
-            #     take jp.abs.
-            #     WORLD frame on purpose, not the box frame: the box always
-            #     rests upright (spawned with a world-Z yaw, flush on a plate
-            #     tilted <= ~4 deg), so "along the box's long axis" and
-            #     "downward" coincide at nominal -- but they DISAGREE for the
-            #     ~25% of cube_size draws where the box is oblate
-            #     (xy_half > z_half), and there only the world rule is right:
-            #     a box-frame rule would ask for a vertical jaw axis, i.e. one
-            #     finger underneath the table.
-            app_down = jp.clip(
-                (app_axis[2] - _COS_BOUND) / (1.0 - _COS_BOUND), 0.0, 1.0
-            )
-            # Floor both preferences so neither can zero the product: the whole
-            # point of the 0.5 cone above is that there is never a dead zone,
-            # and an unfloored preference would reintroduce one (a horizontal
-            # approach has app_down == 0 exactly).
             f = float(self._config.align_pref_floor)
-            pref = (f + (1.0 - f) * jaw_pref) * (f + (1.0 - f) * app_down)
+            pref = f + (1.0 - f) * jaw_pref
             alignment = align_face * jp.where(was_lifted > 0.5, 1.0, pref)
         else:
             jaw_pref = jp.array(1.0, dtype=float)
-            app_down = jp.array(1.0, dtype=float)
             alignment = align_face
         # Weighted by approach proximity so it shapes the final approach and
         # can't be farmed in free space. Gate WIDENED tanh(5d)->tanh(3d) so this
@@ -3210,14 +3181,14 @@ class UR3Pick(ur3_base.UR3Base):
             "grip_box_dist": gripper_box_dist,
             "finger_touch_dist": finger_touch_dist,
 
-            # grasp-frame alignment (2-of-3-axis face score, then the
-            # axis_aware preference factors; both are 1.0 under axis_free so
-            # the keys exist unconditionally and the pytree stays stable)
-            "a_jaw": a_jaw,
-            "a_app": a_app,
+            # grasp-frame alignment (3-axis face score, then the axis_aware
+            # preference factor; it is 1.0 under axis_free so the key exists
+            # unconditionally and the pytree stays stable). a_jaw/a_app are
+            # the post-cone per-axis scores from frame_alignment, in [0, 1].
+            "a_jaw": _scores["jaw"],
+            "a_app": _scores["app"],
             "align_face": align_face,
             "jaw_pref": jaw_pref,
-            "app_down": app_down,
             "span_jaw": span_jaw,
             "alignment": alignment,
 
