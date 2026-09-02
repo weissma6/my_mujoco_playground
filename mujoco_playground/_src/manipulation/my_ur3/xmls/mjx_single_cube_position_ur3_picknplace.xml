@@ -7,9 +7,10 @@
     <!-- Box to pick (UR3 has shorter reach than UR10: pulled in from 0.7 m to 0.3 m) -->
     <body name="box" pos="0.3 0 0.02">
       <freejoint/>
+      <!-- Same impedance as the finger pads; MuJoCo mixes solimp 50/50 across a pair, so the previous default 0.9/0.95 made the pad–cube contact ~5x softer than the pads (steady penetration 1.9 mm at 15 N, 0.6 mm at 6 N, 0.17 mm with this line). -->
       <geom type="box" name="box" size="0.02 0.02 0.02" condim="4"
             friction="1 .03 .003" rgba="0 1 0 1"
-            contype="1" conaffinity="3" solref="0.01 1"/>
+            contype="1" conaffinity="3" solref="0.01 1" solimp="0.99 0.995 0.001 0.5 2"/>
     </body>
 
     <!-- Mocap target: 5 cm box the 4 cm cube must be positioned inside; pose set per-episode by reset -->

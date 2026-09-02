@@ -32,7 +32,8 @@
   </option>
 
   <custom>
-    <numeric data="12" name="max_contact_points"/>
+    <!-- MJX keeps the deepest N contacts per condim group; a cube gripped on the table is 4+4+4 = 12 condim-4 contacts, exactly the old cap, so 24 gives headroom. -->
+    <numeric data="24" name="max_contact_points"/>
   </custom>
 
   <visual>

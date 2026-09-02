@@ -302,3 +302,78 @@ def test_t2_pick_scene_sensors_resolve():
 def test_t2_picknplace_box_size():
     model = _load_model(PICKNPLACE_XML)
     np.testing.assert_allclose(model.geom("box").size, [0.02, 0.02, 0.02])
+
+
+# ---------------------------------------------------------------------------
+# REVIEWER (WP2) adversarial additions -- appended, existing tests above are
+# unmodified. Plain MuJoCo only, no MJX/env.step, per the vault hard rule.
+# ---------------------------------------------------------------------------
+def _box_table_penetration(model, data):
+    """Deepest box-lifter (table) penetration among active contacts."""
+    box_id = model.geom("box").id
+    lifter_id = model.geom("lifter").id
+    deepest = 0.0
+    for i in range(data.ncon):
+        c = data.contact[i]
+        pair = {c.geom1, c.geom2}
+        if pair == {box_id, lifter_id}:
+            deepest = max(deepest, -c.dist)
+    return deepest
+
+
+def test_box_table_resting_penetration_not_worse_pick_scene():
+    """The box solimp stiffening (spec item 1) only touches the box geom, not
+    the table ('lifter'), which keeps the MuJoCo-default solimp. Guard that
+    resting the (now stiffer) box on the (still-default) table does not
+    regress: steady-state penetration must stay well under the 1.9/0.6 mm
+    figures quoted for the old pad-cube softness, comfortably under 0.5 mm.
+    """
+    model = _load_model(PICK_XML)
+    data = mujoco.MjData(model)
+    mujoco.mj_resetDataKeyframe(model, data, model.key("task_home").id)
+    # Open the fingers fully so they don't grip -- isolates box-table contact.
+    l_adr, r_adr = _finger_qposadr(model)
+    data.qpos[l_adr] = model.jnt_range[model.joint(LEFT_FINGER_JOINT).id][1]
+    data.qpos[r_adr] = model.jnt_range[model.joint(RIGHT_FINGER_JOINT).id][1]
+    data.ctrl[:] = 0
+    mujoco.mj_forward(model, data)
+
+    penetrations = []
+    for _ in range(300):
+        mujoco.mj_step(model, data)
+        penetrations.append(_box_table_penetration(model, data))
+
+    steady_max = max(penetrations[-20:])
+    assert steady_max <= 0.0005, (
+        f"steady-state box-table penetration {steady_max} m > 0.5 mm"
+    )
+
+
+def test_pad_box_friction_still_max_rule_pick_scene():
+    """Friction attributes on box/pads are untouched by this diff (spec item
+    1 only adds solimp); confirm the contact-level friction MuJoCo derives
+    via the componentwise-max mixing rule is still dominated by the pad's
+    2.0 sliding friction, unaffected by the box's new stiffer solimp.
+    """
+    model = _load_model(PICK_XML)
+    data = mujoco.MjData(model)
+    tcp_pos = _cube_between_pads(model, data)
+    del tcp_pos
+    aid = model.actuator(GRIPPER_ACT).id
+    hi = model.actuator_ctrlrange[aid][1]
+    data.ctrl[aid] = hi
+    for _ in range(50):
+        mujoco.mj_step(model, data)
+
+    box_id = model.geom("box").id
+    pad_ids = {model.geom(g).id for g in PAD_GEOMS}
+    found = False
+    for i in range(data.ncon):
+        c = data.contact[i]
+        pair = {c.geom1, c.geom2}
+        if box_id in pair and pair & pad_ids:
+            found = True
+            assert c.friction[0] == pytest.approx(2.0), (
+                f"pad-box sliding friction {c.friction[0]} != 2.0 (max rule)"
+            )
+    assert found, "no pad-box contact formed to check friction on"
