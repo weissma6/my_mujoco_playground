@@ -103,14 +103,26 @@ def test_l0_5_overrides_equal_the_generators_own_constant(spec):
     assert r["L0_5_light"]["overrides"] == L0_5_LIGHT_OVERRIDES
 
 
-def test_l0_5_key_set_matches_l0_and_differs_in_exactly_two_keys(spec):
+def test_l0_5_key_set_matches_l0_and_differs_in_exactly_six_keys(spec):
+    """v4 widens L0.5's overlay from two keys to six -- see
+    test_l0_5_overrides_equal_the_generators_own_constant for why an
+    omitted key here is the highest-consequence trap in this change."""
     r = {x["config_id"]: x for x in spec["rungs"]}
     l0 = r["L0_none"]["overrides"]
     l0_5 = r["L0_5_light"]["overrides"]
     assert len(l0) == 13
     assert set(l0_5) == set(l0)
     diff_keys = {k for k in l0 if l0[k] != l0_5[k]}
-    assert diff_keys == {"init_start_random", "box_xy_jitter"}, diff_keys
+    assert diff_keys == {
+        "init_start_random", "box_xy_jitter", "lifter_height_abs_min",
+        "lifter_height_abs_max", "lifter_tilt_max", "box_z_rot_range",
+    }, diff_keys
+    assert l0_5["init_start_random"] == "light"
+    assert l0_5["box_xy_jitter"] == [0.085, 0.12]
+    assert l0_5["lifter_height_abs_min"] == 0.06
+    assert l0_5["lifter_height_abs_max"] == 0.13
+    assert l0_5["lifter_tilt_max"] == 0.03
+    assert l0_5["box_z_rot_range"] == 0.5236
 
 
 def test_every_rung_carries_episode_length_400(spec):
@@ -164,17 +176,19 @@ def test_warm_start_chain_has_no_gaps_and_no_self_reference(spec):
 
 
 def test_run_ids_match_the_names_wp7_expects(spec, built_spec):
-    """v3 run_ids carry an explicit version tag: Curr_v3_<config_id>_s<seed>.
+    """v4 run_ids carry an explicit version tag: Curr_v4_<config_id>_s<seed>.
 
-    A bare Curr_<config_id>_s<seed> (the v2 form) collides in W&B with the
-    archived v2 runs once the ladder reruns at the new budget.
+    A bare Curr_v3_<config_id>_s<seed> (the previous form) collides in W&B
+    with the archived v3 runs once the ladder reruns with the v4 defaults
+    (gripper_action_scale=0.01, align_mode=axis_free).
     """
     for s in (spec, built_spec):
         ids = [r["run_id"] for r in s["rungs"]]
-        assert ids == [f"Curr_v3_{c}_s{s['seed']}" for c in EXPECTED_ORDER]
+        assert ids == [f"Curr_v4_{c}_s{s['seed']}" for c in EXPECTED_ORDER]
         for run_id, config_id in zip(ids, EXPECTED_ORDER):
-            assert run_id == f"Curr_v3_{config_id}_s{s['seed']}"
-            assert run_id.startswith("Curr_v3_")
+            assert run_id == f"Curr_v4_{config_id}_s{s['seed']}"
+            assert run_id.startswith("Curr_v4_")
+            assert config_id in EXPECTED_ORDER
 
 
 def test_defaults_carry_the_curriculum_keys(spec, built_spec):
@@ -199,12 +213,14 @@ def test_defaults_carry_the_defence_hyperparameters_and_v3_budget(spec, built_sp
     num_timesteps/num_evals moved to the v3 budget (30M/32): the windowed
     early-stop tracker this replaced was cutting most rungs well short of
     the v2 40M cap anyway, so v3 trains a smaller fixed budget instead of a
-    tracker-gated one."""
+    tracker-gated one. The budget itself is unchanged in v4 -- only
+    gripper_action_scale moves (see test_defaults_carry_new_v4_alignment_keys
+    for the v4-only additions)."""
     for d in (spec["defaults"], built_spec["defaults"]):
         assert d["num_timesteps"] == 30_000_000
         assert d["num_evals"] == 32
         assert d["action_scale"] == 0.04
-        assert d["gripper_action_scale"] == 0.02
+        assert d["gripper_action_scale"] == 0.01
         assert d["action_rate"] == -0.7
         assert d["entropy_cost"] == 0.02
         assert d["learning_rate"] == 3e-4
@@ -216,6 +232,15 @@ def test_defaults_carry_the_defence_hyperparameters_and_v3_budget(spec, built_sp
         assert d["gate_gripper_align_on_lift"] is True
         assert d["gate_gripper_box_on_lift"] is False
         assert d["num_eval_envs"] == 256
+
+
+def test_defaults_carry_new_v4_alignment_keys(spec, built_spec):
+    """v4 adds an axis-free gripper alignment mode plus its threshold to
+    `defaults`. Both must apply to every rung uniformly, same as the other
+    defence hyperparameters."""
+    for d in (spec["defaults"], built_spec["defaults"]):
+        assert d["align_mode"] == "axis_free"
+        assert d["grasp_align_thresh"] == 0.3
 
 
 def test_defaults_own_no_dr_or_position_keys(spec):
@@ -247,6 +272,39 @@ def test_generator_refuses_to_overwrite_without_force(tmp_path):
         main(["--seed", "0", "--out", str(out)])
     # ...unless forced
     assert main(["--seed", "0", "--out", str(out), "--force"]) == 0
+
+
+# --- verify_ladder.py -------------------------------------------------------
+
+def test_check_flags_stale_v3_run_names_not_v4():
+    """verify_ladder.check() gates run names against the CURRENT curriculum
+    version. Once the ladder reruns under v4 (Curr_v4_ run_ids), a leftover
+    Curr_v3_ run in the group must still be flagged as a problem, and a
+    correctly-named Curr_v4_ run must not be -- exercised with fake run/
+    summary objects, no W&B network access."""
+    from batch_runs.curriculum.verify_ladder import check
+
+    def make_by_rung(run_name):
+        class FakeRun:
+            name = run_name
+            state = "finished"
+
+        return {
+            "L0_none": {
+                "run": FakeRun(),
+                "summary": {
+                    "training/num_steps": 30_000_000,
+                    "curriculum/stopped_early": False,
+                    "curriculum/published_sha256": "abc123",
+                },
+            }
+        }
+
+    _, problems_v3, _ = check(make_by_rung("Curr_v3_L0_none_s0_x"))
+    _, problems_v4, _ = check(make_by_rung("Curr_v4_L0_none_s0_x"))
+
+    assert any("Curr_v3_L0_none_s0_x" in p for p in problems_v3), problems_v3
+    assert not any("Curr_v4_L0_none_s0_x" in p for p in problems_v4), problems_v4
 
 
 # --- driver ----------------------------------------------------------------
