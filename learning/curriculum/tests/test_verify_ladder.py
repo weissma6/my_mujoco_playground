@@ -39,7 +39,7 @@ def full_ladder():
     then `wandb.log(log_dict, step=...)`), so it is a value this codebase
     deliberately writes, not wandb's own `_step` bookkeeping of the `step=`
     kwarg. Every rung is built at exactly the passing shape (RUNG_ORDER
-    order, Curr_v3_<id>_s0 names, an unbroken sha256 chain, nothing stopped
+    order, Curr_v4_<id>_s0 names, an unbroken sha256 chain, nothing stopped
     early, training/num_steps at the 30M floor) so each test below mutates
     exactly one field off that baseline and the resulting problem can be
     attributed to it.
@@ -50,7 +50,7 @@ def full_ladder():
         init_sha = prev_pub if prev_pub is not None else "cold"
         pub_sha = f"pub_{rung_id}"
         by_rung[rung_id] = {
-            "run": FakeRun(f"Curr_v3_{rung_id}_s0"),
+            "run": FakeRun(f"Curr_v4_{rung_id}_s0"),
             "summary": {
                 "curriculum/params_sha256_at_init": init_sha,
                 "curriculum/published_sha256": pub_sha,
@@ -159,14 +159,18 @@ def test_step_floor_is_a_failure_when_neither_key_is_present():
     assert any("L4_full" in p for p in problems)
 
 
-def test_a_run_not_named_curr_v3_is_reported():
+def test_a_run_not_named_curr_v4_is_reported():
+    """A stale-spec run name (the pre-migration Curr_v3_ prefix) must be
+    flagged just like any other wrong-prefix name -- the ladder spec moved
+    from Curr_v3_ to Curr_v4_ and check() must not still accept the old
+    prefix."""
     by_rung = full_ladder()
-    by_rung["L1_pos"]["run"].name = "Curr_L1_pos_s0"
+    by_rung["L1_pos"]["run"].name = "Curr_v3_L1_pos_s0"
     _, problems, _ = check(by_rung)
     assert any("L1_pos" in p for p in problems)
 
 
-def test_fully_correct_v3_ladder_yields_empty_problems():
+def test_fully_correct_v4_ladder_yields_empty_problems():
     by_rung = full_ladder()
     rows, problems, _ = check(by_rung)
     assert problems == []

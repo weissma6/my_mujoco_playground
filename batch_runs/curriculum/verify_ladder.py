@@ -18,7 +18,7 @@ Pass criteria (all four required):
      final logged training step must also be >= 30,000,000 (read from
      training/num_steps, falling back to wandb's own _step); the bound is
      >=, never ==, since the real quantized total overshoots to 30,474,240.
-     Every matched run's name must start with Curr_v3_.
+     Every matched run's name must start with Curr_v4_.
   4. sacct State is COMPLETED, not TIMEOUT (checked separately on the HPC --
      this script only has W&B, so it reports what it CAN verify and says so).
 
@@ -124,9 +124,9 @@ def check(by_rung):
                 f"{STEP_FLOOR:,} floor"
             )
 
-        if not run.name.startswith("Curr_v3_"):
+        if not run.name.startswith("Curr_v4_"):
             problems.append(
-                f"{rung}: run name {run.name!r} does not start with Curr_v3_"
+                f"{rung}: run name {run.name!r} does not start with Curr_v4_"
             )
 
         rows.append({

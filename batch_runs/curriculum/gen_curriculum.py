@@ -88,10 +88,17 @@ EXPECTED_ORDER = (
 # order ever changed -- and never retyped by hand), with exactly two keys
 # overridden.
 _L0 = next(o for cid, o, _ in _CONFIGS if cid == "L0_none")
+# The four lifter/rotation keys carry roughly a third of L1's table-height
+# range, a quarter of its tilt and a sixth of its yaw, so the L0.5->L1 step
+# is a step, not a cliff.
 L0_5_LIGHT_OVERRIDES = {
     **_L0,
     "init_start_random": "light",
     "box_xy_jitter": [0.085, 0.12],
+    "lifter_height_abs_min": 0.06,
+    "lifter_height_abs_max": 0.13,
+    "lifter_tilt_max": 0.03,
+    "box_z_rot_range": 0.5236,
 }
 
 SPEC_PATH = os.path.join(REPO, "batch_runs", "curriculum", "UR3Pick_curriculum.json")
@@ -122,11 +129,15 @@ NUM_EVALS = 32
 # defence-best values directly into `defaults` so that omission cannot
 # recur. All sourced from W&B run Snappy2_as04_ar70_g01_s1.
 #
-# Deliberately NOT imported from gen_dr_ladder_velocity.py: that module sets
-# gripper_action_scale=0.01, which conflicts with the defence value 0.02 below
-# and would trade one wrong number for another.
+# Deliberately NOT imported from gen_dr_ladder_velocity.py: its
+# gripper_action_scale matches this module's 0.01, but it carries other keys
+# the curriculum must not inherit.
 _DEFENCE_ACTION_SCALE = 0.04            # Snappy2_as04_ar70_g01_s1
-_DEFENCE_GRIPPER_ACTION_SCALE = 0.02    # Snappy2_as04_ar70_g01_s1
+# Deliberately below the Snappy2 defence value 0.02: 0.02 commands ~80% of
+# the 25 mm finger stroke per step (near bang-bang), and the only L1 rung
+# that trained to high success (L1_pos_vel, 2026-07-29, eval success 0.70)
+# ran at 0.01.
+_GRIPPER_ACTION_SCALE = 0.01
 _DEFENCE_ACTION_RATE = -0.7             # Snappy2_as04_ar70_g01_s1
 _DEFENCE_ENTROPY_COST = 0.02            # Snappy2_as04_ar70_g01_s1
 _DEFENCE_LEARNING_RATE = 3e-4           # Snappy2_as04_ar70_g01_s1
@@ -159,7 +170,7 @@ def build_spec(seed: int = 0, group: str = None) -> dict:
     for i, config_id in enumerate(EXPECTED_ORDER):
         rungs.append({
             "config_id": config_id,
-            "run_id": f"Curr_v3_{config_id}_s{seed}",
+            "run_id": f"Curr_v4_{config_id}_s{seed}",
             # Each rung warm-starts from its IMMEDIATE predecessor. No rung
             # skips, none self-references -- asserted in the spec tests.
             "warm_start_from": None if i == 0 else EXPECTED_ORDER[i - 1],
@@ -189,7 +200,7 @@ def build_spec(seed: int = 0, group: str = None) -> dict:
             # Defence-best hyperparameters -- see the module-level comment
             # above _DEFENCE_ACTION_SCALE for why this block exists at all.
             "action_scale": _DEFENCE_ACTION_SCALE,
-            "gripper_action_scale": _DEFENCE_GRIPPER_ACTION_SCALE,
+            "gripper_action_scale": _GRIPPER_ACTION_SCALE,
             "action_rate": _DEFENCE_ACTION_RATE,
             "entropy_cost": _DEFENCE_ENTROPY_COST,
             "learning_rate": _DEFENCE_LEARNING_RATE,
@@ -199,6 +210,11 @@ def build_spec(seed: int = 0, group: str = None) -> dict:
             "gate_gripper_box_on_lift": _DEFENCE_GATE_GRIPPER_BOX_ON_LIFT,
             "num_eval_envs": _DEFENCE_NUM_EVAL_ENVS,
             "normalizer_count_reset": None,
+            # align_mode and grasp_align_thresh must always be set together
+            # (see ur3_pick.py default_config() comment) -- these are the
+            # values every rung has implicitly used via the env default.
+            "align_mode": "axis_free",
+            "grasp_align_thresh": 0.3,
         },
         "rungs": rungs,
     }
