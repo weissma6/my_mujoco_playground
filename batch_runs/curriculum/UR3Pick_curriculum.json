@@ -10,8 +10,8 @@
     "num_timesteps": 30000000,
     "num_evals": 32,
     "num_resets_per_eval": 1,
-    "action_scale": 0.04,
-    "gripper_action_scale": 0.01,
+    "action_scale": 0.015,
+    "gripper_action_scale": 0.001,
     "action_rate": -0.7,
     "entropy_cost": 0.02,
     "learning_rate": 0.0003,
@@ -40,7 +40,7 @@
   "rungs": [
     {
       "config_id": "L0_none",
-      "run_id": "Curr_v4_L0_none_s0",
+      "run_id": "Curr_v5_L0_none_s0",
       "warm_start_from": null,
       "overrides": {
         "box_xy_jitter": [
@@ -74,7 +74,7 @@
     },
     {
       "config_id": "L0_5_light",
-      "run_id": "Curr_v4_L0_5_light_s0",
+      "run_id": "Curr_v5_L0_5_light_s0",
       "warm_start_from": "L0_none",
       "overrides": {
         "box_xy_jitter": [
@@ -108,13 +108,13 @@
     },
     {
       "config_id": "L1_pos",
-      "run_id": "Curr_v4_L1_pos_s0",
+      "run_id": "Curr_v5_L1_pos_s0",
       "warm_start_from": "L0_5_light",
       "overrides": {}
     },
     {
       "config_id": "L2_pos_cube",
-      "run_id": "Curr_v4_L2_pos_cube_s0",
+      "run_id": "Curr_v5_L2_pos_cube_s0",
       "warm_start_from": "L1_pos",
       "overrides": {
         "domain_rand.enable": true,
@@ -126,7 +126,7 @@
     },
     {
       "config_id": "L3_pos_cube_robot",
-      "run_id": "Curr_v4_L3_pos_cube_robot_s0",
+      "run_id": "Curr_v5_L3_pos_cube_robot_s0",
       "warm_start_from": "L2_pos_cube",
       "overrides": {
         "domain_rand.enable": true,
@@ -141,7 +141,7 @@
     },
     {
       "config_id": "L4_full",
-      "run_id": "Curr_v4_L4_full_s0",
+      "run_id": "Curr_v5_L4_full_s0",
       "warm_start_from": "L3_pos_cube_robot",
       "overrides": {
         "domain_rand.enable": true,

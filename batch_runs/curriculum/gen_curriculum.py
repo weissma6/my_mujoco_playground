@@ -121,23 +121,29 @@ NUM_EVALS = 32
 # --- Defence-best training hyperparameters -----------------------------------
 # WHY THIS BLOCK EXISTS AT ALL: the v1 ladder inherited gen_dr_ladder's
 # deliberate silence on action_scale (see that module's docstring: it only
-# sets .enable flags plus the L0 position literals, on purpose) and therefore
-# trained every rung at the env default action_scale=0.015 instead of 0.04.
-# L0 peaked at eval/episode_success 0.016 against the archived
+# sets .enable flags plus the L0 position literals, on purpose). With no spec
+# pinning action_scale, every rung silently fell back to an unpinned env
+# default. L0 peaked at eval/episode_success 0.016 against the archived
 # L0_none_vel_s1's 1.000 -- the whole ladder was roughly 4x slower than it
-# should have been for want of one number. These constants pin the
-# defence-best values directly into `defaults` so that omission cannot
-# recur. All sourced from W&B run Snappy2_as04_ar70_g01_s1.
+# should have been for want of one pinned number. These constants pin the
+# values explicitly into `defaults` so that omission cannot recur.
 #
-# Deliberately NOT imported from gen_dr_ladder_velocity.py: its
-# gripper_action_scale matches this module's 0.01, but it carries other keys
-# the curriculum must not inherit.
-_DEFENCE_ACTION_SCALE = 0.04            # Snappy2_as04_ar70_g01_s1
-# Deliberately below the Snappy2 defence value 0.02: 0.02 commands ~80% of
-# the 25 mm finger stroke per step (near bang-bang), and the only L1 rung
-# that trained to high success (L1_pos_vel, 2026-07-29, eval success 0.70)
-# ran at 0.01.
-_GRIPPER_ACTION_SCALE = 0.01
+# All values sourced from W&B run Snappy2_as04_ar70_g01_s1 EXCEPT _ACTION_SCALE
+# and _GRIPPER_ACTION_SCALE, which deliberately deviate from Snappy2 in v5
+# (see their own comments below for justification). gen_dr_ladder_velocity.py
+# is NOT imported: its gripper_action_scale matches this module's value, but
+# it carries other keys the curriculum must not inherit.
+
+# v5 DELIBERATE DEVIATION from Snappy2's 0.04 (2 rad/s setpoint slew, ~0.7 m/s
+# TCP, up to 0.34 rad of unobserved setpoint lead). 0.015 = July 2026 validated
+# value with peak TCP 0.21–0.27 m/s.
+_ACTION_SCALE = 0.015
+
+# Hand-E tendon actuator now ctrlrange 0-0.025 (WP1, physics_v5): ctrl is
+# per-finger metres. 0.001/step = 25 steps = 0.5 s full stroke = deploy-speed
+# Hand-E. v3/v4's 0.01 closed the hand in 5 steps (0.1 s), 0.02 in 2.5 steps,
+# both far faster than the real hand, causing them to look identical.
+_GRIPPER_ACTION_SCALE = 0.001
 _DEFENCE_ACTION_RATE = -0.7             # Snappy2_as04_ar70_g01_s1
 _DEFENCE_ENTROPY_COST = 0.02            # Snappy2_as04_ar70_g01_s1
 _DEFENCE_LEARNING_RATE = 3e-4           # Snappy2_as04_ar70_g01_s1
@@ -170,7 +176,7 @@ def build_spec(seed: int = 0, group: str = None) -> dict:
     for i, config_id in enumerate(EXPECTED_ORDER):
         rungs.append({
             "config_id": config_id,
-            "run_id": f"Curr_v4_{config_id}_s{seed}",
+            "run_id": f"Curr_v5_{config_id}_s{seed}",
             # Each rung warm-starts from its IMMEDIATE predecessor. No rung
             # skips, none self-references -- asserted in the spec tests.
             "warm_start_from": None if i == 0 else EXPECTED_ORDER[i - 1],
@@ -198,8 +204,8 @@ def build_spec(seed: int = 0, group: str = None) -> dict:
             "num_evals": NUM_EVALS,
             "num_resets_per_eval": 1,
             # Defence-best hyperparameters -- see the module-level comment
-            # above _DEFENCE_ACTION_SCALE for why this block exists at all.
-            "action_scale": _DEFENCE_ACTION_SCALE,
+            # above _ACTION_SCALE for why this block exists at all.
+            "action_scale": _ACTION_SCALE,
             "gripper_action_scale": _GRIPPER_ACTION_SCALE,
             "action_rate": _DEFENCE_ACTION_RATE,
             "entropy_cost": _DEFENCE_ENTROPY_COST,

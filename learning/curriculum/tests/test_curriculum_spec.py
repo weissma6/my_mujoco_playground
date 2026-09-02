@@ -470,3 +470,45 @@ def test_rung_cfg_carries_what_run_experiment_needs(spec, drv):
     # L0 gets no warm params at all
     cold = drv.build_rung_cfg(spec, spec["rungs"][0], "grp")
     assert "warm_start_params" not in cold
+
+
+# --- v5 reviewer-added adversarial tests (WP3, appended, never edit above) --
+
+def test_no_rung_override_shadows_action_scale_or_gripper_action_scale(spec):
+    """defaults is the SINGLE source for action_scale/gripper_action_scale.
+
+    If any per-rung overrides dict carried either key, {**defaults,
+    **rung['overrides']} would let that rung silently escape the v5 values
+    pinned in defaults (e.g. an untouched L1_pos rung still training at the
+    old 0.04/0.01 because a stray key survived a hand edit of _CONFIGS)."""
+    for rung in spec["rungs"]:
+        assert "action_scale" not in rung["overrides"], rung["config_id"]
+        assert "gripper_action_scale" not in rung["overrides"], rung["config_id"]
+
+
+def test_defaults_action_scale_and_gripper_action_scale_are_floats_matching_constants(spec, built_spec):
+    """The on-disk defaults values must be floats (not ints, not strings) and
+    equal to the generator's own module constants -- a hand-typed JSON with
+    action_scale as the int 0, or a constant renamed on one side only, would
+    both pass a bare `== 0.015` check against a literal but this pins the
+    file to the actual source-of-truth constants."""
+    from batch_runs.curriculum.gen_curriculum import (
+        _ACTION_SCALE,
+        _GRIPPER_ACTION_SCALE,
+    )
+    assert isinstance(_ACTION_SCALE, float) and _ACTION_SCALE == 0.015
+    assert isinstance(_GRIPPER_ACTION_SCALE, float) and _GRIPPER_ACTION_SCALE == 0.001
+    for d in (spec["defaults"], built_spec["defaults"]):
+        assert isinstance(d["action_scale"], float)
+        assert d["action_scale"] == _ACTION_SCALE
+        assert isinstance(d["gripper_action_scale"], float)
+        assert d["gripper_action_scale"] == _GRIPPER_ACTION_SCALE
+
+
+def test_run_ids_are_unique_across_all_six_rungs(spec):
+    """Two rungs sharing a run_id would collide in W&B (same run overwritten)
+    and the driver would warm-start the wrong policy. EXPECTED_ORDER's
+    distinctness makes this true today, but that is an accident of the
+    config_id list, not something any existing test pins directly."""
+    ids = [r["run_id"] for r in spec["rungs"]]
+    assert len(ids) == len(set(ids)), ids
