@@ -159,19 +159,26 @@ def test_step_floor_is_a_failure_when_neither_key_is_present():
     assert any("L4_full" in p for p in problems)
 
 
-def test_a_run_not_named_curr_v4_is_reported():
-    """A stale-spec run name (the pre-migration Curr_v3_ prefix) must be
+def test_a_run_not_named_curr_v5_is_reported():
+    """A stale-spec run name (the pre-migration Curr_v4_ prefix) must be
     flagged just like any other wrong-prefix name -- the ladder spec moved
-    from Curr_v3_ to Curr_v4_ and check() must not still accept the old
+    from Curr_v4_ to Curr_v5_ and check() must not still accept the old
     prefix."""
     by_rung = full_ladder()
-    by_rung["L1_pos"]["run"].name = "Curr_v3_L1_pos_s0"
+    # Simulate v5 names: convert Curr_v4_ to Curr_v5_ in the fixture
+    for rung_id in by_rung:
+        by_rung[rung_id]["run"].name = by_rung[rung_id]["run"].name.replace("Curr_v4_", "Curr_v5_")
+    # Now set one to the stale (v4) name to test that it's reported
+    by_rung["L1_pos"]["run"].name = "Curr_v4_L1_pos_s0"
     _, problems, _ = check(by_rung)
     assert any("L1_pos" in p for p in problems)
 
 
-def test_fully_correct_v4_ladder_yields_empty_problems():
+def test_fully_correct_v5_ladder_yields_empty_problems():
     by_rung = full_ladder()
+    # Simulate v5 names: convert Curr_v4_ to Curr_v5_ in the fixture
+    for rung_id in by_rung:
+        by_rung[rung_id]["run"].name = by_rung[rung_id]["run"].name.replace("Curr_v4_", "Curr_v5_")
     rows, problems, _ = check(by_rung)
     assert problems == []
     assert len(rows) == 6

@@ -176,18 +176,16 @@ def test_warm_start_chain_has_no_gaps_and_no_self_reference(spec):
 
 
 def test_run_ids_match_the_names_wp7_expects(spec, built_spec):
-    """v4 run_ids carry an explicit version tag: Curr_v4_<config_id>_s<seed>.
+    """v5 run_ids carry an explicit version tag: Curr_v5_<config_id>_s<seed>.
 
-    A bare Curr_v3_<config_id>_s<seed> (the previous form) collides in W&B
-    with the archived v3 runs once the ladder reruns with the v4 defaults
-    (gripper_action_scale=0.01, align_mode=axis_free).
+    Archived v4 runs must not collide in W&B with the v5 reruns.
     """
     for s in (spec, built_spec):
         ids = [r["run_id"] for r in s["rungs"]]
-        assert ids == [f"Curr_v4_{c}_s{s['seed']}" for c in EXPECTED_ORDER]
+        assert ids == [f"Curr_v5_{c}_s{s['seed']}" for c in EXPECTED_ORDER]
         for run_id, config_id in zip(ids, EXPECTED_ORDER):
-            assert run_id == f"Curr_v4_{config_id}_s{s['seed']}"
-            assert run_id.startswith("Curr_v4_")
+            assert run_id == f"Curr_v5_{config_id}_s{s['seed']}"
+            assert run_id.startswith("Curr_v5_")
             assert config_id in EXPECTED_ORDER
 
 
@@ -210,17 +208,16 @@ def test_defaults_carry_the_defence_hyperparameters_and_v3_budget(spec, built_sp
     gen_curriculum.py's _DEFENCE_* block. These must be in `defaults`, not
     left to the per-rung overrides or the env default.
 
-    num_timesteps/num_evals moved to the v3 budget (30M/32): the windowed
-    early-stop tracker this replaced was cutting most rungs well short of
-    the v2 40M cap anyway, so v3 trains a smaller fixed budget instead of a
-    tracker-gated one. The budget itself is unchanged in v4 -- only
-    gripper_action_scale moves (see test_defaults_carry_new_v4_alignment_keys
-    for the v4-only additions)."""
+    v5 deviates from the defence bundle in exactly two keys: action_scale=0.015
+    (July-validated slow value) and gripper_action_scale=0.001 (25 steps =
+    0.5 s full stroke on the 0-0.025 actuator range from WP1). Every other
+    value stays v4.
+    """
     for d in (spec["defaults"], built_spec["defaults"]):
         assert d["num_timesteps"] == 30_000_000
         assert d["num_evals"] == 32
-        assert d["action_scale"] == 0.04
-        assert d["gripper_action_scale"] == 0.01
+        assert d["action_scale"] == 0.015
+        assert d["gripper_action_scale"] == 0.001
         assert d["action_rate"] == -0.7
         assert d["entropy_cost"] == 0.02
         assert d["learning_rate"] == 3e-4
@@ -276,11 +273,11 @@ def test_generator_refuses_to_overwrite_without_force(tmp_path):
 
 # --- verify_ladder.py -------------------------------------------------------
 
-def test_check_flags_stale_v3_run_names_not_v4():
+def test_check_flags_stale_v4_run_names_not_v5():
     """verify_ladder.check() gates run names against the CURRENT curriculum
-    version. Once the ladder reruns under v4 (Curr_v4_ run_ids), a leftover
-    Curr_v3_ run in the group must still be flagged as a problem, and a
-    correctly-named Curr_v4_ run must not be -- exercised with fake run/
+    version. Once the ladder reruns under v5 (Curr_v5_ run_ids), a leftover
+    Curr_v4_ run in the group must still be flagged as a problem, and a
+    correctly-named Curr_v5_ run must not be -- exercised with fake run/
     summary objects, no W&B network access."""
     from batch_runs.curriculum.verify_ladder import check
 
@@ -300,11 +297,11 @@ def test_check_flags_stale_v3_run_names_not_v4():
             }
         }
 
-    _, problems_v3, _ = check(make_by_rung("Curr_v3_L0_none_s0_x"))
     _, problems_v4, _ = check(make_by_rung("Curr_v4_L0_none_s0_x"))
+    _, problems_v5, _ = check(make_by_rung("Curr_v5_L0_none_s0_x"))
 
-    assert any("Curr_v3_L0_none_s0_x" in p for p in problems_v3), problems_v3
-    assert not any("Curr_v4_L0_none_s0_x" in p for p in problems_v4), problems_v4
+    assert any("Curr_v4_L0_none_s0_x" in p for p in problems_v4), problems_v4
+    assert not any("Curr_v5_L0_none_s0_x" in p for p in problems_v5), problems_v5
 
 
 # --- driver ----------------------------------------------------------------
@@ -468,6 +465,8 @@ def test_rung_cfg_carries_what_run_experiment_needs(spec, drv):
     assert cfg["wandb_group"] == "grp"
     assert cfg["episode_length"] == 400
     assert cfg["run_id"] == rung["run_id"]
+    assert cfg["action_scale"] == 0.015
+    assert cfg["gripper_action_scale"] == 0.001
     # L0 gets no warm params at all
     cold = drv.build_rung_cfg(spec, spec["rungs"][0], "grp")
     assert "warm_start_params" not in cold
