@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=UR3Pick_curriculum
+#SBATCH --job-name=UR3Pick_curriculum_v3
 #SBATCH --account=cai_iai
 #SBATCH --partition=gpu
 #SBATCH --output=logs/%x_%A_%a.out
@@ -28,14 +28,16 @@ unset DISPLAY
 # weights, so there is nothing for a SLURM array to parallelise -- hence no
 # --array above.
 #
-# --wall-budget-s is 42600 (11h50m) against a 12:00:00 --time -- the same
-# 10-minute safety margin as before, raised because the ladder now has six
-# rungs instead of five and the per-rung cap went from 24M to 40M steps. The
-# driver checks the remaining budget before each rung after the first and
-# stops cleanly if what is left is under the longest rung so far, writing
-# _resume.json and exiting 0. Without that a timeout lands mid-rung, SLURM
-# records TIMEOUT, and that rung's params are lost. Raise --time and this
-# number together or not at all.
+# Each rung runs a fixed budget of approximately 30.47M steps with no early
+# stop, yielding roughly 183M total steps across six rungs. On one GPU at the
+# observed rate of ~1M steps/min, this completes in about 3 to 4 hours.
+#
+# --wall-budget-s is 42600 (11h50m) against a 12:00:00 --time, providing a
+# 10-minute safety margin. The driver checks the remaining budget before each
+# rung after the first and stops cleanly if what is left is under the longest
+# rung so far, writing _resume.json and exiting 0. Without that a timeout
+# lands mid-rung, SLURM records TIMEOUT, and that rung's params are lost.
+# Raise --time and this number together or not at all.
 python batch_runs/scripts/run_curriculum_ur3.py \
   --spec batch_runs/curriculum/UR3Pick_curriculum.json \
   --out-root results \
