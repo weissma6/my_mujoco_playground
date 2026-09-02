@@ -230,9 +230,9 @@
     <general class="size0" name="wrist_2" joint="wrist_2_joint"/>
     <general class="size0" name="wrist_3" joint="wrist_3_joint"/>
 
-    <!-- Hand-E tendon actuator -->
+    <!-- Hand-E tendon actuator: tendon split = 0.5*(left+right), length 0 (open) .. 0.025 (closed), so ctrl is the per-finger position; the old 0-0.05 upper half was a hidden squeeze-force integrator the policy could not observe (vault note "Gripper & Motion Dynamics – Why It Snaps"). -->
     <position name="hande_fingers_actuator"
-        ctrlrange="0 0.05"
+        ctrlrange="0 0.025"
         tendon="split"
         kp="400"
         kv="1"
@@ -248,6 +248,6 @@
 
     <key name="vertical_home"
       qpos="0 -1.5708 0 -1.5708 0 0 0.025 0.025"
-      ctrl="0 -1.5708 0 -1.5708 0 0 0.05"/>
+      ctrl="0 -1.5708 0 -1.5708 0 0 0.025"/>
   </keyframe>
 </mujoco>

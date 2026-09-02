@@ -228,10 +228,12 @@ def default_config() -> config_dict.ConfigDict:
         # gripper is DECOUPLED via gripper_action_scale below so it can be kept
         # slow (stays open on approach) while the arm runs faster.
         action_scale=0.015,
-        # Separate per-step scale for the gripper actuator (last ctrl dim). Small
-        # + fixed so the hand can't snap shut in one step — full open->close
-        # travel is 0.025, which needs >=2.5 steps at 0.01. This is what keeps
-        # the hand open on approach independent of the swept arm action_scale.
+        # Gripper ctrl is the per-finger position on the 0-0.025 actuator range
+        # (since this commit; used to be 0-0.05, twice the stroke). Plant closes
+        # a free stroke in ~0.22 s. Curriculum spec sets 0.001 (25 steps = 0.5 s
+        # full stroke, the deploy-speed Hand-E). The 0.02 default here is 80% of
+        # the stroke per step and is kept only because every sweep line sets the
+        # key explicitly (repo rule: set per sweep line, never here).
         gripper_action_scale=0.02,
         # addvelocity (2026-07-22): append arm joint velocity (6D) + finger
         # velocity (1D) to the obs, AFTER the existing 26D layout (base_obs +

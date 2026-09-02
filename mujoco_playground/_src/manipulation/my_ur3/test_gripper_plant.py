@@ -302,3 +302,42 @@ def test_t2_pick_scene_home_keyframes():
         np.testing.assert_allclose(
             model.key(key_name).qpos, qpos, atol=1e-9
         )
+
+
+# ---------------------------------------------------------------------------
+# Reviewer-added adversarial case: MuJoCo's own ctrllimited clip must be what
+# is doing the work, not just the declared ctrlrange number. If ctrllimited
+# ever regressed to "false" (or a caller sends an out-of-range ctrl -- e.g.
+# an old checkpoint that still outputs actions scaled to [0, 0.05]), an
+# in-range ctrl and an out-of-range ctrl above hi must settle to the exact
+# same force: the pre-WP1 bug was precisely that ctrl above the physical
+# stroke kept adding squeeze force (a hidden wind-up integrator) instead of
+# being clipped away.
+# ---------------------------------------------------------------------------
+def test_ctrl_above_tightened_range_is_clipped_not_wound_up():
+    model = _load_model(PICK_XML)
+    aid = model.actuator(GRIPPER_ACT).id
+    hi = model.actuator_ctrlrange[aid][1]
+
+    # Sanity: 0.05 is genuinely out of range now (it was in-range pre-WP1).
+    assert 0.05 > hi
+    assert bool(model.actuator_ctrllimited[aid])
+
+    def _settled_force(ctrl_value):
+        data = mujoco.MjData(model)
+        _cube_between_pads(model, data)
+        data.ctrl[aid] = ctrl_value
+        for _ in range(200):
+            mujoco.mj_step(model, data)
+        return abs(data.actuator_force[aid])
+
+    force_at_hi = _settled_force(hi)
+    force_over_range = _settled_force(0.05)
+
+    assert force_over_range == pytest.approx(force_at_hi, abs=1e-6), (
+        f"ctrl=0.05 (out of range) settled to {force_over_range} N but "
+        f"ctrl={hi} (range hi) settled to {force_at_hi} N -- ctrllimited is "
+        f"not clipping the out-of-range command, the pre-WP1 squeeze-force "
+        f"wind-up is still reachable"
+    )
+    assert 4.0 <= force_at_hi <= 6.5, f"squeeze force {force_at_hi} N outside [4.0, 6.5]"
