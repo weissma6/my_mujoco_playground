@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=UR3Pick_curriculum_v3
+#SBATCH --job-name=UR3Pick_curriculum_v4
 #SBATCH --account=cai_iai
 #SBATCH --partition=gpu
 #SBATCH --output=logs/%x_%A_%a.out
@@ -38,6 +38,10 @@ unset DISPLAY
 # rung so far, writing _resume.json and exiting 0. Without that a timeout
 # lands mid-rung, SLURM records TIMEOUT, and that rung's params are lost.
 # Raise --time and this number together or not at all.
+#
+# v4 (branch curriculum_v4): 3-axis box-frame grasp alignment reward, harder
+# L0.5 (height 0.06-0.13 m, tilt 0.03 rad, yaw +-30 deg), gripper_action_scale
+# 0.01.
 python batch_runs/scripts/run_curriculum_ur3.py \
   --spec batch_runs/curriculum/UR3Pick_curriculum.json \
   --out-root results \
