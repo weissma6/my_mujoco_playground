@@ -11,8 +11,14 @@ Pass criteria (all four required):
      missing data -- anything dying before wandb.init leaves no trace there.
   2. The checksum chain holds: each rung's curriculum/params_sha256_at_init
      equals its predecessor's curriculum/published_sha256.
-  3. At least one rung has curriculum/early_stop_summary.stopped == true
-     with steps_completed < its num_timesteps cap.
+  3. v3 trains every rung to its full fixed budget -- no early stop is
+     possible by design, so it is now a FAILURE (not a required success
+     signal) if a rung reports curriculum/stopped_early == True, or carries
+     a curriculum/early_stop_summary whose stopped is true. Every rung's
+     final logged training step must also be >= 30,000,000 (read from
+     training/num_steps, falling back to wandb's own _step); the bound is
+     >=, never ==, since the real quantized total overshoots to 30,474,240.
+     Every matched run's name must start with Curr_v3_.
   4. sacct State is COMPLETED, not TIMEOUT (checked separately on the HPC --
      this script only has W&B, so it reports what it CAN verify and says so).
 
@@ -36,6 +42,10 @@ import sys
 RUNG_ORDER = ["L0_none", "L0_5_light", "L1_pos", "L2_pos_cube", "L3_pos_cube_robot", "L4_full"]
 ENTITY = "weissma6-zhaw-school-of-engineering"
 PROJECT = "UR3_pick_ppo"
+
+# The true quantized total (31*983_040, see gen_curriculum.py's NUM_EVALS
+# comment) overshoots this -- the floor must stay >=, never ==.
+STEP_FLOOR = 30_000_000
 
 
 def fetch(group):
@@ -64,11 +74,11 @@ def check(by_rung):
 
     # criterion 2 -- checksum chain, sourced from W&B, not from disk
     prev_pub = None
-    any_stopped_early = False
     for rung in RUNG_ORDER:
         if rung not in by_rung:
             prev_pub = None
             continue
+        run = by_rung[rung]["run"]
         s = by_rung[rung]["summary"]
         init_sha = s.get("curriculum/params_sha256_at_init")
         pub_sha = s.get("curriculum/published_sha256")
@@ -79,27 +89,57 @@ def check(by_rung):
                 f"predecessor's published_sha256={str(prev_pub)[:16]}"
             )
 
+        # criterion 3, inverted from v1/v2: v3 has no windowed tracker, so any
+        # sign of an early stop is a fault, whether it arrives as the plain
+        # flag or as a (dict or JSON-string) early_stop_summary.
         es = s.get("curriculum/early_stop_summary")
         es = json.loads(es) if isinstance(es, str) else (es or {})
-        stopped = bool(es.get("stopped"))
-        any_stopped_early |= stopped
+        stopped = bool(s.get("curriculum/stopped_early")) or bool(es.get("stopped"))
+        if stopped:
+            problems.append(
+                f"{rung}: reports an early stop -- v3 trains every rung to "
+                f"its full fixed budget, so this is a fault"
+            )
+
+        steps = s.get("training/num_steps")
+        if steps is None:
+            steps = s.get("_step")
+        if steps is None:
+            problems.append(
+                f"{rung}: neither training/num_steps nor _step is present -- "
+                f"the step floor cannot be verified"
+            )
+        elif isinstance(steps, bool) or not isinstance(steps, (int, float)):
+            # W&B summaries are not schema-enforced -- a value like the
+            # string "30000000" is a realistic shape, not a contrived one.
+            # Report it rather than raise, and rather than silently coerce.
+            problems.append(
+                f"{rung}: step count {steps!r} is not numeric -- "
+                f"the step floor cannot be verified"
+            )
+            steps = None
+        elif steps < STEP_FLOOR:
+            problems.append(
+                f"{rung}: logged only {steps:,} steps, below the "
+                f"{STEP_FLOOR:,} floor"
+            )
+
+        if not run.name.startswith("Curr_v3_"):
+            problems.append(
+                f"{rung}: run name {run.name!r} does not start with Curr_v3_"
+            )
 
         rows.append({
             "rung": rung,
-            "state": by_rung[rung]["run"].state,
+            "state": run.state,
             "chained_from_predecessor": chained,
             "stopped_early": stopped,
-            "steps_completed": es.get("last_step"),
-            "best_reward": es.get("best_reward"),
+            "steps_completed": steps,
             "peak_success": s.get("eval/episode_success.max"),
             "final_success": s.get("eval/episode_success"),
             "published_sha256": pub_sha,
         })
         prev_pub = pub_sha
-
-    # criterion 3
-    if not any_stopped_early:
-        problems.append("no rung reports an early stop (criterion 3)")
 
     # criterion 4 cannot be checked from W&B alone
     note = ("sacct State (criterion 4) is not visible from W&B -- verify "
@@ -116,13 +156,13 @@ def main():
     by_rung = fetch(args.group)
     rows, problems, note = check(by_rung)
 
-    hdr = f"{'rung':<20}{'state':<10}{'chained':>9}{'early':>7}{'steps':>12}{'best_reward':>13}{'peak_success':>14}"
+    hdr = f"{'rung':<20}{'state':<10}{'chained':>9}{'early':>7}{'steps':>12}{'peak_success':>14}"
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
         print(f"{r['rung']:<20}{r['state']:<10}{str(r['chained_from_predecessor']):>9}"
               f"{str(r['stopped_early']):>7}{(r['steps_completed'] or 0):>12,}"
-              f"{(r['best_reward'] or 0):>13.1f}{(r['peak_success'] or 0):>14.3f}")
+              f"{(r['peak_success'] or 0):>14.3f}")
 
     print(f"\n{note}")
 

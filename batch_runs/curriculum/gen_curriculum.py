@@ -96,10 +96,9 @@ L0_5_LIGHT_OVERRIDES = {
 
 SPEC_PATH = os.path.join(REPO, "batch_runs", "curriculum", "UR3Pick_curriculum.json")
 
-# 40M is the per-rung CAP, not a target: the windowed-trend tracker is expected
-# to cut most rungs well short of it. num_evals=42 is not a round number picked
-# for readability -- it is chosen so brax's quantized eval cadence lands on
-# EXACTLY the interval the eval noise was characterized at:
+# num_evals=32 is not a round number picked for readability -- it is chosen
+# so brax's quantized eval cadence lands on EXACTLY the interval the eval
+# noise was characterized at (the same one v1/v2 used):
 #
 #   env_step_per_training_step = batch_size*unroll_length*num_minibatches
 #                                 *action_repeat = 512*10*32*1 = 163_840
@@ -107,17 +106,10 @@ SPEC_PATH = os.path.join(REPO, "batch_runs", "curriculum", "UR3Pick_curriculum.j
 #       ((num_evals-1)*env_step_per_training_step*max(num_resets_per_eval,1)))
 #   interval = num_training_steps_per_epoch * env_step_per_training_step
 #
-# At 40_000_000/42: ceil(40_000_000/(41*163_840)) = 6 -> interval EXACTLY
-# 983_040, total 41*983_040 = 40_304_640 (0.76% overshoot of the 40M cap).
-# 983_040 is the SAME cadence the v1 ladder's eval-to-eval noise was measured
-# at, which is why 42 -- not some other num_evals -- was chosen here.
-#
-# NOTE the old 24M/30 comment this replaced claimed "~800k steps per eval" --
-# that was WRONG for the same quantization reason: ceil(24_000_000/(29*163_840))
-# = 6 too, so the real v1 interval was also 983_040, not 24_000_000//29
-# = 827_586.
-NUM_TIMESTEPS = 40_000_000
-NUM_EVALS = 42
+# At 30_000_000/32: ceil(30_000_000/(31*163_840)) = 6 -> interval EXACTLY
+# 983_040, total 31*983_040 = 30_474_240 (1.58% overshoot of the 30M cap).
+NUM_TIMESTEPS = 30_000_000
+NUM_EVALS = 32
 
 # --- Defence-best training hyperparameters -----------------------------------
 # WHY THIS BLOCK EXISTS AT ALL: the v1 ladder inherited gen_dr_ladder's
@@ -167,7 +159,7 @@ def build_spec(seed: int = 0, group: str = None) -> dict:
     for i, config_id in enumerate(EXPECTED_ORDER):
         rungs.append({
             "config_id": config_id,
-            "run_id": f"Curr_{config_id}_s{seed}",
+            "run_id": f"Curr_v3_{config_id}_s{seed}",
             # Each rung warm-starts from its IMMEDIATE predecessor. No rung
             # skips, none self-references -- asserted in the spec tests.
             "warm_start_from": None if i == 0 else EXPECTED_ORDER[i - 1],
@@ -206,18 +198,6 @@ def build_spec(seed: int = 0, group: str = None) -> dict:
             "gate_gripper_align_on_lift": _DEFENCE_GATE_GRIPPER_ALIGN_ON_LIFT,
             "gate_gripper_box_on_lift": _DEFENCE_GATE_GRIPPER_BOX_ON_LIFT,
             "num_eval_envs": _DEFENCE_NUM_EVAL_ENVS,
-            # Windowed-trend convergence stop (see
-            # learning/curriculum/early_stop.py:WindowedTrendTracker /
-            # build_tracker). Replaces the v1 running-max ratchet, which fired
-            # on eval noise (6.5% median on L3, 4.7% on L4) rather than actual
-            # convergence.
-            "early_stop": {
-                "strategy": "windowed",
-                "window": 4,
-                "patience": 3,
-                "min_delta": 0.02,
-                "min_steps": 6_000_000,
-            },
             "normalizer_count_reset": None,
         },
         "rungs": rungs,

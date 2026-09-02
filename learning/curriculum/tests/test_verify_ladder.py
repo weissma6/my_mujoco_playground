@@ -171,3 +171,33 @@ def test_fully_correct_v3_ladder_yields_empty_problems():
     rows, problems, _ = check(by_rung)
     assert problems == []
     assert len(rows) == 6
+
+
+# --- adversarial: reviewer-added, not part of the frozen WP1 set -------------
+#
+# These probe edge cases the frozen set above does not cover: a falsy-but-
+# present step count, and non-int/malformed shapes for the two fields
+# check() reads off raw W&B summaries (which are not schema-enforced, so any
+# JSON-serialisable value can show up there in practice).
+
+def test_step_floor_zero_is_present_not_absent_and_correctly_fails():
+    """training/num_steps: 0 is falsy but PRESENT -- `steps is None` must
+    stay False so it is compared against the floor (and fails), rather than
+    falling through to the _step fallback and possibly passing on stale
+    data."""
+    by_rung = full_ladder()
+    by_rung["L4_full"]["summary"]["training/num_steps"] = 0
+    _, problems, _ = check(by_rung)
+    assert any("L4_full" in p and "0" in p for p in problems)
+
+
+def test_step_floor_string_value_does_not_crash_the_verifier():
+    """DEFECT: W&B summaries are not schema-enforced -- training/num_steps
+    logged as a numeric string (e.g. "30000000") is a realistic shape, not a
+    contrived one. `elif steps < STEP_FLOOR` compares str < int, which
+    raises TypeError instead of reporting a problem or coercing the value.
+    A single malformed field in one run's summary should not take down the
+    whole ladder verification."""
+    by_rung = full_ladder()
+    by_rung["L4_full"]["summary"]["training/num_steps"] = str(CAP)
+    check(by_rung)  # must not raise
