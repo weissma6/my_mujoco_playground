@@ -625,3 +625,190 @@ def test_rung_cfg_without_early_stop_key_builds_no_tracker_and_keeps_the_peak(tr
         "the summary write sits outside the ConvergedSignal handler -- it "
         "could then fire for a keyless rung with no early stop possible"
     )
+
+
+# --- Probe D: build_env_overrides is the one env-override path ---
+
+import copy
+
+
+SWEEPS_FILE = os.path.join(REPO, "batch_runs", "sweeps", "UR3Pick_snappy2.jsonl")
+
+
+def test_build_env_overrides_golden_defence_line(rex):
+    """Read the golden defence-line sweep and verify exact output."""
+    if not os.path.exists(SWEEPS_FILE):
+        pytest.skip(f"{SWEEPS_FILE} not present")
+
+    with open(SWEEPS_FILE, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            cfg = json.loads(line)
+            if cfg.get("run_id") == "Snappy2_as04_ar70_g01_s1":
+                out = rex.build_env_overrides(cfg)
+                expected = {
+                    "episode_length": 400,
+                    "box_z_rot_range": 6.283185307179586,
+                    "obs_include_velocity": True,
+                    "action_scale": 0.04,
+                    "gripper_action_scale": 0.02,
+                    "reward_config.scales.action_rate": -0.7,
+                    "gate_gripper_box_on_lift": False,
+                    "gate_gripper_align_on_lift": True,
+                    "domain_rand.enable": True,
+                    "domain_rand.cube_mass.enable": True,
+                    "domain_rand.cube_mass.min": 0.85,
+                    "domain_rand.cube_mass.max": 1.15,
+                }
+                assert out == expected, f"mismatch:\nexpected: {expected}\ngot: {out}"
+                assert type(out["episode_length"]) is int
+                assert type(out["action_scale"]) is float
+                assert type(out["obs_include_velocity"]) is bool
+                return
+
+        pytest.fail(f"run_id 'Snappy2_as04_ar70_g01_s1' not found in {SWEEPS_FILE}")
+
+
+def test_build_env_overrides_golden_every_mapped_key(rex):
+    """Test comprehensive key mapping and type conversions."""
+    cfg = {
+        "init_keyframe": "low_home",
+        "init_qpos_noise": ["0.1", "0.2"],
+        "init_start_random": "light",
+        "lifter_height_nom": "0.095",
+        "lifter_height_abs_min": "0.0",
+        "lifter_height_abs_max": "0.22",
+        "lifter_tilt_max": "0.05",
+        "box_z_rot_range": "3.14",
+        "box_y_center_offset": "0.01",
+        "target_y_center_offset": "0.02",
+        "action_scale": "0.04",
+        "gripper_action_scale": "0.02",
+        "obs_include_velocity": 1,
+        "action_rate": "-0.7",
+        "box_target": "8",
+        "gripper_align": "2",
+        "hold_target": "6",
+        "success_bonus": "0",
+        "robot_target_qpos": "0.05",
+        "gripper_box": "1.5",
+        "align_mode": "axis_free",
+        "align_pref_floor": "0.3",
+        "grasp_align_thresh": "0.3",
+        "success_tol": "0.02",
+        "sticky_latches": 0,
+        "gate_gripper_box_on_lift": 0,
+        "gate_gripper_align_on_lift": 1,
+        "target_mode": "polar",
+        "target_r_min": "0.2",
+        "target_r_max": "0.4",
+        "target_azim_min": "-1",
+        "target_azim_max": "1",
+        "box_xy_jitter": ["0.17", "0.24"],
+        "target_z_jitter": ["0.0", "0.1"],
+        "finger_random_init": 1,
+        "episode_length": "400",
+        "domain_rand.enable": True,
+        "domain_rand.cube_mass.min": 0.85,
+        "num_timesteps": 24000000,
+        "seed": 1,
+        "run_id": "x",
+        "wandb_project": "p",
+        "network_factory": {"policy_hidden_layer_sizes": [256]},
+        "curriculum_rung": "L0",
+        "warm_start_params": ("n", "p", "v"),
+    }
+
+    cfg_copy_before = copy.deepcopy(cfg)
+    out = rex.build_env_overrides(cfg)
+
+    expected = {
+        "init_keyframe": "low_home",
+        "init_qpos_noise": (0.1, 0.2),
+        "init_start_random": "light",
+        "lifter_height_nom": 0.095,
+        "lifter_height_abs_min": 0.0,
+        "lifter_height_abs_max": 0.22,
+        "lifter_tilt_max": 0.05,
+        "box_z_rot_range": 3.14,
+        "box_y_center_offset": 0.01,
+        "target_y_center_offset": 0.02,
+        "action_scale": 0.04,
+        "gripper_action_scale": 0.02,
+        "obs_include_velocity": True,
+        "reward_config.scales.action_rate": -0.7,
+        "reward_config.scales.box_target": 8.0,
+        "reward_config.scales.gripper_align": 2.0,
+        "reward_config.scales.hold_target": 6.0,
+        "reward_config.scales.success_bonus": 0.0,
+        "reward_config.scales.robot_target_qpos": 0.05,
+        "reward_config.scales.gripper_box": 1.5,
+        "align_mode": "axis_free",
+        "align_pref_floor": 0.3,
+        "grasp_align_thresh": 0.3,
+        "success_tol": 0.02,
+        "sticky_latches": False,
+        "gate_gripper_box_on_lift": False,
+        "gate_gripper_align_on_lift": True,
+        "target_mode": "polar",
+        "target_r_min": 0.2,
+        "target_r_max": 0.4,
+        "target_azim_min": -1.0,
+        "target_azim_max": 1.0,
+        "box_xy_jitter": (0.17, 0.24),
+        "target_z_jitter": (0.0, 0.1),
+        "finger_random_init": True,
+        "episode_length": 400,
+        "domain_rand.enable": True,
+        "domain_rand.cube_mass.min": 0.85,
+    }
+
+    assert out == expected, f"mismatch:\nexpected: {expected}\ngot: {out}"
+    assert isinstance(out["init_qpos_noise"], tuple)
+    assert isinstance(out["box_xy_jitter"], tuple)
+    assert isinstance(out["target_z_jitter"], tuple)
+    assert cfg == cfg_copy_before, "build_env_overrides mutated its input"
+
+
+def test_build_env_overrides_dead_key_fails_loud(rex):
+    """Reject sweep keys that are no longer valid."""
+    with pytest.raises(ValueError, match="no longer a valid key"):
+        rex.build_env_overrides({"lifter_height_max": 0.02})
+
+
+def test_env_override_mapping_moved_not_copied(tree):
+    """AST: verify build_env_overrides is the single env-override path."""
+    # (a) run_experiment calls build_env_overrides
+    run_exp_fn = find_func(tree, "run_experiment")
+    calls_to_build_env_overrides = [
+        n for n in ast.walk(run_exp_fn)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "build_env_overrides"
+    ]
+    assert len(calls_to_build_env_overrides) >= 1, (
+        "run_experiment must call build_env_overrides at least once"
+    )
+
+    # (b) run_experiment does NOT manually assign to env_overrides
+    env_override_assigns = [
+        n for n in ast.walk(run_exp_fn)
+        if isinstance(n, ast.Assign)
+        and len(n.targets) == 1
+        and isinstance(n.targets[0], ast.Subscript)
+        and isinstance(n.targets[0].value, ast.Name)
+        and n.targets[0].value.id == "env_overrides"
+    ]
+    assert len(env_override_assigns) == 0, (
+        "run_experiment must not manually build env_overrides dict -- "
+        "use build_env_overrides instead"
+    )
+
+    # (c) build_env_overrides exists and has exactly one positional argument
+    build_env_fn = find_func(tree, "build_env_overrides")
+    assert len(build_env_fn.args.args) == 1, (
+        f"build_env_overrides must have exactly one positional argument, "
+        f"got {len(build_env_fn.args.args)}"
+    )
