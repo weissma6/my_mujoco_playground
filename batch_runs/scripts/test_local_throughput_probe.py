@@ -346,3 +346,57 @@ def test_stage4_refuses_without_a_qualifying_s3_record(tmp_path):
     )
     assert result.returncode == 2
     assert "stage 3" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# 13. stage4_allowed tolerates a trailing unparsable line in the winning file
+# ---------------------------------------------------------------------------
+
+
+def test_stage4_allowed_trailing_invalid_json_line(probe, tmp_path):
+    (tmp_path / "a.jsonl").write_text(
+        json.dumps({"stage": 3, "outcome": "ok", "peak_rss_gb": 1.0}) + "\n"
+        "{not valid json\n"
+    )
+    allowed, reason = probe.stage4_allowed(tmp_path)
+    assert allowed is True
+    assert isinstance(reason, str) and reason
+
+
+# ---------------------------------------------------------------------------
+# 14. format_report on an "ok" record missing env_steps_per_s must not crash
+# (and must not fabricate an extrapolation from a zero/absent rate)
+# ---------------------------------------------------------------------------
+
+
+def test_format_report_ok_missing_env_steps_per_s(probe):
+    record = {
+        "stage": 3,
+        "num_envs": 32,
+        "steps": 200,
+        "outcome": "ok",
+        "peak_rss_gb": 2.5,
+        "rss_cap_gb": 8.0,
+    }
+    text = probe.format_report(record)
+    assert "n/a" in text
+    for name in probe.TARGETS:
+        assert f"extrapolation → {name}: n/a (ok)" in text
+
+
+# ---------------------------------------------------------------------------
+# 15. rss_bytes parses the whitespace-padded output `ps -o rss=` actually emits
+# ---------------------------------------------------------------------------
+
+
+def test_rss_bytes_parses_whitespace_padded_ps_output(probe, monkeypatch):
+    class FakeResult:
+        stdout = "   4096\n"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        assert cmd[:3] == ["ps", "-o", "rss="]
+        return FakeResult()
+
+    monkeypatch.setattr(probe.subprocess, "run", fake_run)
+    assert probe.rss_bytes(12345) == 4096 * 1024
