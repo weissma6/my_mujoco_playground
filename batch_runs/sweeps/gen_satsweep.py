@@ -135,7 +135,7 @@ def load_target_config():
     return {k: v for k, v in cfg.items() if not k.startswith("_")}
 
 
-def init_pose_library_fingerprint():
+def init_pose_library_fingerprint(level=None):
     """(level, n_poses, sha256[:12]) of the init-pose library the runs will use.
 
     `init_start_random` is NOT a difficulty scalar: it is a LEVEL NAME selecting
@@ -157,10 +157,18 @@ def init_pose_library_fingerprint():
 
     The level is read from the recorded provenance rather than assumed, because
     the reference run inherits it from the env default instead of pinning it.
+
+    `level` lets a caller skip that provenance read and fingerprint an
+    EXPLICIT library instead of the one the shared block inherits. This is for
+    a sweep that varies `init_start_random` itself (gen_sweep_env_envelope):
+    such a sweep trains on more than one library at once, so a single
+    provenance-derived fingerprint cannot describe all of its runs -- it must
+    fingerprint every library it touches.
     """
-    with open(TARGET_CONFIG, "r", encoding="utf-8") as f:
-        prov = json.load(f).get("_provenance", {})
-    level = prov.get("inherited_env_defaults", {}).get("init_start_random")
+    if level is None:
+        with open(TARGET_CONFIG, "r", encoding="utf-8") as f:
+            prov = json.load(f).get("_provenance", {})
+        level = prov.get("inherited_env_defaults", {}).get("init_start_random")
     if not level or level == "none":
         return level, None, None
     path = os.path.join(
