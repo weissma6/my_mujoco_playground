@@ -449,3 +449,33 @@ class TestCliOverwriteGuard:
             )
             assert result.returncode == 0
             assert "set --array=1-8%4" in result.stdout
+
+
+class TestLadderCellsLeakGuard:
+    """Test 14 (reviewer-added): ladder_cells()'s non-DR-key leak guard fires.
+
+    gen_sweep_dr_dose.ladder_cells() asserts every override key on a used
+    rung starts with "domain_rand." -- the module docstring calls this "would
+    leak into the line". This is only a real guard if it actually raises when
+    gen_dr_ladder._CONFIGS grows a stray non-DR key on one of the four rungs
+    this sweep imports (e.g. a future edit adding a bare "lifter_tilt_max" or
+    "wandb_tags" key inside a rung's override dict, which would silently
+    override or bypass this generator's own values instead of failing loud).
+    """
+
+    def test_leak_guard_fires_on_stray_key(self, monkeypatch):
+        patched = list(dl._CONFIGS)
+        idx = next(i for i, (cid, _, _) in enumerate(patched)
+                   if cid == "L2_pos_cube")
+        cid, overrides, tags = patched[idx]
+        bad_overrides = dict(overrides)
+        bad_overrides["lifter_tilt_max"] = 0.05
+        patched[idx] = (cid, bad_overrides, tags)
+        monkeypatch.setattr(dl, "_CONFIGS", patched)
+
+        with pytest.raises(AssertionError):
+            g.ladder_cells()
+
+    def test_leak_guard_silent_on_clean_configs(self):
+        """Sanity check: the guard does NOT fire on the real, unmodified ladder."""
+        g.ladder_cells()
