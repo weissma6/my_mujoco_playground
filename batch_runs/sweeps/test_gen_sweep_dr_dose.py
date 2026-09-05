@@ -210,7 +210,7 @@ class TestDrSetEqualsCurriculumRung:
 
 
 class TestL1IsEmptyOverride:
-    """Test 6: L1_pos has empty override, L4_full has 13 domain_rand keys."""
+    """Test 6: L1_pos has empty override, L4_full rows have 14 DR keys."""
 
     def test_l1_pos_empty_override(self):
         _, overrides, _ = ladder_entry("L1_pos")
@@ -224,13 +224,13 @@ class TestL1IsEmptyOverride:
             dr_keys = {k for k in r if k.startswith("domain_rand.")}
             assert dr_keys == g.BASE_DR_KEYS, r["run_id"]
 
-    def test_l4_full_rows_have_13_dr_keys(self, rows):
+    def test_l4_full_rows_have_14_dr_keys(self, rows):
         l4_rows = [r for r in rows if "L4_full" in r["run_id"]]
         assert len(l4_rows) == 2
 
         for r in l4_rows:
             dr_keys = {k for k in r if k.startswith("domain_rand.")}
-            assert len(dr_keys) == 13, f"{r['run_id']}: {len(dr_keys)} keys"
+            assert len(dr_keys) == 14, f"{r['run_id']}: {len(dr_keys)} keys"
 
 
 class TestPairwiseIdentity:
