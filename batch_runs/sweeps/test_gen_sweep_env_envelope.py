@@ -254,3 +254,88 @@ def test_cli_refuses_to_overwrite_without_force(gen, tmp_path):
     )
     assert r2.returncode == 0
     assert p.read_text() == open(JSONL, encoding="utf-8").read()
+
+
+# --- adversarial tests added in review (WP1) --------------------------------
+
+
+def _write_tampered(tmp_path, rows, name="t.jsonl"):
+    p = tmp_path / name
+    with open(p, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    return p
+
+
+def test_check_lines_rejects_a_wrong_tag_list(gen, tmp_path):
+    rows = data_rows(JSONL)
+    tampered = rows.copy()
+    tampered[0] = dict(tampered[0])
+    tampered[0]["wandb_tags"] = ["sweepC", "posewrong", "xynarrow", "s0",
+                                  "anchora1b0c1d1"]
+    p = _write_tampered(tmp_path, tampered)
+    with pytest.raises(AssertionError):
+        gen.check_lines(str(p), 8, [0, 1])
+
+
+def test_check_lines_rejects_a_wrong_lifter_tilt_max(gen, tmp_path):
+    rows = data_rows(JSONL)
+    tampered = rows.copy()
+    tampered[0] = dict(tampered[0])
+    tampered[0]["lifter_tilt_max"] = 0.05
+    p = _write_tampered(tmp_path, tampered)
+    with pytest.raises(AssertionError):
+        gen.check_lines(str(p), 8, [0, 1])
+
+
+def test_check_lines_rejects_a_leaked_lifter_height_abs_min(gen, tmp_path):
+    rows = data_rows(JSONL)
+    tampered = rows.copy()
+    tampered[0] = dict(tampered[0])
+    tampered[0]["lifter_height_abs_min"] = 0.0
+    p = _write_tampered(tmp_path, tampered)
+    with pytest.raises(AssertionError):
+        gen.check_lines(str(p), 8, [0, 1])
+
+
+def test_check_lines_rejects_a_wrong_seed_set(gen, tmp_path):
+    # Data actually uses seeds {0, 1}; caller claims to expect {0, 2}, and
+    # check_lines must catch the mismatch rather than silently accepting
+    # whatever seeds happen to be present.
+    rows = data_rows(JSONL)
+    p = _write_tampered(tmp_path, rows)
+    with pytest.raises(AssertionError):
+        gen.check_lines(str(p), 8, [0, 2])
+
+
+def test_check_lines_rejects_a_line_missing_num_eval_envs(gen, tmp_path):
+    rows = data_rows(JSONL)
+    tampered = rows.copy()
+    tampered[0] = dict(tampered[0])
+    del tampered[0]["num_eval_envs"]
+    p = _write_tampered(tmp_path, tampered)
+    with pytest.raises((AssertionError, KeyError)):
+        gen.check_lines(str(p), 8, [0, 1])
+
+
+def test_build_lines_single_seed_gives_four_lines_and_array_1_4(gen):
+    lines, total = gen.build_lines([0])
+    assert len(lines) - 1 == 4
+    assert "--array=1-4%4" in lines[0]
+    data = [json.loads(l) for l in lines[1:]]
+    assert {row["run_id"] for row in data} == {
+        "SweepC_light_narrow_s0", "SweepC_light_wide_s0",
+        "SweepC_mid_narrow_s0", "SweepC_mid_wide_s0",
+    }
+
+
+def test_light_and_mid_narrow_cells_differ_only_in_pose_level(gen):
+    shared = gen.gs.load_target_config()
+    light = gen.build_entry("light", "narrow", 0, shared)
+    mid = gen.build_entry("mid", "narrow", 0, shared)
+    varying = {"run_id", "wandb_tags", "init_start_random"}
+    light_rest = {k: v for k, v in light.items() if k not in varying}
+    mid_rest = {k: v for k, v in mid.items() if k not in varying}
+    assert light_rest == mid_rest
+    assert light["init_start_random"] == "light"
+    assert mid["init_start_random"] == "mid"
