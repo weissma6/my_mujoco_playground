@@ -643,7 +643,7 @@ def test_build_env_overrides_golden_defence_line(rex):
     with open(SWEEPS_FILE, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if not line:
+            if not line or line.startswith("#"):
                 continue
             cfg = json.loads(line)
             if cfg.get("run_id") == "Snappy2_as04_ar70_g01_s1":
