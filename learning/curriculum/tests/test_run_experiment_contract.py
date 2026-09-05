@@ -812,3 +812,23 @@ def test_env_override_mapping_moved_not_copied(tree):
         f"build_env_overrides must have exactly one positional argument, "
         f"got {len(build_env_fn.args.args)}"
     )
+
+
+def test_build_env_overrides_dead_key_message_verbatim(rex):
+    """The lifter_height_max ValueError text must survive the move verbatim --
+    the WP1 spec requires it word-for-word, not just a matching substring."""
+    with pytest.raises(ValueError) as excinfo:
+        rex.build_env_overrides({"lifter_height_max": 0.02})
+
+    assert str(excinfo.value) == (
+        "cfg['lifter_height_max'] is no longer a valid key (D18/D24, "
+        "2026-07-29). The table top is now sampled as an ABSOLUTE height "
+        "uniform(lifter_height_abs_min, lifter_height_abs_max) rather "
+        "than lifter_height_nom +- lifter_height_max. Translate it: a "
+        "flat table at the nominal height is "
+        "lifter_height_abs_min = lifter_height_abs_max = "
+        "lifter_height_nom (0.095); the old +-v band is "
+        "abs_min = nom - v, abs_max = nom + v. See "
+        "ur3_pick.default_config() and batch_runs/sweeps/gen_dr_ladder.py's "
+        "_DETERMINISTIC_POSITION."
+    )

@@ -948,6 +948,200 @@ def print_dict_pairs(d, prefix=""):
         print(f"{prefix}{k}: {v}")
 
 
+def build_env_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """The single env-override path for registry.load(env_name, config_overrides=...).
+
+    Every sweep/curriculum key that reaches the env goes through here.
+    batch_runs/scripts/local_throughput_probe.py imports it so the probe builds
+    the same env as a training run.
+    """
+    env_overrides = {}
+    if "init_keyframe" in cfg:
+        env_overrides["init_keyframe"] = cfg["init_keyframe"]
+    if "init_qpos_noise" in cfg:
+        env_overrides["init_qpos_noise"] = tuple(
+            float(x) for x in cfg["init_qpos_noise"]
+        )
+    if "init_start_random" in cfg:
+        env_overrides["init_start_random"] = str(cfg["init_start_random"])
+    if "lifter_height_nom" in cfg:
+        env_overrides["lifter_height_nom"] = float(cfg["lifter_height_nom"])
+    # D18/D24 (2026-07-29): the table top is now drawn from an ABSOLUTE
+    # range instead of a +- band about lifter_height_nom, so the old
+    # `lifter_height_max` key no longer exists in ur3_pick.default_config().
+    # Fail LOUD on it rather than dropping it silently: its meaning has now
+    # changed twice (absolute max of uniform(0.003, v) -> symmetric +- band
+    # -> gone), and a stale JSONL that still carries it would otherwise
+    # train against a table-height distribution it never asked for. Every
+    # pre-2026-07-29 sweep that set it (UR3Pick_grasp_retry,
+    # UR3Pick_sweep_stickyoff, the old DR-ladder JSONLs) must be updated to
+    # the new keys before it can be re-run.
+    if "lifter_height_max" in cfg:
+        raise ValueError(
+            "cfg['lifter_height_max'] is no longer a valid key (D18/D24, "
+            "2026-07-29). The table top is now sampled as an ABSOLUTE height "
+            "uniform(lifter_height_abs_min, lifter_height_abs_max) rather "
+            "than lifter_height_nom +- lifter_height_max. Translate it: a "
+            "flat table at the nominal height is "
+            "lifter_height_abs_min = lifter_height_abs_max = "
+            "lifter_height_nom (0.095); the old +-v band is "
+            "abs_min = nom - v, abs_max = nom + v. See "
+            "ur3_pick.default_config() and batch_runs/sweeps/gen_dr_ladder.py's "
+            "_DETERMINISTIC_POSITION."
+        )
+    if "lifter_height_abs_min" in cfg:
+        env_overrides["lifter_height_abs_min"] = float(
+            cfg["lifter_height_abs_min"]
+        )
+    if "lifter_height_abs_max" in cfg:
+        env_overrides["lifter_height_abs_max"] = float(
+            cfg["lifter_height_abs_max"]
+        )
+    if "lifter_tilt_max" in cfg:
+        env_overrides["lifter_tilt_max"] = float(cfg["lifter_tilt_max"])
+    if "box_z_rot_range" in cfg:
+        env_overrides["box_z_rot_range"] = float(cfg["box_z_rot_range"])
+    if "box_y_center_offset" in cfg:
+        env_overrides["box_y_center_offset"] = float(cfg["box_y_center_offset"])
+    if "target_y_center_offset" in cfg:
+        env_overrides["target_y_center_offset"] = float(
+            cfg["target_y_center_offset"]
+        )
+    if "action_scale" in cfg:
+        env_overrides["action_scale"] = float(cfg["action_scale"])
+    if "gripper_action_scale" in cfg:
+        env_overrides["gripper_action_scale"] = float(
+            cfg["gripper_action_scale"]
+        )
+    if "obs_include_velocity" in cfg:
+        # addvelocity: appends arm qvel(6)+finger qvel(1) to the obs
+        # (26D -> 33D). Default False reproduces the 26D obs exactly.
+        env_overrides["obs_include_velocity"] = bool(
+            cfg["obs_include_velocity"]
+        )
+    if "action_rate" in cfg:
+        # action_rate is nested under reward_config.scales; ConfigDict
+        # update_from_flattened_dict handles the dotted key.
+        env_overrides["reward_config.scales.action_rate"] = float(
+            cfg["action_rate"]
+        )
+    if "box_target" in cfg:
+        # reward_config.scales.box_target. Exposed so a sweep can restore the
+        # pre-8bb664a budget (8.0, was raised to 20.0) -- the "first success
+        # vs now" note traced the grasp/align dilution to this bump.
+        env_overrides["reward_config.scales.box_target"] = float(
+            cfg["box_target"]
+        )
+    if "gripper_align" in cfg:
+        # reward_config.scales.gripper_align. Exposed so a sweep can raise the
+        # grasp-frame rotation weight -- the wrist must align earlier when the
+        # arm approaches faster (higher action_scale).
+        env_overrides["reward_config.scales.gripper_align"] = float(
+            cfg["gripper_align"]
+        )
+    if "hold_target" in cfg:
+        # Same nesting as action_rate. Exposed so the reward-fix pilots can
+        # switch the dwell bonus off (0.0) without a code edit.
+        env_overrides["reward_config.scales.hold_target"] = float(
+            cfg["hold_target"]
+        )
+    if "success_bonus" in cfg:
+        # Terminal bonus paid when the success gate fires; see
+        # ur3_pick.default_config()'s reward_config.scales.success_bonus.
+        # 0.0 restores the pre-2026-07-26 (hover-farming) behaviour.
+        env_overrides["reward_config.scales.success_bonus"] = float(
+            cfg["success_bonus"]
+        )
+    # --- 2026-08 v3 reward fix: anti-motion pressure -------------------
+    # Measured per-tick economics at d = 0.40 m: gripper_box pays +0.023 for
+    # closing distance flat out, while action_rate costs -0.175 (|dA| = 0.5
+    # over 7 dims) and robot_target_qpos costs -0.163 SUSTAINED for having
+    # left the start pose. Standing still was optimal until d ~= 2 cm --
+    # the reward-side half of the "slow approach when far away" finding.
+    # Recommended v3: robot_target_qpos 0.05, action_rate -0.02 (moves the
+    # break-even out to ~15 cm). Defaults stay legacy on purpose; see the
+    # reserved-set comment above.
+    if "robot_target_qpos" in cfg:
+        env_overrides["reward_config.scales.robot_target_qpos"] = float(
+            cfg["robot_target_qpos"]
+        )
+    if "gripper_box" in cfg:
+        # The approach-pull weight itself. Raising it is the only in-term
+        # lever left on long-range pull: the cascade's coarse scale (1.5) is
+        # already within ~15% of the best any single tanh can do at 0.40 m
+        # (k*sech^2(k*d) peaks at k ~= 1.9 there), so a tanh cannot be
+        # retuned into a strong long-range gradient -- only reweighted.
+        env_overrides["reward_config.scales.gripper_box"] = float(
+            cfg["gripper_box"]
+        )
+    # --- 2026-08 v3 reward fix: grasp-frame alignment ------------------
+    if "align_mode" in cfg:
+        # STRING knob, NOT a float. ur3_pick.__init__ validates it and
+        # resolves the branch at trace time. "axis_free" reproduces the
+        # pre-v3 env byte-for-byte; "axis_aware" additionally prefers a
+        # top-down approach and a jaw span with real finger clearance, so a
+        # side grasp across the box's 4 cm axis (9.9 mm clearance) stops
+        # scoring identically to a 3 cm face grasp (19.9 mm).
+        env_overrides["align_mode"] = str(cfg["align_mode"])
+    if "align_pref_floor" in cfg:
+        env_overrides["align_pref_floor"] = float(cfg["align_pref_floor"])
+    if "grasp_align_thresh" in cfg:
+        # UNITS DEPEND ON align_mode -- always set the pair together. This
+        # gate gutted the D23 grasp stage: at 0.3 under axis_free a 39.3 deg
+        # misaligned grasp still latched, unlocking lift(5) + box_target(20)
+        # + hold_target(6) = 31 raw/step for the rest of the episode, and
+        # measured grasp-stage sim->real retention was 0.06-0.21.
+        env_overrides["grasp_align_thresh"] = float(cfg["grasp_align_thresh"])
+    if "success_tol" in cfg:
+        env_overrides["success_tol"] = float(cfg["success_tol"])
+    if "sticky_latches" in cfg:
+        env_overrides["sticky_latches"] = bool(cfg["sticky_latches"])
+    if "gate_gripper_box_on_lift" in cfg:
+        env_overrides["gate_gripper_box_on_lift"] = bool(
+            cfg["gate_gripper_box_on_lift"]
+        )
+    if "gate_gripper_align_on_lift" in cfg:
+        env_overrides["gate_gripper_align_on_lift"] = bool(
+            cfg["gate_gripper_align_on_lift"]
+        )
+    if "target_mode" in cfg:
+        env_overrides["target_mode"] = str(cfg["target_mode"])
+    if "target_r_min" in cfg:
+        env_overrides["target_r_min"] = float(cfg["target_r_min"])
+    if "target_r_max" in cfg:
+        env_overrides["target_r_max"] = float(cfg["target_r_max"])
+    if "target_azim_min" in cfg:
+        env_overrides["target_azim_min"] = float(cfg["target_azim_min"])
+    if "target_azim_max" in cfg:
+        env_overrides["target_azim_max"] = float(cfg["target_azim_max"])
+    if "box_xy_jitter" in cfg:
+        env_overrides["box_xy_jitter"] = tuple(
+            float(x) for x in cfg["box_xy_jitter"]
+        )
+    if "target_z_jitter" in cfg:
+        env_overrides["target_z_jitter"] = tuple(
+            float(x) for x in cfg["target_z_jitter"]
+        )
+    if "finger_random_init" in cfg:
+        env_overrides["finger_random_init"] = bool(cfg["finger_random_init"])
+    if "episode_length" in cfg:
+        # Reach the env too, not just ppo.train's EpisodeWrapper: the env's
+        # own at_horizon check uses self._config.episode_length, so without
+        # this a JSONL override cannot lengthen the episode (the env still
+        # terminates at its default). episode_length stays non-reserved, so
+        # it also flows to ppo.train -- both horizons stay consistent.
+        env_overrides["episode_length"] = int(cfg["episode_length"])
+    # Physics domain randomization (Part 2): forward every "domain_rand.*"
+    # dotted key straight through as a nested env-config override. ConfigDict
+    # update_from_flattened_dict resolves the dotted path, so a sweep can set
+    # e.g. "domain_rand.enable"/"domain_rand.cube_mass.enable"/"...min" and it
+    # lands on config.domain_rand.*. Values pass through verbatim (bool/float).
+    for k, v in cfg.items():
+        if k.startswith("domain_rand."):
+            env_overrides[k] = v
+    return env_overrides
+
+
 def run_experiment(cfg: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
     _setup_mujoco_backend()
 
@@ -1008,190 +1202,7 @@ def run_experiment(cfg: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
         # -----------------------------
         # Env overrides + env creation
         # -----------------------------
-        env_overrides = {}
-        if "init_keyframe" in cfg:
-            env_overrides["init_keyframe"] = cfg["init_keyframe"]
-        if "init_qpos_noise" in cfg:
-            env_overrides["init_qpos_noise"] = tuple(
-                float(x) for x in cfg["init_qpos_noise"]
-            )
-        if "init_start_random" in cfg:
-            env_overrides["init_start_random"] = str(cfg["init_start_random"])
-        if "lifter_height_nom" in cfg:
-            env_overrides["lifter_height_nom"] = float(cfg["lifter_height_nom"])
-        # D18/D24 (2026-07-29): the table top is now drawn from an ABSOLUTE
-        # range instead of a +- band about lifter_height_nom, so the old
-        # `lifter_height_max` key no longer exists in ur3_pick.default_config().
-        # Fail LOUD on it rather than dropping it silently: its meaning has now
-        # changed twice (absolute max of uniform(0.003, v) -> symmetric +- band
-        # -> gone), and a stale JSONL that still carries it would otherwise
-        # train against a table-height distribution it never asked for. Every
-        # pre-2026-07-29 sweep that set it (UR3Pick_grasp_retry,
-        # UR3Pick_sweep_stickyoff, the old DR-ladder JSONLs) must be updated to
-        # the new keys before it can be re-run.
-        if "lifter_height_max" in cfg:
-            raise ValueError(
-                "cfg['lifter_height_max'] is no longer a valid key (D18/D24, "
-                "2026-07-29). The table top is now sampled as an ABSOLUTE height "
-                "uniform(lifter_height_abs_min, lifter_height_abs_max) rather "
-                "than lifter_height_nom +- lifter_height_max. Translate it: a "
-                "flat table at the nominal height is "
-                "lifter_height_abs_min = lifter_height_abs_max = "
-                "lifter_height_nom (0.095); the old +-v band is "
-                "abs_min = nom - v, abs_max = nom + v. See "
-                "ur3_pick.default_config() and batch_runs/sweeps/gen_dr_ladder.py's "
-                "_DETERMINISTIC_POSITION."
-            )
-        if "lifter_height_abs_min" in cfg:
-            env_overrides["lifter_height_abs_min"] = float(
-                cfg["lifter_height_abs_min"]
-            )
-        if "lifter_height_abs_max" in cfg:
-            env_overrides["lifter_height_abs_max"] = float(
-                cfg["lifter_height_abs_max"]
-            )
-        if "lifter_tilt_max" in cfg:
-            env_overrides["lifter_tilt_max"] = float(cfg["lifter_tilt_max"])
-        if "box_z_rot_range" in cfg:
-            env_overrides["box_z_rot_range"] = float(cfg["box_z_rot_range"])
-        if "box_y_center_offset" in cfg:
-            env_overrides["box_y_center_offset"] = float(cfg["box_y_center_offset"])
-        if "target_y_center_offset" in cfg:
-            env_overrides["target_y_center_offset"] = float(
-                cfg["target_y_center_offset"]
-            )
-        if "action_scale" in cfg:
-            env_overrides["action_scale"] = float(cfg["action_scale"])
-        if "gripper_action_scale" in cfg:
-            env_overrides["gripper_action_scale"] = float(
-                cfg["gripper_action_scale"]
-            )
-        if "obs_include_velocity" in cfg:
-            # addvelocity: appends arm qvel(6)+finger qvel(1) to the obs
-            # (26D -> 33D). Default False reproduces the 26D obs exactly.
-            env_overrides["obs_include_velocity"] = bool(
-                cfg["obs_include_velocity"]
-            )
-        if "action_rate" in cfg:
-            # action_rate is nested under reward_config.scales; ConfigDict
-            # update_from_flattened_dict handles the dotted key.
-            env_overrides["reward_config.scales.action_rate"] = float(
-                cfg["action_rate"]
-            )
-        if "box_target" in cfg:
-            # reward_config.scales.box_target. Exposed so a sweep can restore the
-            # pre-8bb664a budget (8.0, was raised to 20.0) -- the "first success
-            # vs now" note traced the grasp/align dilution to this bump.
-            env_overrides["reward_config.scales.box_target"] = float(
-                cfg["box_target"]
-            )
-        if "gripper_align" in cfg:
-            # reward_config.scales.gripper_align. Exposed so a sweep can raise the
-            # grasp-frame rotation weight -- the wrist must align earlier when the
-            # arm approaches faster (higher action_scale).
-            env_overrides["reward_config.scales.gripper_align"] = float(
-                cfg["gripper_align"]
-            )
-        if "hold_target" in cfg:
-            # Same nesting as action_rate. Exposed so the reward-fix pilots can
-            # switch the dwell bonus off (0.0) without a code edit.
-            env_overrides["reward_config.scales.hold_target"] = float(
-                cfg["hold_target"]
-            )
-        if "success_bonus" in cfg:
-            # Terminal bonus paid when the success gate fires; see
-            # ur3_pick.default_config()'s reward_config.scales.success_bonus.
-            # 0.0 restores the pre-2026-07-26 (hover-farming) behaviour.
-            env_overrides["reward_config.scales.success_bonus"] = float(
-                cfg["success_bonus"]
-            )
-        # --- 2026-08 v3 reward fix: anti-motion pressure -------------------
-        # Measured per-tick economics at d = 0.40 m: gripper_box pays +0.023 for
-        # closing distance flat out, while action_rate costs -0.175 (|dA| = 0.5
-        # over 7 dims) and robot_target_qpos costs -0.163 SUSTAINED for having
-        # left the start pose. Standing still was optimal until d ~= 2 cm --
-        # the reward-side half of the "slow approach when far away" finding.
-        # Recommended v3: robot_target_qpos 0.05, action_rate -0.02 (moves the
-        # break-even out to ~15 cm). Defaults stay legacy on purpose; see the
-        # reserved-set comment above.
-        if "robot_target_qpos" in cfg:
-            env_overrides["reward_config.scales.robot_target_qpos"] = float(
-                cfg["robot_target_qpos"]
-            )
-        if "gripper_box" in cfg:
-            # The approach-pull weight itself. Raising it is the only in-term
-            # lever left on long-range pull: the cascade's coarse scale (1.5) is
-            # already within ~15% of the best any single tanh can do at 0.40 m
-            # (k*sech^2(k*d) peaks at k ~= 1.9 there), so a tanh cannot be
-            # retuned into a strong long-range gradient -- only reweighted.
-            env_overrides["reward_config.scales.gripper_box"] = float(
-                cfg["gripper_box"]
-            )
-        # --- 2026-08 v3 reward fix: grasp-frame alignment ------------------
-        if "align_mode" in cfg:
-            # STRING knob, NOT a float. ur3_pick.__init__ validates it and
-            # resolves the branch at trace time. "axis_free" reproduces the
-            # pre-v3 env byte-for-byte; "axis_aware" additionally prefers a
-            # top-down approach and a jaw span with real finger clearance, so a
-            # side grasp across the box's 4 cm axis (9.9 mm clearance) stops
-            # scoring identically to a 3 cm face grasp (19.9 mm).
-            env_overrides["align_mode"] = str(cfg["align_mode"])
-        if "align_pref_floor" in cfg:
-            env_overrides["align_pref_floor"] = float(cfg["align_pref_floor"])
-        if "grasp_align_thresh" in cfg:
-            # UNITS DEPEND ON align_mode -- always set the pair together. This
-            # gate gutted the D23 grasp stage: at 0.3 under axis_free a 39.3 deg
-            # misaligned grasp still latched, unlocking lift(5) + box_target(20)
-            # + hold_target(6) = 31 raw/step for the rest of the episode, and
-            # measured grasp-stage sim->real retention was 0.06-0.21.
-            env_overrides["grasp_align_thresh"] = float(cfg["grasp_align_thresh"])
-        if "success_tol" in cfg:
-            env_overrides["success_tol"] = float(cfg["success_tol"])
-        if "sticky_latches" in cfg:
-            env_overrides["sticky_latches"] = bool(cfg["sticky_latches"])
-        if "gate_gripper_box_on_lift" in cfg:
-            env_overrides["gate_gripper_box_on_lift"] = bool(
-                cfg["gate_gripper_box_on_lift"]
-            )
-        if "gate_gripper_align_on_lift" in cfg:
-            env_overrides["gate_gripper_align_on_lift"] = bool(
-                cfg["gate_gripper_align_on_lift"]
-            )
-        if "target_mode" in cfg:
-            env_overrides["target_mode"] = str(cfg["target_mode"])
-        if "target_r_min" in cfg:
-            env_overrides["target_r_min"] = float(cfg["target_r_min"])
-        if "target_r_max" in cfg:
-            env_overrides["target_r_max"] = float(cfg["target_r_max"])
-        if "target_azim_min" in cfg:
-            env_overrides["target_azim_min"] = float(cfg["target_azim_min"])
-        if "target_azim_max" in cfg:
-            env_overrides["target_azim_max"] = float(cfg["target_azim_max"])
-        if "box_xy_jitter" in cfg:
-            env_overrides["box_xy_jitter"] = tuple(
-                float(x) for x in cfg["box_xy_jitter"]
-            )
-        if "target_z_jitter" in cfg:
-            env_overrides["target_z_jitter"] = tuple(
-                float(x) for x in cfg["target_z_jitter"]
-            )
-        if "finger_random_init" in cfg:
-            env_overrides["finger_random_init"] = bool(cfg["finger_random_init"])
-        if "episode_length" in cfg:
-            # Reach the env too, not just ppo.train's EpisodeWrapper: the env's
-            # own at_horizon check uses self._config.episode_length, so without
-            # this a JSONL override cannot lengthen the episode (the env still
-            # terminates at its default). episode_length stays non-reserved, so
-            # it also flows to ppo.train -- both horizons stay consistent.
-            env_overrides["episode_length"] = int(cfg["episode_length"])
-        # Physics domain randomization (Part 2): forward every "domain_rand.*"
-        # dotted key straight through as a nested env-config override. ConfigDict
-        # update_from_flattened_dict resolves the dotted path, so a sweep can set
-        # e.g. "domain_rand.enable"/"domain_rand.cube_mass.enable"/"...min" and it
-        # lands on config.domain_rand.*. Values pass through verbatim (bool/float).
-        for k, v in cfg.items():
-            if k.startswith("domain_rand."):
-                env_overrides[k] = v
+        env_overrides = build_env_overrides(cfg)
 
         env = registry.load(env_name, config_overrides=env_overrides)
         env_cfg = registry.get_default_config(env_name)
