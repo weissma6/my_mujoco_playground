@@ -226,3 +226,16 @@ def test_run_experiment_forwards_lifter_tilt_max():
     run_exp_text = run_exp_path.read_text(encoding="utf-8")
     assert '"lifter_tilt_max",' in run_exp_text
     assert 'env_overrides["lifter_tilt_max"]' in run_exp_text
+
+
+def test_check_lines_rejects_uniform_video_every_evals_drift(tmp_path):
+    rows = read_rows(JSONL)
+    headers = read_header_lines(JSONL)
+
+    drifted = copy.deepcopy(rows)
+    for r in drifted:
+        r["video_every_evals"] = 10
+    path = tmp_path / "video_drift.jsonl"
+    _write_variant(path, headers, drifted)
+    with pytest.raises(AssertionError):
+        ga.check_lines(str(path), 6, ga.SEEDS)
